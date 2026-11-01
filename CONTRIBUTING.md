@@ -43,6 +43,9 @@ The host is plain ESM in `host/`; the story engine is `src/`. When you change th
 - `npm run check` is the first stop for a configuration report; it collects every problem at once (unknown keys with a
   spelling suggestion, wrong types, old TTS fields, missing site/voices, unusable ffmpeg/Chrome, a non-loopback server
   without an API key) instead of failing on the first one.
+- `astrbot_plugin_ournotes_script/tests/`: Python `unittest` for the plugin's formatter, storage, host client and a
+  stubbed AstrBot command flow. Run it with `python -m unittest discover -s astrbot_plugin_ournotes_script/tests -v`
+  (only `aiohttp` is needed; the AstrBot modules are stubbed by the test).
 
 Rendering changes cannot be verified by the tests alone; describe how you checked them in the pull request.
 

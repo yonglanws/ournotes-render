@@ -15,3 +15,5 @@ resources/
 __pycache__/
 *.pyc
 .mimosa/
+# locally built AstrBot plugin bundles
+astrbot_plugin_ournotes_script*.zip

@@ -18,6 +18,8 @@
   格式与规则见[导演脚本](docs/story-director.md)。
 - **后端一体化**：队列、AI 选角/台词/分镜、TTS、校验/修复、渲染、混音、编码全部在 `host/`；客户端只提交和取结果。
   默认 `staged` 管线把完整角色提示词只放进台词轮，台词定稿后分镜只能引用 `line` id，改不动台词。
+- **AstrBot 插件**：`astrbot_plugin_ournotes_script/` 提供 `/剧本生成`（别名 `/写剧本`、`/storygen`），调用后端
+  `/api/v1/script/generate`，返回可读剧本预览和完整 JSON 附件。
 - **确定性渲染**：固定 1/30 秒虚拟时钟步进，音频由页面上报的事件在虚拟时间轴重建，渲染速度不影响成片节奏。
 - **两种数据源**：nnnotes 产品站点（`nnnotes.product/1`）用于 AI 队列 + TTS；bdon.moe 公开站点
   （`ournotes.story-manifest/2`）可下载后直接渲染，或用 `ai-site-story` 让 AI 写脚本、合成 TTS 并编译回站点。
@@ -93,6 +95,7 @@ node host/tools/render-story.mjs --site resources/site --story stories/90001.jso
 | --- | --- |
 | 无头 API、队列、AI、TTS、部署、安全 | [渲染宿主](docs/host.md) |
 | TTS 音色表、参考音频、权重、情绪、试音 | [TTS 配置与试音](docs/tts.md) |
+| AstrBot 插件：`/剧本生成` 指令 | [插件 README](astrbot_plugin_ournotes_script/README.md) |
 | 导演脚本、镜头/动作/听者反应、AI 分镜规则 | [导演脚本](docs/story-director.md) |
 | 命令行编写、校验、构建、分镜图 | [剧情编写工具](docs/story-author.md) |
 | 剧情数据结构、字体、音频、模型 | [剧情数据格式](docs/story-data-format.md) |

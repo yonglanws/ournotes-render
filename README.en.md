@@ -21,6 +21,8 @@ plugin have been removed.
   encoding are all in `host/`. The default `staged` pipeline gives the full character personas only to the dialogue
   pass; after that the storyboard references `line` ids and cannot rewrite a line. TTS voices are this project's own
   format (`tts.defaultVoice` + `tts.voices` / `voices.yaml`); no AstrBot or other bot config is read at runtime.
+- **AstrBot plugin**: `astrbot_plugin_ournotes_script/` adds `/剧本生成` (aliases `/写剧本`, `/storygen`), which calls
+  the host's `/api/v1/script/generate` and returns a readable script preview plus the complete JSON attachment.
 - **Deterministic frames**: a fixed 1/30 s virtual clock; audio is rebuilt from the page's playback events on the same
   timeline, so render speed never changes the result.
 - **Two data sources**: nnnotes product sites (`nnnotes.product/1`) for the AI queue + TTS, and published bdon.moe
@@ -85,6 +87,7 @@ Assets stay in `resources/` (ignored); the repository redistributes no game data
 | --- | --- |
 | API, queue, AI, TTS, deployment, security | [Render host](docs/host.md) |
 | TTS voice table, reference audio, weights, emotions, voice test | [TTS guide](docs/tts.md) |
+| AstrBot plugin: the `/剧本生成` command | [Plugin README](astrbot_plugin_ournotes_script/README.md) |
 | Director script, camera/acting, AI direction rules | [Story director](docs/story-director.md) |
 | CLI authoring, checks, builds, shot sheets | [Story author](docs/story-author.md) |
 | Story data, fonts, audio, models | [Story data format](docs/story-data-format.md) |

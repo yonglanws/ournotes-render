@@ -27,6 +27,7 @@
 - `host/tools/ai-site-story.mjs`：让 AI 直接为站点格式写导演脚本、合成 TTS 并编译
 - `host/tools/check.mjs`：`npm run check`，检查配置、站点、ffmpeg、Chrome、音色
 - `host/tools/tts-check.mjs`：`npm run tts:check`，列出音色并逐角色试音
+- `astrbot_plugin_ournotes_script/`：AstrBot 插件，`/剧本生成` 调用宿主的剧本接口并返回预览 + JSON
 - `src/story/`、`src/live2d/`、`src/engine/`：剧情引擎、Live2D 运行时与渲染内核
 - `scripts/story-author.mjs`：命令行编写/校验/构建/预览分镜图
 - `config.example.yaml`：配置示例（标了必须修改的几处）

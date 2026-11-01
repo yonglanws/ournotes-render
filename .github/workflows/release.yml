@@ -46,9 +46,21 @@ jobs:
             exit 1
           fi
 
+  plugin:
+    name: astrbot plugin (python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --upgrade pip
+      - run: pip install aiohttp
+      - run: python -m unittest discover -s astrbot_plugin_ournotes_script/tests -v
+
   release:
     name: github release
-    needs: [test]
+    needs: [test, plugin]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

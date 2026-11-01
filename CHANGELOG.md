@@ -6,6 +6,10 @@ All notable changes to this package. Versions follow [Semantic Versioning](https
 
 ### Configuration and TTS
 
+- Add `astrbot_plugin_ournotes_script`: the `/剧本生成` AstrBot command (aliases `/写剧本`, `/storygen`) calls
+  `POST /api/v1/script/generate`, sends a readable scene/dialogue/camera preview and attaches the complete
+  `ournotes.story-script/1` JSON. Configuration covers the host URL, API key, language, base story, duration, line
+  limit, timeout, preview length and attachment mode; the plugin keeps the latest scripts in its data directory.
 - TTS is now configured in the host's own format: `tts.defaultVoice` (fallback reference) plus `tts.voices` inline or
   `tts.voicesFile: voices.yaml` for a large cast. `tts.astrbotConfig` was removed, `tts.characters` was renamed to
   `tts.voices`, and the flat `defaultRefAudioPath`/`defaultPromptText` fields are grouped under `tts.defaultVoice`.

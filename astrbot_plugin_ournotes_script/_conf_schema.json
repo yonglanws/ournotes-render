@@ -1,0 +1,88 @@
+{
+  "api_base": {
+    "description": "ournotes-render 后端地址",
+    "type": "string",
+    "default": "http://127.0.0.1:9881",
+    "hint": "填 host 的 HTTP 地址，例如 http://127.0.0.1:9881 或 http://192.168.1.10:9881；可以带 /api/v1 后缀。"
+  },
+  "api_key": {
+    "description": "后端访问令牌（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "对应 host 配置 security.apiKeyEnv 指向的环境变量。留空表示 host 没有开启 API 鉴权。"
+  },
+  "language": {
+    "description": "剧本语言",
+    "type": "string",
+    "default": "zh-Hans",
+    "options": ["auto", "zh-Hans", "zh-Hant", "ja", "en", "ko"],
+    "hint": "auto 表示跟随底本站点；选择具体语言时，host 会按该语言生成台词。"
+  },
+  "base_story": {
+    "description": "底本剧情（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "站点内的 manifest 路径，例如 stories/10610.json。留空时由 host 自动选择第一篇 Normal 剧情。"
+  },
+  "target_minutes": {
+    "description": "目标时长（分钟）",
+    "type": "float",
+    "default": 2.0,
+    "slider": { "min": 0.5, "max": 10, "step": 0.5 },
+    "hint": "传给 host 的 targetMinutes，影响台词数量和节奏。"
+  },
+  "max_lines": {
+    "description": "最大台词条数",
+    "type": "int",
+    "default": 40,
+    "slider": { "min": 6, "max": 200, "step": 1 },
+    "hint": "传给 host 的 maxLines。超过上限时 host 会截断并提示。"
+  },
+  "timeout_seconds": {
+    "description": "生成超时（秒）",
+    "type": "int",
+    "default": 300,
+    "slider": { "min": 30, "max": 900, "step": 10 },
+    "hint": "AI 写作可能持续几分钟；超时后本次命令失败，不会影响其它任务。"
+  },
+  "max_prompt_chars": {
+    "description": "场景描述长度上限",
+    "type": "int",
+    "default": 500,
+    "slider": { "min": 20, "max": 2000, "step": 10 },
+    "hint": "超过上限的输入会直接拒绝，避免把整段聊天记录发进提示词。"
+  },
+  "preview_lines": {
+    "description": "聊天预览的台词条数",
+    "type": "int",
+    "default": 20,
+    "slider": { "min": 0, "max": 100, "step": 1 },
+    "hint": "只限制聊天里显示的台词条数，0 表示全部；完整剧本始终在 JSON 附件里。"
+  },
+  "max_text_chars": {
+    "description": "聊天预览的字符上限",
+    "type": "int",
+    "default": 1800,
+    "slider": { "min": 200, "max": 6000, "step": 100 },
+    "hint": "适配不同平台的单条消息长度；超出后截断并提示查看附件。"
+  },
+  "send_json_file": {
+    "description": "发送 JSON 附件",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后只发送可读预览。部分平台不支持文件消息，插件会自动回退为文本。"
+  },
+  "include_directions": {
+    "description": "预览中显示动作/表情/镜头",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后预览只显示场景、站位、台词和旁白；JSON 附件仍然包含完整演出。"
+  },
+  "max_files": {
+    "description": "保留的最近剧本文件数",
+    "type": "int",
+    "default": 50,
+    "slider": { "min": 1, "max": 500, "step": 1 },
+    "hint": "插件数据目录 scripts/ 下按时间保留最近若干份 JSON，旧的会自动删除。"
+  }
+}
