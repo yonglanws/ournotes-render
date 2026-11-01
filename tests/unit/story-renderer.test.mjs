@@ -1,6 +1,6 @@
 // The engine values the story renderer hands the game's shaders (src/story/renderer.js): the main camera's per-camera
 // values (_WorldSpaceCameraPos, unity_OrthoParams, glstate_matrix_projection) and the per-object unity_WorldToObject,
-// read by the particle shaders of effect meshes and particle systems; and the per-draw sprite constants of an effect SpriteRenderer (src/live/fx-effects.js),
+// read by the particle shaders of effect meshes and particle systems; and the per-draw sprite constants of an effect SpriteRenderer (src/story/fx-sprite.js),
 // read by URP's 2D sprite shader. Synthetic inputs only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -8,7 +8,7 @@ import { F } from "../../src/engine/core.js";
 import { UnityProgram } from "../../src/engine/glsl.js";
 import { PlayerLoop } from "../../src/engine/loop.js";
 import { Transform, mat4 } from "../../src/engine/math.js";
-import { FxSpriteRenderer } from "../../src/live/fx-effects.js";
+import { FxSpriteRenderer } from "../../src/story/fx-sprite.js";
 import { AdvCamera } from "../../src/story/field.js";
 import { StoryRenderer } from "../../src/story/renderer.js";
 import { headlessGL } from "../../scripts/lib/headless.mjs";

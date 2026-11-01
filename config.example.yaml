@@ -1,0 +1,181 @@
+# =============================================================================
+# ournotes host 配置
+# =============================================================================
+# 快速开始：
+#   npm install                       # 仓库根目录一次安装（host 是 npm workspace）
+#   cp config.example.yaml config.yaml
+#   编辑下面标了 ← 的 paths.site / llm / tts 三处
+#   npm run check                     # 检查配置、ffmpeg、Chrome、站点、音色
+#   npm start                         # API: http://127.0.0.1:9881
+#
+# 优先级：OURNOTES_* 环境变量 > config.yaml > 内置默认值。
+# 密钥只从环境变量读取；不要把 API Key 写进本文件。
+# 角色很多时，音色表放在 voices.yaml（格式见 voices.example.yaml），这里只写 voicesFile。
+
+# ---------------------------------------------------------------------------
+# 服务监听
+# ---------------------------------------------------------------------------
+server:
+  port: 9881                 # API 端口（env: OURNOTES_PORT）
+  host: 127.0.0.1            # 只在本机使用；要通过反向代理对外时改 0.0.0.0，并配置 security.apiKeyEnv
+  cors: false                # 只有配置了 corsOrigins 才返回 CORS 头
+  corsOrigins: []            # 可信来源白名单，例如 ["https://bot.example.org"]；不支持 *
+
+# ---------------------------------------------------------------------------
+# 密钥与访问控制
+# ---------------------------------------------------------------------------
+security:
+  apiKeyEnv: OURNOTES_API_KEY     # 非空时，除 health 外的 API 需要 Authorization: Bearer <该环境变量的值>
+  allowPrivateServiceEndpoints: true
+  # ^ LLM / TTS 是运维自己配置的服务地址。本地 GPT-SoVITS 通常需要 true；不使用内网服务时建议改 false。
+  #   故事数据里的远程媒体等“调用方输入的 URL”永远走严格校验，不受此项影响。
+
+# ---------------------------------------------------------------------------
+# 路径（相对仓库根目录，也可写绝对路径）
+# ---------------------------------------------------------------------------
+paths:
+  site: ""                   # ← nnnotes.product/1 产品站点（含 stories.json / models.json / assets/）
+                             #   只渲染 bdon.moe 站点剧情时不需要它，用 host/tools/render-story.mjs --site
+                             # env: OURNOTES_SITE
+  output: output             # 成片 MP4、故事 JSON、渲染帧（env: OURNOTES_OUTPUT）
+  cache: cache               # TTS / 资源缓存（env: OURNOTES_CACHE）
+
+# ---------------------------------------------------------------------------
+# 故事默认值
+# ---------------------------------------------------------------------------
+story:
+  base: ""                   # 默认底本 stories/<id>.json；留空自动取 stories.json 第一篇文章
+  language: ""               # ja / en / zh-Hant / zh-Hans / ko；留空用底本语言
+  font: sans                 # sans | serif | rounded
+  title: ""                  # 默认标题；留空由 AI 取
+  targetMinutes: 3           # 目标时长（分钟）
+  maxModels: 24              # 提供给 AI 的角色模型上限
+  maxLines: 120              # 最大台词条数
+  maxOnStage: 3              # 同台人数：3 = 官方群像（far-left/center/far-right）；2 = 严格双人
+  cast: []                   # 角色白名单（models.json 的 id 或 character）；留空自动选
+  # 角色卡目录：每个 *.md 一位角色。staged 管线只把入选角色的完整角色卡放进写台词那一轮。
+  personaDirs: []
+  # personaDirs:
+  #   - "D:/personas/mygo"
+  #   - "D:/personas/ave-mujica"
+  # 同名角色直接写在配置里也可以；与目录角色卡同名时覆盖其字段。
+  personas: []
+
+# ---------------------------------------------------------------------------
+# AI 剧本（OpenAI 兼容 /chat/completions）
+# ---------------------------------------------------------------------------
+llm:
+  enabled: true
+  baseUrl: https://api.openai.com/v1    # ← env: OURNOTES_LLM_BASE_URL
+  apiKeyEnv: OURNOTES_LLM_API_KEY       # ← 只从该环境变量读取密钥
+  model: gpt-4.1-mini                   # ← env: OURNOTES_LLM_MODEL
+  temperature: 0.85
+  maxTokens: 8192
+  timeoutMs: 120000
+  retries: 2
+  repairRounds: 2            # 生成后自动修复的最大轮数
+  # staged（默认）：选角 → 写台词（只带入选角色的完整角色卡）→ 写分镜/动作/BGM。
+  # single：一次调用写完整剧本；角色提示词很短、想省调用次数时用。
+  pipeline: staged
+  directorPlan: false        # 仅 single：先写分镜计划再写剧本
+  translateForTts: true      # 台词语言与 TTS 语言不同时，先用 LLM 批量翻译
+  systemPrompt: ""           # 追加给 AI 的额外导演要求
+
+# ---------------------------------------------------------------------------
+# TTS（后端内置，GPT-SoVITS api_v2 兼容）
+# ---------------------------------------------------------------------------
+tts:
+  enabled: true
+  baseUrl: http://127.0.0.1:9880   # ← GPT-SoVITS 服务地址（env: OURNOTES_TTS_BASE_URL）
+  apiKeyEnv: ""                    # 服务端需要鉴权时填写环境变量名
+  textLang: ja                     # 合成语言：auto = 跟随剧本；ja / zh / en / ko 会先翻译
+  promptLang: ja                   # 参考音频的语言
+
+  # 默认音色：没有单独配置的角色都用它。只填 refAudioPath 也可以，但所有角色会是同一个声音。
+  # 路径是 GPT-SoVITS 服务端看到的路径，不是本机路径。
+  defaultVoice:
+    refAudioPath: ""
+    promptText: ""
+    promptLang: ""
+
+  # 角色音色表。角色多时写在 voices.yaml（推荐，见 voices.example.yaml 与 docs/tts.md）；
+  # 角色少时也可以直接写在 voices 里。同名条目按字段覆盖文件里的值。
+  voicesFile: ""
+  # voicesFile: "voices.yaml"
+  voices: []
+  # voices:
+  #   - name: 高松灯
+  #     aliases: [灯, 高松燈, tomori]      # 模型名/角色卡里的日文名、罗马音都能匹配
+  #     refAudioPath: /srv/gpt-sovits/refs/tomori.wav
+  #     promptText: 参考音频里说的话
+  #     promptLang: ja
+  #     gptWeightsPath: /srv/gpt-sovits/models/tomori.ckpt    # 可选；切换权重时自动串行
+  #     sovitsWeightsPath: /srv/gpt-sovits/models/tomori.pth  # 可选
+  #     emotions:
+  #       - label: 开心喜悦
+  #         refAudioPath: /srv/gpt-sovits/refs/tomori-happy.wav
+  #         promptText: 开心参考音频里说的话
+
+  speedFactor: 1.0
+  topK: 5
+  topP: 1.0
+  temperature: 1.0
+  repetitionPenalty: 1.35
+  fragmentInterval: 0.3            # 文本分段之间的间隔（秒）
+  mediaType: wav
+  timeoutMs: 60000
+  concurrency: 2                   # 没有为角色配置权重时可以并发；配置了权重会自动变成 1
+  retries: 1                       # 单句可重试次数（连接失败 / 5xx）
+  required: false                  # true = 任一句合成失败就让整个任务失败；false = 该句静音并写入 warnings
+
+  # 情绪：让 LLM 给每句挑一个标签，再按角色的 emotions 参考音频或下面的全局预设改变语气。
+  # 没有情绪参考音频时，presets 仍会用 speedFactor / temperature 做出差异。
+  emotion:
+    enabled: false
+    labels: [日常平静, 开心喜悦, 温柔亲近, 认真坚定, 关心担忧, 惊讶, 疑惑好奇, 紧张不安, 害羞羞怯, 低落悲伤, 生气恼火, 调侃玩笑]
+    presets:
+      - { label: 日常平静, speedFactor: 1.0, temperature: 1.0 }
+      - { label: 开心喜悦, speedFactor: 1.03, temperature: 1.05 }
+      - { label: 低落悲伤, speedFactor: 0.93, temperature: 0.9 }
+
+# ---------------------------------------------------------------------------
+# 视频输出
+# ---------------------------------------------------------------------------
+video:
+  width: 1300                # 游戏 ADV 视口是 13:6；1300x600 与 story-author 一致
+  height: 600
+  fps: 30                    # 故事引擎固定 30 步/秒，保持 30
+  jpegQuality: 92            # 帧暂存质量，只影响中间文件
+  crf: 20                    # x264 CRF（越小越清晰）
+  preset: veryfast
+  encoder: auto              # auto | nvidia | amd | intel | libx264
+  audioBitrate: 192k
+  maxDurationSec: 600        # 单条视频最大游戏时长
+  audioSampleRate: 48000
+  watermark: ""              # 可选文字水印
+  ffmpegPath: ""             # 留空用 ffmpeg-static；也可设 OURNOTES_FFMPEG
+
+# ---------------------------------------------------------------------------
+# 无头浏览器渲染
+# ---------------------------------------------------------------------------
+render:
+  gpu: false                 # false = SwiftShader 软件渲染，跨机器结果一致；true 用 GPU
+  chrome: ""                 # Chrome/Chromium/Edge 可执行文件；留空自动查找（env: OURNOTES_CHROME）
+  core: ""                   # Live2D Cubism Core 本地路径或 URL；留空用 Live2D 官方 CDN
+                             # fetch-story 会存到 <site>/vendor/，可直接指向它
+  motionsync: ""             # 可选 MotionSync Core；直接渲染站点剧情时用于语音口型
+  taskTimeoutMs: 1800000     # 单次渲染墙钟上限
+  settleFrames: 0            # 调试用：渲染前多等几帧
+
+# ---------------------------------------------------------------------------
+# 队列与产物
+# ---------------------------------------------------------------------------
+queue:
+  concurrency: 1             # 同时执行的完整任务数（AI 编写 + TTS + 渲染 + 编码）
+  maxSize: 20                # 排队上限
+  taskTimeoutMs: 3600000     # 任务开始执行后的墙钟上限
+  retentionMs: 3600000       # 已完成任务在内存中的保留时间
+  cleanupIntervalMs: 600000  # 过期产物清理周期
+  outputMaxAgeHours: 24      # 产物保留小时数
+
+logLevel: info               # debug | info | warn | error

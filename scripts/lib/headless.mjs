@@ -1,10 +1,8 @@
-// Headless Node environment for the player: a no-op WebGL2 context, a no-op AudioContext and AssetStores over files
+// Headless Node environment for the renderer: a no-op WebGL2 context, a no-op AudioContext and AssetStores over files
 // on disk. Nothing is drawn or played; the session runs its full logic (simulation, views, effects, draw calls) so
 // that everything it reads and every GL call it makes can be observed.
 //
-//   import { headlessGL, HeadlessAudioContext, openChart, openStory } from "./lib/headless.mjs";
-//   const assets = await openChart("site/charts/100001_expert.json");     // or a directory with live.json
-//   const session = await ChartSession.create({ gl: headlessGL(), assets, audioContext: new HeadlessAudioContext() });
+//   import { headlessGL, HeadlessAudioContext, openStory } from "./lib/headless.mjs";
 //   const store = await openStory("site/stories/10462.json", { lang: "en" });   // or a story directory
 import fs from "node:fs";
 import path from "node:path";
@@ -261,14 +259,4 @@ export const openStory = async (where, { lang = null } = {}) => {
   }
   const { loadStoryStore } = await import("../../src/story/assets.js");
   return headlessImages(await loadStoryStore(pathToFileURL(p).href, { fetch: fileFetch, lang, decode: nodeDecode }));
-};
-
-// a live manifest file (lives/<musicId>_<difficulty>.json of a product layout; `variants` as loadLiveStore), a chart
-// manifest file (site/charts/<id>.json, assets under site/assets) or a directory holding live.json (its files read on
-// demand)
-export const openChart = async (where, { variants = [] } = {}) => {
-  const p = path.resolve(where);
-  if (fs.statSync(p).isDirectory()) return headlessImages(new DirStore(p));
-  const { loadLiveStore } = await import("../../src/live/store.js");
-  return headlessImages(await loadLiveStore(pathToFileURL(p).href, { variants, fetch: fileFetch, decode: nodeDecode }));
 };

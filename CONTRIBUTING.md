@@ -4,55 +4,45 @@ Thank you for helping. This document covers the branches, the commit conventions
 
 ## Data policy
 
-**Never commit game data.** This repository and its npm package contain no game assets: no chart files, textures,
-shaders, audio, or files derived from them, and no screenshots or recordings of them in tests or fixtures. Tests use
-synthetic inputs only; tests that need real charts read them from a directory outside the repository
-(`OURNOTES_DATA`, below). The data format is documented in [docs/data-format.md](docs/data-format.md); producing the
-data is outside this repository.
+**Never commit game data.** This repository contains no game assets: no charts, story files, textures, shaders, audio,
+or files derived from them, and no screenshots or recordings of them in tests or fixtures. Tests use synthetic inputs
+only. `resources/` (downloaded by `host/tools/fetch-story.mjs`), `output/`, `cache/`, `config.yaml` and `voices.yaml`
+are operator-local and ignored by Git.
 
 ## Development
 
-Node.js 22 or later. There are no runtime dependencies; the development dependencies are esbuild, TypeScript and
-ESLint.
+Node.js 22 or later. Install once at the repository root; `host/` is an npm workspace, so this also installs
+`js-yaml`, `ffmpeg-static` and the site-format engine. There is no build step.
 
 ```sh
-npm ci
+npm install
 npm test               # unit tests: node --test tests/unit/*.test.mjs
-npm run typecheck      # type-checks tests/types/ against types/
+npm run test:host      # queue, AI, TTS, audio, API, headless browser
 npm run lint           # ESLint's recommended rules (eslint.config.js)
-npm run build          # dist/: ESM, minified ESM and IIFE bundles with source maps
-node scripts/build.mjs --check   # builds twice and fails if the outputs differ
-npm run contract:check # package.json, entry points, types, schemas and docs agree (after a build)
+npm run check          # config.yaml, ffmpeg, Chrome, story site, voices
+npm run tts:check      # list voices; add -- --synthesize to hear one sample per voice
+npm start              # node host/main.js, API on http://127.0.0.1:9881
 ```
 
-The source is plain JavaScript ES modules (`src/`), with type declarations in `types/`. Keep both in step when the
-public API changes, and document it in the entry points table of [docs/api.md](docs/api.md) (or of the entry's own
-document); `npm run contract:check` compares the three, and checks the documents' links, the format ids and the
-schemas.
+The host is plain ESM in `host/`; the story engine is `src/`. When you change the configuration surface, update
+`config.example.yaml`, `voices.example.yaml`, `docs/host.md`, `docs/tts.md` and the loader tests together.
 
 ### Tests
 
-- `tests/unit/`: `node --test`, synthetic inputs only. Test behaviour the code documents: an expected value should come
-  from the definition the module states (an easing formula, Unity's matrix convention, a documented algorithm), not
-  from the current output of the code.
-- `tests/data/` (opt-in): runs the player in Node with a no-op WebGL2 context and a no-op AudioContext over real
-  data, the lives of a product layout and the charts of a chart site, and checks that charts play to the end, that
-  seeking, speed changes, pause and late frames keep the chart state exact, and that a Live settings change during a
-  chart gives the state of a session started with the settings. It is skipped unless `OURNOTES_DATA` names the data's
-  directory (a chart id names `lives/<id>.json`, else `charts/<id>.json`):
+- `tests/unit/`: the story engine, Live2D and director script, synthetic inputs only. Test behaviour the code documents:
+  an expected value should come from the definition the module states, not from the current output of the code.
+- `host/tests/`: the queue, AI writer, TTS client and voice table, audio mix, HTTP API, page server and renderer.
+  The end-to-end render tests are opt-in and need a downloaded story site plus Cubism Core:
 
   ```sh
-  OURNOTES_DATA=/path/to/site npm run test:data
-  OURNOTES_DATA=/path/to/site OURNOTES_CHARTS=100001_expert,100040_expert OURNOTES_SEEK_CHART=100082_expert npm run test:data
+  OURNOTES_E2E_SITE=resources/site \
+  OURNOTES_E2E_CORE=resources/site/vendor/live2dcubismcore.min.js \
+  node --test host/tests/e2e-director.test.mjs
   ```
 
-  The same run checks that the read-set plan (`node scripts/read-set.mjs <chart> --plan`, which lists the files a chart
-  reads without stepping it) equals the full simulation's read set, and that `node scripts/read-set.mjs --serve` (one
-  process for many charts) answers every chart in both modes as the chart's own process does;
-  `OURNOTES_READSET_CHARTS=all OURNOTES_JOBS=<n>` checks every chart of the site, `n` at a time.
-
-- `npm run validate-data -- <site dir> [live id | chart id | model id ...]` checks a directory of products and chart
-  sites against the data format and the schemas in `schema/`.
+- `npm run check` is the first stop for a configuration report; it collects every problem at once (unknown keys with a
+  spelling suggestion, wrong types, old TTS fields, missing site/voices, unusable ffmpeg/Chrome, a non-loopback server
+  without an API key) instead of failing on the first one.
 
 Rendering changes cannot be verified by the tests alone; describe how you checked them in the pull request.
 
@@ -60,8 +50,8 @@ Rendering changes cannot be verified by the tests alone; describe how you checke
 
 The player follows the game's own code. Comments name the game class and method a piece of code follows. Behaviour that
 lives in the engine's native code (Unity, CRI) rather than in the game's managed code is implemented from the engine's
-documented semantics and marked with a comment starting `ENGINE:`; [docs/fidelity.md](docs/fidelity.md) lists these
-places. Features of the viewer that the game does not have (the controls) are kept apart and documented as such.
+documented semantics and marked with a comment starting `ENGINE:`. [docs/story-features.md](docs/story-features.md)
+lists the supported story features and their limits.
 
 ## Branches and pull requests
 
@@ -85,17 +75,18 @@ Release notes are generated from the commits with [git-cliff](https://git-cliff.
 
 ## Releases
 
-Versions follow [SemVer](https://semver.org/); during `0.x` a minor version may change the API. A release is a tag
-`vX.Y.Z` matching `version` in `package.json`; the release workflow runs the tests, builds, publishes the package to
-npm with provenance, and creates the GitHub release with notes from git-cliff and the bundles attached.
+Versions follow [SemVer](https://semver.org/). This repository is a headless application, not an npm library: releases
+are GitHub releases, and nothing is published to npm. A release is a tag `vX.Y.Z` matching `version` in
+`package.json`; the release workflow runs the unit and host suites plus lint on a clean workspace install, checks the
+tag against `package.json` and `CHANGELOG.md`, and creates the GitHub release with notes from git-cliff.
 
-The commit that sets the new `version` also regenerates [CHANGELOG.md](CHANGELOG.md), which ships in the package:
+The commit that sets the new `version` also regenerates [CHANGELOG.md](CHANGELOG.md):
 
 ```sh
 npx git-cliff@2.14.2 --tag vX.Y.Z -o CHANGELOG.md
 ```
 
-The release workflow fails when `CHANGELOG.md` has no section for the tagged version.
+The release workflow fails when `CHANGELOG.md` has no `## [X.Y.Z]` section for the tagged version.
 
 ## License
 

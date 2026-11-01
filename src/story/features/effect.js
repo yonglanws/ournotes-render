@@ -4,7 +4,7 @@ import { mat4, quat, Transform } from "../../engine/math.js";
 import { Prefab, componentClass } from "../../engine/prefab.js";
 import { FxMaterials, FxParticleSystem, PS_STOP } from "../../engine/particles.js";
 import { UnityRandom } from "../../engine/random.js";
-import { FxSpriteRenderer } from "../../live/fx-effects.js";
+import { FxSpriteRenderer } from "../fx-sprite.js";
 import { StoryCommandError } from "../interfaces.js";
 import { featureSlot, featureState } from "./state.js";
 

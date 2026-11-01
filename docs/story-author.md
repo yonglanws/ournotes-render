@@ -38,7 +38,6 @@ node scripts/story-author.mjs render story.json $S --out shots     # 6. one pict
 #    look at shots/sheet.png (and shots/line-*.png), fix, repeat 5-6
 #    (--fix <file> on check and render writes the script with the fixes the tool knows applied)
 node scripts/story-author.mjs build story.json $S --name my-story  # 7. into the site
-node scripts/story-author.mjs serve $S                             # 8. URLs to watch it in examples/story
 ```
 
 Look at the pictures after each render: the contact sheet shows every line with its speaker and text, and each
@@ -190,11 +189,6 @@ browser-font `fonts.json` to `assets/`, plus a content-addressed font product ma
 The part index refers to the base story's reusable scene, UI, stages and cue sheets, and the cast's model manifests.
 A script with errors is not built.
 
-### serve
-
-`serve [--port <n>]`: serves the package and the site on 127.0.0.1 and prints the URLs that play each built story in
-[examples/story](../examples/story); runs until stopped (Ctrl+C).
-
 ## Script format
 
 ```json
@@ -232,15 +226,37 @@ A script with errors is not built.
 | `cast` | Cast id → `{model, name}`: a model id of `models.json` and the name shown in the talk window. A cast id is a letter followed by letters, digits or `_`. |
 | `beats` | The story in order. The first beat is a scene. |
 
-Beats (each has one of the keys `scene`, `positions`, `say`, `narrate`; any beat may have an `id`, reported with its
-lines by `render`):
+Beats (each has one of the keys `scene`, `positions`, `say`, `narrate`, `camera`, `fade`, `pause`, `action`; any
+beat may have an `id`, reported with its lines by `render`). The director fields are described in
+[Story director](story-director.md):
 
 | Beat | Keys |
 |---|---|
-| scene | `scene`: a stage id. `music`: a cue of the base story, `"stop"`, or absent to keep what plays. `location`: a caption shown at the start. `camera`: `near`, `middle` (default) or `far`. `positions`: who stands where (absent: nobody). A scene after the first fades out and in, and clears the stage. |
-| positions | `positions`: who stands where from now on; characters not named leave, characters on a new position leave and enter there, each with a short fade. `camera`: optional, as for a scene. |
-| say | `say`: a cast id. `text`: the line. `motion`: optional, a motion of the speaker's model. `expression`: optional, an expression of the speaker's model. |
-| narrate | `narrate`: a line without a speaker. |
+| scene | `scene`: a stage id. `music`: a cue of the base story, `"stop"`, or absent to keep what plays. `location`: a caption shown at the start. `camera`: `near` (1.2x, the widest), `middle` (1.4x, default), `far` (1.8x, group), `close` (2.8x, close-up) or `very-close` (4x), or `{distance, focus, track}`. `focus`: a cast id, a position, or a focus point 1..9 the camera looks at. `track`: optional horizontal camera offset. `positions`: who stands where (absent: nobody). A scene after the first fades out and in, and clears the stage. |
+| positions | `positions`: who stands where from now on; characters not named leave, characters on a new position leave and enter there, each with a short fade. `camera`, `focus`, `track`: optional, as for a scene. |
+| say | `say`: a cast id. `text`: the line. `motion`: optional, a motion of the speaker's model. `expression`: optional, an expression of the speaker's model. `lookAt`: optional gaze target. `focus`, `camera`, `track`: optional camera. `zoom`, `zoomDuration`: optional slow push-in/pull-out. `actions`: optional timed acting before or during the line (speaker or listeners). |
+| narrate | `narrate`: a line without a speaker. `focus`, `camera`, `track`: optional. `zoom`, `zoomDuration`: optional slow push-in/pull-out. `actions`: optional; each action names its `cast`. |
+| camera | `camera`: a distance or `{distance, focus, track}`. `focus`, `track`: optional. `zoom`, `zoomDuration`: optional slow zoom (its seconds default to `duration`, else 4). `duration`: seconds. Moves the camera without changing the staging. |
+| fade | `fade`: `"out"` or `"in"`. `duration`: seconds (default 1). |
+| pause | `pause`: seconds of silence, compiled to `Delay`. |
+| action | `action`: a cast id. `motion`, `expression`, `lookAt`: optional, at least one. `duration`: optional silent beat after it. |
+
+An `actions` entry is `{"at": 0..1, "cast": optional, "motion": optional, "expression": optional, "lookAt":
+optional}`. `at` is the fraction of the line's body (voice length, else the typed text's display time). An action at
+`0` plays before the line starts, which is how the game stages listener reactions; a later one is scheduled inside
+the line. The target must be on stage. The story engine's `Talk` command plays the later ones on the virtual clock;
+the compiler writes them as the `HostActions` field of the Talk row.
+
+`focus` is a cast id, a position, or a focus point `1..9`: `1/3/5/7/9` are the character slots, `2/4/6/8` sit
+between two slots and frame a pair. A cast id compiles to its slot as the Focus row's `PositionType`, the same shape
+as the official solo close-ups. `track` is the camera's horizontal offset from the focus point (`-4..4`, `0`
+centred); it compiles to the game's `Track` row and is how the official episodes pan across a group.
+
+The camera's move time follows the official cuts: a closer distance cuts (no `Duration`), a wider one eases back over
+1.2 seconds, and a lateral move at the same distance pans over 0.5 seconds (close-ups cut between sides). An explicit
+`duration` on a camera beat wins. `zoom` (0.8..1.5) compiles to a `Zoom` row after the Focus row: 1.03..1.10 pushes
+in slowly, 0.92..0.98 pulls out; `zoomDuration` is 0.5..10 seconds and defaults to 4 (or the camera beat's
+`duration`). One slow zoom per shot is the official habit; leave it out for a static shot.
 
 Positions: `far-left`, `left`, `center`, `right`, `far-right`. A position is a name, or `{"at": <name>, "motion",
 "expression"}` to enter (or, staying where it is, to act) with a motion and an expression. Two characters cannot share a
@@ -249,7 +265,9 @@ position.
 Motions are named by stem (`mtn_smile01`): the variant that faces the character's side of the stage plays (`_L` on the
 left positions, `_C` in the centre, `_R` on the right, the centre one where the model has no such variant). A full clip
 name (`mtn_smile01_L`) plays as it is. A motion or an expression needs the speaker on stage; a speaker off stage still
-talks (warning `speakerOffStage`).
+talks (warning `speakerOffStage`). Every compiled `Motion` / `Expression` row carries `MotionFadeIn: -1`, so the player
+uses the clip's own fade-in (1 s in the game's motion data) and cross-fades from the pose on screen instead of cutting
+to the new clip's first frame.
 
 Text is shown as written: `<` and `\` are characters, not rich text tags or escapes, and `\n` in the JSON string
 breaks the line. Keep each text line within the talk window's width; `render` reports lines that do not fit.
@@ -262,11 +280,14 @@ breaks the line. Keep each text line within the talk window's width; `render` re
 | `format`, `type`, `missing`, `empty` | A value has the wrong format or type, is missing, or is empty. |
 | `unknownKey` | A key the format does not have (often a typo: see `suggestion`). |
 | `castId` | A cast id that is not a letter followed by letters, digits or `_`. |
-| `beatKind` | A beat without `scene`, `positions`, `say` or `narrate`. |
+| `beatKind` | A beat without `scene`, `positions`, `say`, `narrate`, `camera`, `fade`, `pause` or `action`. |
 | `duplicateId` | Two beats with the same `id`. |
 | `unknownBase` | The base story is missing from the site or cannot be a base. |
-| `unknownLanguage`, `unknownFont`, `unknownPosition`, `unknownCamera` | A name outside the lists above. |
-| `unknownModel`, `unknownCast`, `unknownStage`, `unknownMusic`, `unknownMotion`, `unknownExpression` | A name the site, the script or the model does not have. |
+| `unknownLanguage`, `unknownFont`, `unknownPosition`, `unknownCamera`, `unknownFade` | A name outside the lists above. |
+| `unknownModel`, `unknownCast`, `unknownStage`, `unknownMusic`, `unknownMotion`, `unknownExpression`, `unknownFocus`, `unknownLookAt` | A name the site, the script or the model does not have. |
+| `range` | `at` outside 0..1, `track` outside -4..4, a focus point outside 1..9, a non-positive `pause`, or a duration outside its range. |
+| `emptyAction`, `tooManyActions` | An action without motion/expression/lookAt, or more than 12 actions on a line. |
+| `offStageAction` | A timed action or `lookAt` target that is not on stage. |
 | `beforeScene` | A beat before the first scene. |
 | `positionTaken` | Two characters on one position. |
 | `offStage` | A motion or an expression for a speaker who is not on stage. |
@@ -280,8 +301,8 @@ Codes with a known fix are listed under [Fixes](#fixes).
 ## What the story is made of
 
 The tool compiles a script into the story player's data ([story-data-format.md](story-data-format.md)): an
-`episode.json` of the game's command rows (Character, Stage, Bgm, In, Out, Focus, FadeOut, FadeIn, Location, Motion,
-Expression, Talk) with the texts in its text table, a `story.json` naming the models and the music it plays, and the
+`episode.json` of the game's command rows (Character, Stage, Bgm, In, Out, Focus, LookTarget, FadeOut, FadeIn, Location, Motion,
+Expression, Talk, Delay) with the texts in its text table, a `story.json` naming the models and the music it plays, and the
 base story's font product with every font asset drawn by the browser
 ([browser fonts](story-data-format.md#browser-fonts)): every character of the font family shows, laid out by
 TextMeshPro's rules with the base story's font settings. The other files (stages, talk window, shaders, the player

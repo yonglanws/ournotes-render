@@ -1,0 +1,1 @@
+{"format":1,"scene":[],"renderSettings":null,"prefabs":{"cameraManager":"fixture:camera","characterField":"fixture:field","backgroundField":"fixture:bg","globalVolume":"fixture:volume"},"settings":{"playerSettings":"fixture:player","masterIdSettings":"fixture:ids"},"graphics":{"graphics":"fixture:graphics"},"bindings":{},"shaders":{}}

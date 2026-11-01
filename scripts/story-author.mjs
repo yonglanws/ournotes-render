@@ -22,8 +22,6 @@
 //                                                       window comes with a fix that breaks or splits it
 //     build   <script> --name <name>                    writes the story into the site: custom-stories/<name>.json
 //                                                       and its assets under assets/
-//     serve   [--port <n>]                              serves the package and the site on 127.0.0.1 to watch the
-//                                                       built stories in examples/story; runs until stopped
 //   --site <dir>       the story site (default: the OURNOTES_SITE environment variable)
 //   --chrome <path>    the browser for pictures (default: CHROME_PATH, else an installed Chrome, Chromium or Edge)
 //   --gpu              draw with the GPU (default: SwiftShader, the same pictures on every machine)
@@ -44,7 +42,7 @@ import { Site, SiteError } from "./lib/story-author/site.js";
 class UsageError extends Error {}
 
 const VALUE_OPTIONS = new Set(["site", "lang", "out", "from", "to", "width", "settle", "name", "search", "limit", "chrome",
-                               "core", "timeout", "port", "columns", "fix"]);
+                               "core", "timeout", "columns", "fix"]);
 const FLAG_OPTIONS = new Set(["gpu", "help"]);
 
 const parseArgs = (argv) => {
@@ -344,21 +342,7 @@ const commands = {
     const rel = `custom-stories/${name}.json`, file = site.file(rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, `${JSON.stringify(manifest)}\n`);
-    return { ok: true, manifest: rel, file, assetsAdded: added, lines: k.lines.length, warnings: c.warnings,
-             play: `examples/story/index.html?src=<site URL>/${rel}` };
-  },
-
-  async serve({ opts }) {
-    const site = openSite(opts);
-    const server = await startServer({ site: site.dir, port: int(opts, "port", 0) });
-    const dir = site.file("custom-stories");
-    const stories = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort() : [];
-    process.stdout.write(`${pretty({ ok: true, url: server.url, stories: stories.map((f) =>
-      `${server.url}/examples/story/index.html?src=/site/custom-stories/${encodeURIComponent(f)}`) })}\n`);
-    log("serving; stop with Ctrl+C");
-    await new Promise((r) => process.once("SIGINT", r));
-    await server.close();
-    return null;
+    return { ok: true, manifest: rel, file, assetsAdded: added, lines: k.lines.length, warnings: c.warnings };
   },
 };
 

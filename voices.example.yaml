@@ -1,0 +1,54 @@
+# =============================================================================
+# voices.yaml —— 本项目自己的音色表（不使用 AstrBot 的配置格式）
+# =============================================================================
+# 在 config.yaml 里写：
+#   tts:
+#     voicesFile: "voices.yaml"
+#
+# 路径都是 GPT-SoVITS 服务端看到的路径（例如 /srv/gpt-sovits/...），不是本机路径。
+# 先用 `npm run tts:check` 检查列表，再 `npm run tts:check -- --synthesize` 逐角色试音。
+# 参考音频要求：干净人声、5~15 秒、与 promptText 逐字一致；promptText 错了会明显影响音色。
+# 完整说明见 docs/tts.md。
+
+# 没有单独配置的角色使用这个音色。可以只写 refAudioPath；promptText 建议写。
+defaultVoice:
+  refAudioPath: /srv/gpt-sovits/refs/default.wav
+  promptText: 参考音频里说的话
+  promptLang: ja
+
+voices:
+  - name: 高松灯
+    # 模型名、角色卡的日文名、罗马音都可以；匹配时忽略空格和常见简繁/日文异体字。
+    aliases: [灯, 高松燈, tomori]
+    refAudioPath: /srv/gpt-sovits/refs/tomori.wav
+    promptText: そよちゃんだけじゃなくて、みんなとも共感できるところがあるんじゃないかって
+    promptLang: ja
+    # 可选：GPT / SoVITS 权重。配置了权重的角色会让并发自动变成 1（服务端一次只加载一组权重）。
+    gptWeightsPath: /srv/gpt-sovits/models/tomori/tomori.ckpt
+    sovitsWeightsPath: /srv/gpt-sovits/models/tomori/tomori.pth
+    # 可选：角色级语速/采样参数，覆盖 config.yaml 的全局值。
+    speedFactor: 1.0
+    fragmentInterval: 0.44
+    # 可选：情绪参考音频。没有对应情绪时使用全局 presets 的语速/温度。
+    emotions:
+      - label: 开心喜悦
+        refAudioPath: /srv/gpt-sovits/refs/tomori-happy.wav
+        promptText: うれしい！ありがとう！
+        promptLang: ja
+      - label: 低落悲伤
+        refAudioPath: /srv/gpt-sovits/refs/tomori-sad.wav
+        promptText: どうして……なんで……
+        promptLang: ja
+
+  - name: 长崎素世
+    aliases: [素世, 長崎そよ, soyo]
+    refAudioPath: /srv/gpt-sovits/refs/soyo.wav
+    promptText: もう、しょうがないわね
+    promptLang: ja
+    gptWeightsPath: /srv/gpt-sovits/models/soyo/soyo.ckpt
+    sovitsWeightsPath: /srv/gpt-sovits/models/soyo/soyo.pth
+    emotions:
+      - label: 温柔亲近
+        refAudioPath: /srv/gpt-sovits/refs/soyo-kind.wav
+        promptText: 大丈夫よ、ゆっくりでいいから
+        promptLang: ja

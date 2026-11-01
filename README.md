@@ -1,127 +1,116 @@
-# ournotes-player
+# ournotes-render
 
-[简体中文](README.md) | [English](README.en.md)
+**无头、纯 API 的 Our Notes 风格 Live2D 剧情视频渲染框架。**
 
-在浏览器中播放 BanG Dream! Our Notes 的 Live 谱面、剧情和 Live2D 模型。播放器通过 WebGL2 运行数据中的游戏
-着色器，通过 WebAudio 播放声音。可作为自定义元素、JavaScript API 或 iframe 页面嵌入。
+输入一句场景描述或一份 `ournotes.story-script/1` 导演脚本，后端完成 **AI 选角 → 台词 → 分镜 → TTS 配音 →
+剧情编译 → 无头 Chrome 逐帧渲染 → 混音 → MP4**，通过 HTTP 返回视频。画面使用本仓库的剧情引擎
+（游戏自己的 13:6 对话框、Live2D 着色器、舞台与相机），不是另画一套 UI。
 
-**0.2.0** 读取 **nnnotes 0.3.x** 生成的共享对象产物，也支持格式 2 的谱面和 Live2D 模型站点。
-游戏数据由各用户自行提供；[nnnotes](https://github.com/MetaSekaiLab/nnnotes) 从用户自己的游戏文件生成产物和静态站点。
+本仓库只保留视频渲染框架：谱面播放、UI 预览、浏览器播放器与 AstrBot 插件等无关功能已移除。机器人或任何客户端
+只需调用 HTTP API。
 
-## 安装与嵌入
+## 特性
 
-```sh
-npm install ournotes-player@0.2.0
-```
+- **官方 ADV 风格演出**：`scene` / `positions` / `say` / `narrate` / `camera` / `fade` / `pause` / `action`。
+  AI 会写镜头焦点（角色/站位/构图点 1~9）、远近、`track` 横移、视线、Live2D 动作与表情、台词前的听者反应
+  （`actions` 的 `at: 0`）、黑场与留白。提示词按官方剧情实测：双人戏 36~44 句、每 3~4 句切一次镜头、约 1.1 个
+  动作/句、表情挂在动作上、双人戏常用 `lookAt`，并按 30 部官方剧情的镜头分布安排近景与群像。
+  格式与规则见[导演脚本](docs/story-director.md)。
+- **后端一体化**：队列、AI 选角/台词/分镜、TTS、校验/修复、渲染、混音、编码全部在 `host/`；客户端只提交和取结果。
+  默认 `staged` 管线把完整角色提示词只放进台词轮，台词定稿后分镜只能引用 `line` id，改不动台词。
+- **确定性渲染**：固定 1/30 秒虚拟时钟步进，音频由页面上报的事件在虚拟时间轴重建，渲染速度不影响成片节奏。
+- **两种数据源**：nnnotes 产品站点（`nnnotes.product/1`）用于 AI 队列 + TTS；bdon.moe 公开站点
+  （`ournotes.story-manifest/2`）可下载后直接渲染，或用 `ai-site-story` 让 AI 写脚本、合成 TTS 并编译回站点。
+- **安全默认值**：密钥只从环境变量读取；下载/请求 URL 只允许 http/https，拒绝 localhost、环回、私有与保留地址；
+  API 可选 Bearer 鉴权，CORS 默认关闭。
 
-使用打包工具时导入 `ournotes-player/element`。普通 HTML 页面可以直接加载：
+## 快速开始
 
-```html
-<script type="module" src="https://cdn.jsdelivr.net/npm/ournotes-player@0.2.0/dist/ournotes-player.element.min.js"></script>
-<ournotes-player src="https://example.org/site/charts/100001_expert.json" controls></ournotes-player>
-```
-
-先按[快速开始](docs/getting-started.md)准备站点，再参阅[嵌入与托管](docs/embedding.md)。
-音频从用户操作开始播放，游戏数据通过 HTTP(S) 提供。
-
-## 组件
-
-| 内容 | 自定义元素 | JavaScript 模块 | API |
-|---|---|---|---|
-| Live 谱面 | `<ournotes-player>` | `ournotes-player` | [ChartPlayer](docs/api.md) |
-| 剧情 | `<ournotes-story>` | `ournotes-player/story` | [StoryPlayer](docs/story.md) |
-| Live2D 模型 | `<ournotes-live2d>` | `ournotes-player/live2d` | [ModelPlayer](docs/live2d.md) |
-| 实验性 UI 预览 | `<ournotes-ui>` | `ournotes-player/ui` | [UIPlayer](docs/ui-preview.md) |
-
-各模块都有自动注册自定义元素的 `/element` 入口。`dist/` 提供 ESM、自动注册元素的 ESM 和经典脚本，
-同时提供压缩文件和 source map。经典脚本的全局对象为 `OurnotesPlayer`、`OurnotesStory`、`OurnotesLive2D`、`OurnotesUI`。
-
-Live2D 需要 Cubism Core；剧情口型可能需要 MotionSync Core；据点对话需要 Spine 运行时。
-嵌入页面应按各自许可取得这些运行时，并在创建播放器前加载，详见[运行时配置](docs/getting-started.md#browser-runtimes)。
-
-## 播放功能
-
-- **Live 谱面**：自动 Perfect 演奏、舞台与音符、特效、判定 UI、音频、跳转、速度和数据支持的 Live 设置。
-  模拟采用固定 60 Hz 时钟和 float32 运算。
-- **剧情**：ADV 命令、场景与镜头特效、Live2D、本地化文本、视频及音频。据点与演出结束对话使用对应宿主产物。
-  语言选择器列出产物实际提供的语言。
-- **Live2D**：待机、表情、眨眼、呼吸与物理，使用模型的着色器数据。
-- **UI 预览**：通过 Canvas 2D 查看 `nnnotes export ui` 产物的布局和部分动画。
-
-支持范围见[还原程度](docs/fidelity.md)、[剧情功能](docs/story-features.md)和[简易剧情](docs/story-simple.md)。
-
-## 剧情编写工具（实验性）
-
-`scripts/story-author.mjs` 是随仓库提供的命令行工具，用 JSON 脚本制作自定义对话剧情：脚本指定一集已有剧情作为场景底本（背景、音乐、对话框与播放设置）、站点里的 Live2D 模型和每一句台词；工具检查脚本，用剧情播放器把每句台词画成 PNG，再把剧情写入站点，由播放器播放。每条命令向标准输出打印一个 JSON 对象，进度写到标准错误，方便程序和智能体调用。脚本格式和命令在版本之间可能变化。
-
-直接克隆仓库即可使用，不需要先构建：
+需要 Node.js 22+、Chrome/Chromium/Edge、ffmpeg（根目录 `npm install` 的 `ffmpeg-static` 自带；下载失败时把
+`video.ffmpegPath` 指向系统 ffmpeg）。
 
 ```sh
-git clone https://github.com/empty-sekai/ournotes-player.git
-cd ournotes-player
-S=--site=path/to/site                                         # 含 stories.json 与 models.json 的站点目录，也可设 OURNOTES_SITE
-node scripts/story-author.mjs bases $S                         # 列出可作底本的剧情
-node scripts/story-author.mjs new stories/10002.json $S > story.json   # 生成起始脚本，然后编辑 story.json
-node scripts/story-author.mjs check story.json $S              # 检查，错误与警告带 JSON 指针
-node scripts/story-author.mjs render story.json $S --out shots # 每句台词一张图，加一张总览 shots/sheet.png
-node scripts/story-author.mjs build story.json $S --name my-story   # 写入站点的 custom-stories/
-node scripts/story-author.mjs serve $S                         # 打印可在 examples/story 播放的地址
+npm install                    # 根目录一次安装；host 是 npm workspace
+cp config.example.yaml config.yaml
+# 编辑 config.yaml 中标了 ← 的 paths.site / llm / tts
+npm run check                  # 配置、ffmpeg、Chrome、站点、音色一次检查
+npm start                      # API: http://127.0.0.1:9881
+
+curl -sS http://127.0.0.1:9881/api/v1/health
 ```
 
-需要 Node.js 22+。出图的命令（`render`，以及带 `--out` 的 `base`、`model`）需要本机装有 Chrome、Chromium 或 Edge（用 `--chrome <路径>` 或 `CHROME_PATH` 指定），并默认从 Live2D 官方分发地址加载 Cubism Core（需要网络，`--core` 可改用其他副本）。站点中的剧情需为剧情产物格式（`nnnotes.product/1`），见[剧情数据](docs/story-data-format.md)。
-全部命令、脚本格式、错误码与自动修复见[剧情编写工具](docs/story-author.md)。让智能体使用这个工具时，可以把[操作流程](skills/story-author/SKILL.md)（Agent Skills 格式的 `SKILL.md`，英文）交给它。
-
-## 生成与校验数据
-
-配置好 nnnotes 的输入，并安装字体与音频工具后：
+TTS 音色表是本项目自己的格式：角色少时写在 `tts.voices`，角色多时用 `tts.voicesFile: voices.yaml`
+（模板见 `voices.example.yaml`）。不再读取 AstrBot 等外部机器人的配置；配置与试音步骤见
+[TTS 配置与试音](docs/tts.md)。
 
 ```sh
-nnnotes site build --name example -o out/site --pair 100001:expert --fonts game --player node_modules/ournotes-player
-node node_modules/ournotes-player/scripts/validate-data.mjs out/site
+npm run tts:check                          # 列出音色表
+npm run tts:check -- --synthesize          # 每个音色合成一句到 output/tts-check/
 ```
 
-站点包含谱面、模型和剧情索引，公开入口清单，不可变产物清单及共享资源；播放器也可以读取独立产物布局。
-[数据格式](docs/data-format.md)与[剧情格式](docs/story-data-format.md)说明具体契约。
-校验器检查 Schema 和引用关系；浏览器播放用于检查画面及托管配置。
+生成视频：
 
-## 文档与示例
+```sh
+curl -sS -X POST http://127.0.0.1:9881/api/v1/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"放学后的教室里，灯和爽世聊起下次 Live","timeout":1800000}'
+```
+
+异步调用（推荐给机器人）：请求加 `"wait": false`，轮询 `GET /api/v1/tasks/:id`，
+完成后从 `GET /api/v1/download/<file>` 取 MP4。完整端点、字段与配置见[渲染宿主](docs/host.md)。
+
+## 下载公开资源并渲染
+
+不需要 AI/TTS，也不需要自己构建站点：
+
+```sh
+# 下载 bdon.moe 的一集剧情、UI/字体、BGM/SE/语音和 Live2D 模型
+node host/tools/fetch-story.mjs --adv 10610 --lang ja --out resources/site
+
+# 直接渲染这一集
+node host/tools/render-story.mjs --site resources/site --story stories/10610.json --lang ja \
+  --core resources/site/vendor/live2dcubismcore.min.js \
+  --motionsync resources/site/vendor/live2dcubismmotionsynccore.min.js \
+  --out output --job bdon-10610
+```
+
+渲染一份带镜头焦点、`track` 横移、站位换组、动作和听者反应的导演脚本：
+
+```sh
+node host/tools/site-story.mjs --site resources/site --base stories/10610.json \
+  --script host/fixtures/director-demo.json --adv 90001 --lang ja --title "ライブのあとで"
+node host/tools/render-story.mjs --site resources/site --story stories/90001.json --lang ja \
+  --core resources/site/vendor/live2dcubismcore.min.js \
+  --motionsync resources/site/vendor/live2dcubismmotionsynccore.min.js \
+  --out output --job director-demo
+```
+
+资源只落在 `resources/`（已忽略），仓库不重新分发游戏数据或 Live2D 运行时。
+
+## 文档
 
 | 主题 | 文档 |
-|---|---|
-| 安装与第一个站点 | [快速开始](docs/getting-started.md) |
-| 嵌入、运行时、CORS、缓存与压缩 | [嵌入](docs/embedding.md) |
-| Live API 与设置 | [API](docs/api.md) |
-| 剧情、语言、媒体与控制 | [剧情 API](docs/story.md) |
-| 命令行制作自定义对话（实验性） | [剧情编写工具](docs/story-author.md) |
-| Live2D API | [Live2D](docs/live2d.md) |
-| 产物与站点契约 | [数据格式](docs/data-format.md)、[剧情数据](docs/story-data-format.md) |
-| UI 与口型 | [UI 预览](docs/ui-preview.md)、[CRI Lips](docs/crilips.md) |
-| 性能分析 | [性能](docs/performance.md) |
-
-示例页面：[谱面](examples/chart-list)、[模型](examples/live2d)、[剧情列表](examples/story-list)、
-[单集剧情](examples/story)、[歌曲统计](examples/songs)和 [UI](examples/ui)。
+| --- | --- |
+| 无头 API、队列、AI、TTS、部署、安全 | [渲染宿主](docs/host.md) |
+| TTS 音色表、参考音频、权重、情绪、试音 | [TTS 配置与试音](docs/tts.md) |
+| 导演脚本、镜头/动作/听者反应、AI 分镜规则 | [导演脚本](docs/story-director.md) |
+| 命令行编写、校验、构建、分镜图 | [剧情编写工具](docs/story-author.md) |
+| 剧情数据结构、字体、音频、模型 | [剧情数据格式](docs/story-data-format.md) |
+| 剧情引擎支持范围 | [剧情功能](docs/story-features.md) |
+| CRI Lips 口型 | [CRI Lips](docs/crilips.md) |
 
 ## 开发
 
-需要 Node.js 22+：
-
 ```sh
-npm ci
-npm test
-npm run typecheck
+npm test                  # 引擎/剧情/Live2D/导演脚本
+npm run test:host         # 队列/AI/TTS/混音/API/浏览器
 npm run lint
-npm run contract:check
-npm run build
 ```
 
-单元测试使用合成输入。`npm run validate-data -- path/to/site` 校验提供的数据目录；可选数据测试使用
-`OURNOTES_DATA` 和 `npm run test:data`。开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+真实剧情/导演脚本的端到端测试需要下载站点并设置 `OURNOTES_E2E_SITE`、`OURNOTES_E2E_CORE`，见
+[渲染宿主](docs/host.md#测试)。
 
-## 浏览器与许可
+## 许可
 
-需要 WebGL2、WebAudio、ES2022 模块、Custom Elements 和 ResizeObserver，浏览器还需支持数据使用的音视频格式。
-主要播放目标是 Chromium 浏览器；brotli 资源的响应头要求见[托管说明](docs/embedding.md#hosting-the-data)。
-
-这是非官方爱好者项目，与游戏开发或运营方无关。游戏资源和商标归各自权利人所有。
-项目采用 [AGPL-3.0-only](LICENSE)，通过 npm 分发的原样浏览器包另有[浏览器嵌入例外](LICENSE-EXCEPTION)。
-修改播放器及在服务端使用仍受完整许可约束。
+本项目基于 [empty-sekai/ournotes-player](https://github.com/empty-sekai/ournotes-player)（AGPL-3.0-only）。
+游戏资源、商标、Live2D Cubism Core、LLM 与 TTS 服务分别受各自许可约束；本仓库不附带这些资源。

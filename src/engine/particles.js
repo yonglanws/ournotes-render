@@ -30,7 +30,7 @@ import { GLTex } from "./texture.js";
 // Systems with autoRandomSeed = false (lane effects, randomSeed 0) get their own stream re-seeded on each Play, as
 // Unity does, but the order in which the native code draws from it is not known, so values still differ.
 //
-// Frame model: the effect views (e.g. src/live/fx-effects.js) call play/stop/clear/onActiveChanged from the update /
+// Frame model: the effect views (src/story/fx-sprite.js, src/story/features/effect.js) call play/stop/clear/onActiveChanged from the update /
 // animation phases and simulate(dt) once per frame in the animation phase (after the Animators); drawItem(camera) in
 // the render hook. Coffee UIParticle hosts instead keep the systems paused and call fastForward(dt, false, false, false)
 // (ParticleSystem.Simulate) and bake(camera) (ParticleSystemRenderer.BakeMesh) per frame. Hosts link the Sub Emitters

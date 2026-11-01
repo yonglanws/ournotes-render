@@ -91,4 +91,4 @@ A setting outside the implemented subset is reported with its object or node pat
 ## Engine behaviour
 
 Engine behaviour the game's code does not show (DOTween settings, uGUI layout, CRI video and sound, URP render
-targets, particle simulation) is marked `ENGINE:` in the sources and listed in [fidelity.md](fidelity.md).
+targets, particle simulation) is marked `ENGINE:` in the sources.

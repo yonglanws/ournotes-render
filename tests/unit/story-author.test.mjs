@@ -114,7 +114,7 @@ test("the shape of a script: every problem names its JSON pointer, unknown names
     format: "x", base: "stories/9.json", langauge: "en", font: "comic",
     cast: { a: { model: "m_a", name: "Ann" }, "2x": { model: "m", name: "n" }, c: { model: "m_b" } },
     beats: [
-      { scene: "garden", camera: "close", positions: { a: "middle", b: { at: "left", mood: 1 } } },
+      { scene: "garden", camera: "clos", positions: { a: "middle", b: { at: "left", mood: 1 } } },
       { say: "a", txt: "hi" }, { narate: "x" }, { narrate: " " }, { id: "x", narrate: "1" }, { id: "x", narrate: "2" }, 3,
     ],
   });
@@ -125,7 +125,8 @@ test("the shape of a script: every problem names its JSON pointer, unknown names
     ["/beats/2", "beatKind"], ["/beats/3/narrate", "empty"], ["/beats/5/id", "duplicateId"], ["/beats/6", "type"],
   ]);
   assert.equal(errors[1].suggestion, "language");
-  assert.deepEqual(errors[5].expected, ["near", "middle", "far"]);
+  assert.deepEqual(errors[5].expected, ["near", "middle", "far", "close", "very-close"]);
+  assert.equal(errors[5].suggestion, "close");
   assert.deepEqual(errors[6].expected, ["far-left", "left", "center", "right", "far-right"]);
   assert.equal(errors[8].suggestion, "text");
   assert.deepEqual(parseScript([]).errors, [{ path: "", code: "type", message: "a script is a JSON object" }]);
@@ -177,10 +178,10 @@ test("a scene compiles to the game's rows: stage, music, entrances, focus, capti
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 5, CameraDistance: 1 },
     { cmd: "Location", AdvTextID: "custom_location_0" },
-    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", ExpressionName: "exp_smile01" },
+    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: -1, ExpressionName: "exp_smile01" },
     { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"], TargetTextColors: ["#FFFFFF"] },
     { cmd: "Talk", AdvTextID: "custom_line_2" },
-    { cmd: "Expression", TargetName: "a", ExpressionName: "exp_idle01" },
+    { cmd: "Expression", TargetName: "a", ExpressionName: "exp_idle01", MotionFadeIn: -1 },
     { cmd: "Talk", AdvTextID: "custom_line_3", TargetName: "a", TargetTextIDs: ["custom_name_a"], TargetTextColors: ["#FFFFFF"] },
   ]);
   const raw = { Character: 23, Stage: 25, Bgm: 15, In: 0, Focus: 7, Location: 20, Motion: 21, Talk: 2, Expression: 17 };
@@ -221,7 +222,7 @@ test("a second scene fades out, clears the stage and fades in; a positions beat 
     // each Out waits for its fade, then the entrance on the new position
     { cmd: "Out", TargetName: "a", PositionType: 3, Duration: 0.2 },
     { cmd: "In", TargetName: "a", PositionType: 5, Duration: 0.2, IsNoWait: 1 },
-    { cmd: "Expression", TargetName: "b", ExpressionName: "exp_idle01" },
+    { cmd: "Expression", TargetName: "b", ExpressionName: "exp_idle01", MotionFadeIn: -1 },
     { cmd: "Focus", PositionType: 6, CameraDistance: 3, Duration: 0.5, IsNoWait: 1 },
     { cmd: "Talk", AdvTextID: "custom_line_2", TargetName: "b", TargetTextIDs: ["custom_name_b"], TargetTextColors: ["#FFFFFF"] },
     { cmd: "FadeOut", Duration: 1 },
@@ -239,6 +240,151 @@ test("a second scene fades out, clears the stage and fades in; a positions beat 
   assert.equal(c.scenes, 2);
 });
 
+test("director beats compile to focus, timed actions, fades, pauses and silent acting", () => {
+  const c = compiled(script([
+    { scene: "garden", camera: "far", focus: "a", positions: { a: "left", b: "right" } },
+    { say: "a", text: "Look.", focus: "b", camera: "near", motion: "mtn_smile01",
+      actions: [{ at: 0.45, cast: "b", expression: "exp_idle01" }, { at: 0.6, cast: "a", lookAt: "b" }] },
+    { action: "b", expression: "exp_idle01", lookAt: "a", duration: 0.4 },
+    { fade: "out", duration: 0.8 },
+    { pause: 0.5 },
+    { camera: "far", focus: "a", duration: 1 },
+    { scene: "st/hall", positions: { b: "center" } },
+    { narrate: "Wind.", actions: [{ at: 0.5, cast: "b", expression: "exp_idle01" }] },
+  ]));
+  assert.deepEqual(strip(c.episode.commands).slice(2), [
+    { cmd: "Stage", TargetAssetName: "st/garden" },
+    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_L" },
+    { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 3, CameraDistance: 3 },
+    // the line's own camera (a wider distance eases back over 1.2 s), then the speaker's motion and the reactions
+    { cmd: "Focus", PositionType: 7, CameraDistance: 1, Duration: 1.2, IsNoWait: 1 },
+    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: -1 },
+    { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"], TargetTextColors: ["#FFFFFF"],
+      HostActions: [{ at: 0.45, TargetName: "b", MotionFadeIn: 0.15, ExpressionName: "exp_idle01" },
+                    { at: 0.6, TargetName: "a", MotionFadeIn: 0.15, LookTargetPosition: 7 }] },
+    // a silent reaction shot, then the transitions
+    { cmd: "Expression", TargetName: "b", ExpressionName: "exp_idle01", MotionFadeIn: -1 },
+    { cmd: "LookTarget", TargetName: "b", PositionType: 3, Duration: 0.2, IsNoWait: 1 },
+    { cmd: "Delay", Duration: 0.4 },
+    { cmd: "FadeOut", Duration: 0.8 },
+    { cmd: "Delay", Duration: 0.5 },
+    { cmd: "Focus", PositionType: 3, CameraDistance: 3, Duration: 1, IsNoWait: 1 },
+    // the second scene: fade, clear, stage, entrance, focus, fade in
+    { cmd: "FadeOut", Duration: 1 },
+    { cmd: "Out", TargetName: "a", PositionType: 3 },
+    { cmd: "Out", TargetName: "b", PositionType: 7 },
+    { cmd: "Stage", TargetAssetName: "st/hall" },
+    { cmd: "In", TargetName: "b", PositionType: 5, IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 5, CameraDistance: 2 },
+    { cmd: "FadeIn", Duration: 1 },
+    { cmd: "Talk", AdvTextID: "custom_line_7",
+      HostActions: [{ at: 0.5, TargetName: "b", MotionFadeIn: 0.15, ExpressionName: "exp_idle01" }] },
+  ]);
+});
+
+test("official close-ups: 2.8x and 4x, cut in, ease back, and a cast focus aims at its slot", () => {
+  const c = compiled(script([
+    { scene: "garden", camera: "middle", focus: 5, positions: { a: "left", b: "right" } },
+    { say: "a", text: "One." },
+    { say: "b", text: "Two.", focus: "b", camera: "close" },          // 2 -> 4: hard cut to b's slot
+    { say: "a", text: "Three.", focus: "a", camera: "close" },        // 4 -> 4 across: hard cut
+    { say: "b", text: "Four.", focus: 5, camera: "middle" },          // 4 -> 2: ease back
+    { say: "a", text: "Five.", focus: "b" },                          // 2 -> 2 across: 0.5 s pan
+    { say: "b", text: "Six.", focus: "a", camera: "very-close" },     // 2 -> 5: hard cut
+  ]));
+  const focusRows = strip(c.episode.commands).filter((r) => r.cmd === "Focus");
+  assert.deepEqual(focusRows, [
+    { cmd: "Focus", PositionType: 5, CameraDistance: 2 },
+    { cmd: "Focus", PositionType: 7, CameraDistance: 4, IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 3, CameraDistance: 4, IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 5, CameraDistance: 2, Duration: 1.2, IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 7, CameraDistance: 2, Duration: 0.5, IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 3, CameraDistance: 5, IsNoWait: 1 },
+  ]);
+});
+
+test("a slow zoom compiles to a Zoom row, with the beat's duration or 4 s", () => {
+  const c = compiled(script([
+    { scene: "garden", camera: "middle", focus: 5, positions: { a: "left", b: "right" } },
+    { say: "a", text: "One.", zoom: 1.06, zoomDuration: 4 },
+    { say: "b", text: "Two.", zoom: 0.94 },
+    { camera: "close", focus: "a", zoom: 1.1, duration: 2 },
+  ]));
+  const zoomRows = strip(c.episode.commands).filter((r) => r.cmd === "Zoom");
+  assert.deepEqual(zoomRows, [
+    { cmd: "Zoom", Parameter1: "1.06", Duration: 4, IsNoWait: 1 },
+    { cmd: "Zoom", Parameter1: "0.94", Duration: 4, IsNoWait: 1 },
+    { cmd: "Zoom", Parameter1: "1.1", Duration: 2, IsNoWait: 1 },
+  ]);
+  const bad = parseScript({ format: SCRIPT_FORMAT, base: "b", cast: {}, beats: [
+    { say: "a", text: "x", zoom: 2 }, { say: "a", text: "y", zoomDuration: 3 },
+  ] }).errors;
+  assert.deepEqual(bad.map((e) => e.code), ["range", "empty"]);
+});
+
+test("track, focus points and pre-line reactions compile to the game's continuous staging", () => {
+  const c = compiled(script([
+    { scene: "garden", camera: { distance: "far", focus: 5, track: 0.5 }, positions: { a: "left", b: "right" } },
+    { say: "a", text: "Look.", focus: 2, camera: "middle", track: -0.3, motion: "mtn_smile01", lookAt: "b",
+      actions: [{ at: 0, cast: "b", expression: "exp_idle01" }, { at: 0.5, cast: "a", lookAt: "b" }] },
+    { positions: { b: "center" }, track: 0.2 },
+  ]));
+  assert.deepEqual(strip(c.episode.commands).slice(2), [
+    { cmd: "Stage", TargetAssetName: "st/garden" },
+    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_L" },
+    { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
+    // the scene establishes a two-shot with a focus point between the two slots plus a pan
+    { cmd: "Focus", PositionType: 5, CameraDistance: 3 },
+    { cmd: "Track", Parameter1: "0.5", IsNoWait: 1 },
+    // the line eases from the group to a focus point between far-left and left over 1.2 s, pans with it, reacts,
+    // then speaks and looks over
+    { cmd: "Focus", PositionType: 2, CameraDistance: 2, Duration: 1.2, IsNoWait: 1 },
+    { cmd: "Track", Parameter1: "-0.3", Duration: 1.2, IsNoWait: 1 },
+    { cmd: "Expression", TargetName: "b", ExpressionName: "exp_idle01", MotionFadeIn: -1 },
+    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: -1 },
+    { cmd: "LookTarget", TargetName: "a", PositionType: 7, Duration: 0.2, IsNoWait: 1 },
+    { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"], TargetTextColors: ["#FFFFFF"],
+      HostActions: [{ at: 0.5, TargetName: "a", MotionFadeIn: 0.15, LookTargetPosition: 7 }] },
+    // the group changes: the camera follows the new center and pans
+    { cmd: "Out", TargetName: "a", PositionType: 3, Duration: 0.2 },
+    { cmd: "Out", TargetName: "b", PositionType: 7, Duration: 0.2 },
+    { cmd: "In", TargetName: "b", PositionType: 5, Duration: 0.2, IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 5, CameraDistance: 2, Duration: 0.5, IsNoWait: 1 },
+    { cmd: "Track", Parameter1: "0.2", Duration: 0.5, IsNoWait: 1 },
+  ]);
+});
+
+test("every motion and expression cross-fades from the pose on screen", () => {
+  const c = compiled(script([
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    { say: "a", text: "One.", motion: "mtn_smile01", expression: "exp_smile01",
+      actions: [{ at: 0, cast: "a", motion: "mtn_nod01" }] },
+    { positions: { a: { at: "left", motion: "mtn_nod01" }, b: "right" } },
+    { action: "a", motion: "mtn_nod01" },
+  ]));
+  const animated = strip(c.episode.commands).filter((r) => r.cmd === "Motion" || r.cmd === "Expression");
+  // the pre-line reaction, the speaker's motion, a staying position's motion and the silent action
+  assert.equal(animated.length, 4);
+  assert.ok(animated.every((r) => r.MotionFadeIn === -1), JSON.stringify(animated));
+});
+
+test("director names are checked: focus, actions and lookAt need a cast member on stage", () => {
+  const { errors, warnings } = checked(script([
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    { say: "a", text: "x", focus: "b", actions: [{ at: 0.5, cast: "b", expression: "exp_nope" }] },
+    { action: "b", lookAt: "missing" },
+    { say: "a", text: "y", actions: [{ at: 1.5, cast: "missing", motion: "mtn_smile01" }] },
+  ]));
+  assert.deepEqual(codes(errors), [
+    ["/beats/3/actions/0/at", "range"],
+    ["/beats/1/actions/0/expression", "unknownExpression"],
+    ["/beats/2/lookAt", "unknownLookAt"],
+    ["/beats/3/actions/0/cast", "unknownCast"],
+  ]);
+  assert.deepEqual(codes(warnings), []);
+});
+
 test("a script's problem names the fix that writes it in", () => {
   const { errors } = parseScript({
     format: SCRIPT_FORMAT, base: "b", cast: { a: { model: "m_a", name: "Ann" } },
@@ -254,7 +400,8 @@ test("a script's problem names the fix that writes it in", () => {
   assert.deepEqual(by["/beats/2/id"].fix, [{ op: "replace", path: "/beats/2/id", value: "x_2" }]);         // free id
   assert.equal(by["/beats/3/postions"].suggestion, undefined);       // no near name in this beat's keys
   assert.equal(by["/beats/3/postions"].fix, undefined);              // and so no fix
-  assert.deepEqual(by["/beats/3/postions"].expected, ["id", "narrate"]);
+  assert.deepEqual(by["/beats/3/postions"].expected,
+                   ["id", "narrate", "focus", "camera", "track", "zoom", "zoomDuration", "actions"]);
   assert.equal(parseScript({ format: SCRIPT_FORMAT, zzz: 1 }).errors[0].fix, undefined);
   // a key whose near name is taken is left alone: renaming onto it would lose a value
   const taken = parseScript({ format: SCRIPT_FORMAT, base: "b", cast: {},

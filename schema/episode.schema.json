@@ -279,6 +279,38 @@
             ]
           }
         },
+        "HostActions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "at",
+              "TargetName"
+            ],
+            "properties": {
+              "at": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "TargetName": {
+                "type": "string"
+              },
+              "MotionName": {
+                "type": "string"
+              },
+              "ExpressionName": {
+                "type": "string"
+              },
+              "MotionFadeIn": {
+                "type": "number"
+              },
+              "LookTargetPosition": {
+                "type": "integer"
+              }
+            }
+          }
+        },
         "MotionName": {
           "type": "string"
         },

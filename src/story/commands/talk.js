@@ -3,6 +3,7 @@ import { addLogEntry } from "../features/talklog.js";
 import { removeTagsKeepingRuby } from "../ui-talk.js";
 import { delayWithPauseSpeedAdjustment } from "./misc.js";
 import { beginVoicePlaybackScope } from "./voice.js";
+import { LookTarget } from "./character.js";
 import { CriLipsAnalyzer, CriLipsData } from "../../live2d/crilips/index.js";
 
 // Talk and Location, with the Talk command's voice routing and lip sync (AdvTalkVoicePlaybackHelper) and its
@@ -227,6 +228,49 @@ export const waitAutoPlayText = async (p, sounds, typing, talkLength) => {
   do await loop.yield("Update"); while (!p.cancelled && p.nextStep !== NEXT_GO);
 };
 
+// The length of a line's body on the loop's clock: the voice if it has one, else the typed text's hold, at least the
+// minimum display time. HostActions are spread over it, so an action at 0.4 lands at 40% of the line.
+export const lineBody = (p, sounds, talkLength) => {
+  const P = p.ctx.settings.player, speed = F(p.speedRate());
+  const unit = Number.isFinite(P._waitTalkTextUnitTime) ? P._waitTalkTextUnitTime : 0.04;
+  const after = Number.isFinite(P._waitAfterVoiceTime) ? P._waitAfterVoiceTime : 0.6;
+  const minimum = Number.isFinite(P._minTalkDisplayTime) ? P._minTalkDisplayTime : 1.6;
+  let voice = 0;
+  for (const info of sounds) if (Number.isFinite(info.end)) voice = Math.max(voice, F(info.end - info.t0));
+  const base = voice > 0 ? F(voice + F(after / speed)) : F(F(unit * talkLength) / speed);
+  return Math.max(base, F(minimum / speed));
+};
+
+// HostActions: timed acting inside a Talk row (the story script's `actions`). The rows name the resolved Live2D clip /
+// expression and the cast member; the scheduler runs while the line is on screen and stops with the line. It starts
+// even in manual advance (a player can watch a listener react while the line waits for a tap).
+export const startHostActions = (p, c, body) => {
+  let done = false;
+  const list = [...(c.HostActions || [])]
+    .filter((a) => a && typeof a.at === "number" && Number.isFinite(a.at))
+    .sort((a, b) => a.at - b.at);
+  if (!list.length) return () => {};
+  const loop = p.ctx.loop, start = loop.time;
+  const run = async () => {
+    for (const a of list) {
+      const at = Math.max(0, Math.min(1, a.at)) * Math.max(0, body);
+      while (!done && !p.cancelled && loop.time < start + at) await loop.yield("Update");
+      if (done || p.cancelled) return;
+      const ch = p.ctx.characters.get(a.TargetName);
+      if (!ch || !ch.isShowing) continue;
+      if (a.MotionName) {
+        p.motions.playMotion(ch, { TargetName: a.TargetName, MotionName: a.MotionName,
+                                   ExpressionName: a.ExpressionName || "", MotionFadeIn: a.MotionFadeIn || 0 }, p.shortcut);
+      } else if (a.ExpressionName) {
+        ch.playExpression(a.ExpressionName, p.shortcut ? 0 : (a.MotionFadeIn || 0));
+      }
+      if (a.LookTargetPosition) LookTarget({ TargetName: a.TargetName, PositionType: a.LookTargetPosition }, p).catch(() => {});
+    }
+  };
+  run().catch((e) => { if (!p.cancelled) console.warn(`HostActions: ${e && e.message ? e.message : e}`); });
+  return () => { done = true; };
+};
+
 // AdvTalkCommand (IsNoWait is not read): the line goes to the talk log (also while shortcutting), then shows in the
 // talk window with its voices; then the player's tap (manual) or the auto-advance timing. A tap while the typewriter
 // runs reveals the line and waits once more.
@@ -252,6 +296,7 @@ export const Talk = (c, p) => (async () => {
   p.lineIndex++;
   if (p.onLine) p.onLine({ index: p.lineIndex, row: c.i, speaker, text });
   const sounds = [];
+  let stopActions = () => {};
   try {
     if (!c.TargetName) {
       for (const id of voices) tryPlayVoice(p, id, sounds, null);       // narration: voices without lip sync
@@ -259,10 +304,17 @@ export const Talk = (c, p) => (async () => {
       const names = c.TargetName.split(ctx.settings.player._targetNameSplitKey);   // SplitTargetNames
       const mode = (c.Parameter1 ?? "").trim().toLowerCase();
       if (mode === "airlipsync") startAirLipSync(p, c, names, talkLength, false);
-      else if (mode === "everyonelipsync" && voices.length && s.withVoice) playEveryoneLipSyncVoices(p, c, sounds);
+      else if (mode === "airlipsync_voice") {
+        // host extension: play the line's voices without voice-driven mouth analysis, then run the game's timed air
+        // lip sync for the typed line; the renderer logs the voices for its audio mix
+        if (s.withVoice) for (const id of voices) tryPlayVoice(p, id, sounds, null);
+        startAirLipSync(p, c, names, talkLength, false);
+      } else if (mode === "everyonelipsync" && voices.length && s.withVoice) playEveryoneLipSyncVoices(p, c, sounds);
       else if (mode === "airlipsync_holdopen") startAirLipSync(p, c, names, talkLength, true);
       else playTalkMappedVoices(p, c, names, talkLength, sounds);
     }
+    // HostActions play on the line's own clock, beside the typewriter and the voice
+    stopActions = startHostActions(p, c, lineBody(p, sounds, talkLength));
     if (p.isAutoPlay) await waitAutoPlayText(p, sounds, typing, talkLength);
     // UniTask.WaitUntil(IsNextStepGoNext): the player's tap; in auto mode the step is already GoNext (one tick)
     await p.waitUntilGoNext();
@@ -274,6 +326,7 @@ export const Talk = (c, p) => (async () => {
       else await waitAutoPlayText(p, sounds, typing, talkLength);
     }
   } finally {
+    stopActions();
     p.nextStep = 0;                                                     // ChangeIdleState
   }
 })();

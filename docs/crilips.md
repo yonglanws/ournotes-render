@@ -128,5 +128,4 @@ weights are stored once for every story. See `docs/story-data-format.md` for `st
     to 16 kHz, which changes the pre-net samples (an input deviation);
   - the site audio is AAC (like charts), so the analysed PCM is the decoded voice.
 
-`docs/fidelity.md` is regenerated from the `// ENGINE:` notes by `node scripts/engine-notes.mjs
---write`.
+Engine behaviour that the game implements natively is marked `// ENGINE:` in the source.

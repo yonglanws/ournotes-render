@@ -1,0 +1,19 @@
+{
+  "name": "ournotes-render-host",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Headless pure-API ournotes-style Live2D video rendering host: queue, AI director, TTS and deterministic frames",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node main.js",
+    "test": "node --test \"tests/**/*.test.mjs\""
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "js-yaml": "^4.1.0",
+    "ournotes-player-site": "npm:ournotes-player@0.1.8"
+  }
+}

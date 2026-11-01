@@ -156,8 +156,8 @@ addresses, a `master` row and localized `title`. Each command has `i`, `cmd`, `r
 parameters. Text fields are `japanese`, `english`, `traditionalChinese`, `simplifiedChinese` and `korean`.
 
 The player combines these commands with the initialize/finalize commands of `AdvPlayerSettings`. Overlay episodes
-use the SimpleAdvPlayer command set. Playback behavior is described in [story.md](story.md) and
-[story-simple.md](story-simple.md).
+use the SimpleAdvPlayer command set. Playback behavior is described in [story features](story-features.md) and
+[the render host](host.md).
 
 ## scene.json
 
@@ -266,15 +266,3 @@ The afterlive host identifies the background image/sprite, reward panel and resu
 The same object id must have compatible metadata wherever it appears. Products may retain different file roles of
 that object, which merge into one object table. Two copies of the same role must agree. Animation bindings remain
 specific to a prefab and Animator path even when clips share names.
-
-## Validation
-
-```sh
-node scripts/validate-data.mjs <site-dir> [story-id ...]
-node scripts/validate-data.mjs <site-dir> 7 --lang=ja,en
-```
-
-By default, validation checks every declared language. `--lang` explicitly restricts language validation and the
-summary names that scope. Checks cover product identities, content-addressed files, shared objects, scene/UI/host
-references, animation binding tables, actual material shader variants, glyph pages, font fallbacks, cue waveforms,
-CRI Lips data bounds and model products. Rendered output is verified separately with a browser.

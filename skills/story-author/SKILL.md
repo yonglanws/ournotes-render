@@ -27,26 +27,67 @@ description: Write a custom dialogue story (characters, backgrounds, lines) for 
    music cues and cast, and writes `shots/stages.png`: look at it to choose a background by id.
 2. **Pick models.** `models --search <name>` lists the site's models. `model <id> --out shots` lists a model's
    motions (by stem, for example `mtn_smile01`) and expressions and draws them. Look at the pictures before choosing.
-3. **Start a script.** `new <manifest> > story.json`, then edit it (format in `docs/story-author.md`): a `cast` of
-   model ids with display names, and `beats`; the first beat is a `scene` with `positions`; later beats are `say`,
-   `narrate`, `positions` or another `scene`.
+3. **Start a script.** `new <manifest> > story.json`, then edit it (format in `docs/story-author.md` and
+   `docs/story-director.md`): a `cast` of model ids with display names, and `beats`; the first beat is a `scene` with
+   `positions`; later beats are `say`, `narrate`, `positions`, `camera`, `fade`, `pause`, `action` or another `scene`.
+   Add `focus` and `camera` for the shot, `track` to pan, `lookAt` for a gaze, `motion`/`expression` for the speaker,
+   and pre-line `actions` (`at: 0`) for listeners.
 4. **Check.** `check story.json`. Fix errors by `path` (a JSON pointer). `--fix <file>` applies the fixes the tool
    knows (nearest valid name, renamed key, text wrapped to the talk window) and checks again; read the diff of what
    it applied before trusting it.
 5. **Render and look.** `render story.json --out shots [--from n --to n]`, then open `shots/sheet.png` (every line with
-   speaker and text) and the `shots/line-<n>.png` of anything doubtful. Check who is on stage, the expression, and
-   that the text fits the talk window. `textTooWide` and `textTooTall` warnings carry fixes; breaking a line with `\n`
-   is yours to place where the sentence reads well.
+   speaker and text) and the `shots/line-<n>.png` of anything doubtful. Check who is on stage, the expression, the
+   camera focus, and that the text fits the talk window. `textTooWide` and `textTooTall` warnings carry fixes; breaking
+   a line with `\n` is yours to place where the sentence reads well.
 6. **Build.** `build story.json --name <name>` writes `custom-stories/<name>.json` into the site (a script with errors
    is not built).
-7. **Play it.** `serve` prints the URL to open in `examples/story`; start playback with the on-page button (browsers
-   need a user gesture for audio). Run it in the background and stop it when done.
+
+## Director rules
+
+The game's own episodes are continuous. Eight official episodes measured: two-person friendship stories run 36--44 lines in
+1--2.5 minutes, cut every 3--4.5 lines, use about 1.1 motions per line, no standalone `Expression`, and a `lookAt` every
+2--3 lines. 10610 (13 lines, 10 `Focus`, 5 `Track`, 20 `Motion`, no `Fade`) is an ensemble tutorial and cuts more often;
+do not use its density for a daily scene.
+
+- One stage per scene. Establish space with `scene`, then change groups with `positions`; do not open a new `scene` or
+  `fade` for every beat. Open with one character (at most two), then let the next one enter after 2--4 lines. At most two
+  `positions` changes; keep each character's slot stable (moving someone from `left` to `center` compiles to `Out` + `In`
+  and flashes).
+- Cut in groups of 3--4 lines: two-shot (`middle`, `focus: 5`) and a speaker close-up (`close`, `focus` that cast)
+  alternate. Change `focus` only when the active group changes or at an emotional turn; do not cut every line, and do
+  not stay in one static shot for the whole scene. A 30-line scene needs roughly 7--10 `Focus` changes. `near` (1.2x)
+  is the widest shot, at most once per scene; `close` (2.8x) is the close-up, about one per 8 lines (2--5 in 30 lines)
+  and 1--2 lines each, then return to the two-shot/group, never hold the same `close` to the end. `middle` is the
+  default, `far` for a group. A slow `zoom` (1.03--1.10 in, 0.92--0.98 out, `zoomDuration` 3--5) is optional, 0--2
+  per scene, one per shot at most.
+- `focus` may be a cast id, a position, or a focus point 1--9: 1/3/5/7/9 are the slots, 2/4/6/8 frame a pair. Prefer a
+  focus point or position; a character `focus` is for close-ups and the one or two heaviest lines. Pair `focus` with `track`
+  (roughly -0.8..0.8 for two people, larger for a group pan); 0--2 `track` rows per scene, usually 0--1 for two people.
+  Two people on stage must stand at `far-left` / `far-right` with `focus: 5`; `center+right`, `center+left` and
+  `left+right` overlap. Three people use `far-left` / `center` / `far-right` with `camera: far`, `focus: 5`, `track: 0`;
+  the AI defaults to `story.maxOnStage: 3`, and an operator can set 2 to keep only the far pair (the third waits).
+- One main action for the speaker (`say.motion`) and at most one listener reaction in `actions` at `0`. Official episodes
+  have no mid-line actions, so write `at: 0`; one or two lines in five should have no motion at all. The compiler fades
+  each motion in from the current pose (the clip's own 1 s fade), so you do not need extra beats to cover a switch.
+- About 20--26 motions per 20 lines: roughly 12--16 lines with one, 3--5 with two, 3--4 with none. Prefer
+  `nod` / `smile` / `check` / `question` / `thinking` / `denial` / `serious`; `surprised` 1--2 times, `angry` and `kime`
+  at most once. Repeating a gentle gesture is natural.
+- Attach `expression` to a motion. Keep the default `idle`; do not smile on every line, and use a standalone
+  `Expression` (no motion) at most once per scene.
+- Two-person scenes need a `lookAt` every 2--3 lines; with three or more, use it only when addressed or reacting.
+- Vary line length: 20--35% of lines take two rows, at least one 2--6 character reaction every 5--6 lines, and each
+  character keeps a distinct rhythm (quiet: short and ellipsis-heavy; outgoing: longer, two rows, exclamations).
+- Use `pause` sparingly (0.1--0.5 s) and `fade out`/`fade in` only for a real time or place jump. `action` beats are
+  silent reaction shots.
+- Every name must exist in the base site; `focus`/`lookAt`/`actions` targets must be on stage.
 
 ## Script rules that are easy to miss
 
 - A motion or expression needs the speaker on stage; a speaker off stage only warns (`speakerOffStage`).
 - Motions are named by stem; the variant facing the character's side plays. Use a full clip name only to force one.
 - Two characters cannot share a position (`far-left`, `left`, `center`, `right`, `far-right`).
+- `focus` 2/4/6/8 are composition points between slots, not places to stand; they frame two characters.
+- `track` is a camera offset in stage units (-4..4), not a position; it compiles to the game's `Track` row.
 - Text is literal: `<` and `\` are characters, and `\n` in the JSON string breaks the line.
 - `language` must be one of the base story's languages; fonts are `sans`, `serif`, `rounded` or a CSS family list.
 - Re-render only what changed with `--from` and `--to`; each render replaces the pictures in `--out`.

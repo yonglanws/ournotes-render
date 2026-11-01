@@ -1,0 +1,198 @@
+{
+  "format": "ournotes.story-script/1",
+  "base": "stories/10610.json",
+  "language": "ja",
+  "title": "ライブのあとで",
+  "font": "sans",
+  "cast": {
+    "tomori": {
+      "model": "adv_live2d_tomori_001_live_01",
+      "name": "燈"
+    },
+    "anon": {
+      "model": "adv_live2d_anon_002_live_01",
+      "name": "愛音"
+    },
+    "soyo": {
+      "model": "adv_live2d_soyo_004_live_01",
+      "name": "爽世"
+    }
+  },
+  "beats": [
+    {
+      "scene": "adv_bkg_stage_000189",
+      "location": "ライブのあと",
+      "music": "sound_bgm_adv_nows_the_time",
+      "camera": {
+        "distance": "middle",
+        "focus": 3,
+        "track": 0.2
+      },
+      "positions": {
+        "anon": "far-left",
+        "tomori": "center"
+      }
+    },
+    {
+      "say": "anon",
+      "text": "やり切ったね。\n今日のライブ、最高だった！",
+      "motion": "mtn_smile01",
+      "expression": "exp_smile02",
+      "actions": [
+        {
+          "at": 0,
+          "cast": "tomori",
+          "expression": "exp_smile01"
+        }
+      ]
+    },
+    {
+      "say": "tomori",
+      "text": "うん……\nまた、みんなで演奏したい。",
+      "motion": "mtn_nod01",
+      "expression": "exp_shy01",
+      "focus": "tomori",
+      "camera": "near",
+      "track": 0.3,
+      "actions": [
+        {
+          "at": 0,
+          "cast": "anon",
+          "expression": "exp_smile02"
+        }
+      ]
+    },
+    {
+      "positions": {
+        "anon": "far-left",
+        "tomori": "center",
+        "soyo": "far-right"
+      },
+      "camera": "middle",
+      "focus": 5,
+      "track": 0.4
+    },
+    {
+      "say": "soyo",
+      "text": "ふふ、よかったね。\n次はもっと上手くやろう。",
+      "motion": "mtn_smile01",
+      "expression": "exp_smile02",
+      "actions": [
+        {
+          "at": 0,
+          "cast": "tomori",
+          "expression": "exp_smile03"
+        }
+      ]
+    },
+    {
+      "say": "tomori",
+      "text": "次は……\nもっと、ちゃんと。",
+      "motion": "mtn_nod02",
+      "expression": "exp_serious01",
+      "focus": "tomori",
+      "camera": "near",
+      "actions": [
+        {
+          "at": 0,
+          "cast": "soyo",
+          "expression": "exp_idle01"
+        }
+      ]
+    },
+    {
+      "say": "anon",
+      "text": "ちゃんとって？\n燈らしいけど。",
+      "motion": "mtn_question01",
+      "expression": "exp_smile01"
+    },
+    {
+      "action": "soyo",
+      "motion": "mtn_wink01",
+      "expression": "exp_smile02",
+      "lookAt": "anon",
+      "duration": 0.4
+    },
+    {
+      "say": "soyo",
+      "text": "燈は燈のままでいいよ。\nね？",
+      "motion": "mtn_smile02",
+      "expression": "exp_smile02",
+      "actions": [
+        {
+          "at": 0.5,
+          "cast": "anon",
+          "expression": "exp_smile02"
+        }
+      ]
+    },
+    {
+      "positions": {
+        "tomori": "center",
+        "soyo": "far-right"
+      },
+      "camera": "middle",
+      "focus": 7,
+      "track": 0.2
+    },
+    {
+      "say": "tomori",
+      "text": "……うん。\nありがとう。",
+      "motion": "mtn_nod01",
+      "expression": "exp_smile01",
+      "lookAt": "soyo",
+      "focus": "tomori",
+      "camera": "near",
+      "actions": [
+        {
+          "at": 0,
+          "cast": "soyo",
+          "expression": "exp_smile01"
+        }
+      ]
+    },
+    {
+      "pause": 0.3
+    },
+    {
+      "say": "soyo",
+      "text": "そろそろ帰ろっか。\n明日も練習だし。",
+      "motion": "mtn_bye01",
+      "expression": "exp_smile01"
+    },
+    {
+      "positions": {
+        "anon": "far-left",
+        "tomori": "center",
+        "soyo": "far-right"
+      },
+      "camera": "middle",
+      "focus": 5,
+      "track": 0.3
+    },
+    {
+      "say": "anon",
+      "text": "明日も！\nじゃあ、またね！",
+      "motion": "mtn_bye01",
+      "expression": "exp_smile02",
+      "actions": [
+        {
+          "at": 0,
+          "cast": "tomori",
+          "expression": "exp_smile02"
+        },
+        {
+          "at": 0,
+          "cast": "soyo",
+          "expression": "exp_smile02"
+        }
+      ]
+    },
+    {
+      "action": "tomori",
+      "expression": "exp_smile02",
+      "lookAt": "anon",
+      "duration": 0.3
+    }
+  ]
+}

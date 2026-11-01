@@ -54,14 +54,3 @@ test("every schema in schema/ compiles", () => {
   assert.ok(names.length >= 5);
   for (const f of names) compile(JSON.parse(fs.readFileSync(path.join(schemaDir, f), "utf8")));
 });
-
-test("the manifest schema accepts both file entry forms and rejects others", () => {
-  const check = compile(JSON.parse(fs.readFileSync(path.join(schemaDir, "manifest.schema.json"), "utf8")));
-  const a = `assets/${"0".repeat(64)}.json`;
-  const ok = { format: 2, musicId: 1, difficulty: "easy", quality: 1,
-               files: { "live.json": { asset: a, size: 3 }, "x.json": { parts: [["k", a, 3]], size: 9 } } };
-  assert.deepEqual(check(ok), []);
-  assert.notDeepEqual(check({ ...ok, files: { "live.json": { asset: "a.json", size: 3 } } }), []);
-  assert.notDeepEqual(check({ ...ok, files: { "x.json": { parts: [["k", a]], size: 3 } } }), []);
-  assert.notDeepEqual(check({ ...ok, quality: 7 }), []);
-});

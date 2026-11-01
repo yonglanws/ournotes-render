@@ -1,0 +1,11 @@
+ournotes-render 0.4.0 turns the headless host into an install-and-run application with a self-contained TTS setup.
+
+- TTS is configured in the host's own format: `tts.defaultVoice` plus `tts.voices` or `voices.yaml`. The AstrBot config reader is gone; the old `tts.astrbotConfig` / `tts.characters` / flat default fields are reported with migration hints.
+- Add `npm run check`: one report for unknown or misspelled settings, wrong types, old TTS fields, the story site, ffmpeg, Chrome, the site-format engine, Cubism Core, character sheets, LLM/TTS readiness, writable output and a non-loopback server without an API key.
+- Add `npm run tts:check`: list the voice table and synthesize one short WAV per voice into `output/tts-check/`, with `--voice`, `--emotion` and `--text` filters.
+- TTS synthesis retries transient failures and reports the voices used, default-voice fallbacks, silent lines and failed lines (with the affected speakers) in the API result and `.story.json`.
+- `host/` is an npm workspace: one `npm install` at the repository root installs the host, js-yaml, ffmpeg-static and the site-format engine. The render page resolves the engine through Node and serves it at `/site-engine/`, so hoisted, pnpm and global installs work.
+- The server binds `127.0.0.1` by default; LLM/TTS service endpoints reject private addresses unless `security.allowPrivateServiceEndpoints` is explicitly enabled.
+- Add [docs/tts.md](docs/tts.md), `voices.example.yaml` and a shorter quick-start `config.example.yaml`. CI and release workflows now run the unit/host suites plus lint on a clean workspace install and create GitHub releases instead of trying to publish a private npm package.
+
+Validation: 507 unit tests pass with one skipped; 85 host tests pass with three skipped; ESLint is clean; `npm run check` and `npm run tts:check -- --synthesize --voice 高松灯` were run against a real GPT-SoVITS service.

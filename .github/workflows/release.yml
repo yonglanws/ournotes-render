@@ -1,13 +1,13 @@
 name: release
 
-# Triggered by a v* tag (release) or manual dispatch (dry run: tests, builds and packs, but never publishes to npm or
-# creates a GitHub release).
+# Triggered by a v* tag (tests + GitHub release) or manual dispatch (tests only, no release).
+# This repository is a headless application, not a publishable npm library: releases are GitHub releases with the
+# generated notes and the source archives GitHub attaches automatically.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
 
-# One release run per ref; a re-pushed tag cancels the stale run.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
@@ -16,9 +16,8 @@ permissions:
   contents: read
 
 jobs:
-  # -- 1. Tests and build. Gates everything else. -------------------------------------------------------------------
-  build:
-    name: test and build
+  test:
+    name: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -30,12 +29,10 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
       - run: npm test
-      - run: npm run typecheck
+      - run: npm run test:host
       - run: npm run lint
-      - run: node scripts/build.mjs --check
-      - run: npm run contract:check
 
-      - name: Check the tag against package.json
+      - name: Check the tag against package.json and CHANGELOG.md
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -49,73 +46,13 @@ jobs:
             exit 1
           fi
 
-      - name: Pack
-        run: |
-          mkdir -p out
-          npm pack --pack-destination out
-          ls -la out
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: package
-          path: |
-            out/*.tgz
-            dist/
-          if-no-files-found: error
-
-  # -- 2. npm publish with provenance. -------------------------------------------------------------------------------
-  publish:
-    name: npm publish
-    needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write   # npm provenance / trusted publishing (OIDC)
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: package
-          path: artifact
-
-      - name: Publish
-        run: |
-          npm install -g npm@latest
-          VERSION="${GITHUB_REF_NAME#v}"
-          PACKAGE="$(node -p "require('./package.json').name")"
-          TARBALL="$(ls artifact/out/*.tgz)"
-          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
-            set -- --access public --provenance --tag next
-          else
-            set -- --access public --provenance
-          fi
-          # Check the end state rather than predicting it: a re-pushed tag has to succeed whether this run published
-          # the version or an earlier one did.
-          if npm publish "${TARBALL}" "$@"; then
-            echo "published ${PACKAGE}@${VERSION}"
-          elif npm view "${PACKAGE}@${VERSION}" version >/dev/null 2>&1; then
-            echo "${PACKAGE}@${VERSION} is already on the registry; nothing to publish"
-          else
-            echo "npm publish failed and ${VERSION} is not on the registry" >&2
-            exit 1
-          fi
-
-  # -- 3. GitHub release: notes from git-cliff, the bundles attached. -------------------------------------------------
-  # The changelog is generated fresh and used as the release body only; nothing is committed back.
   release:
     name: github release
-    needs: [build, publish]
+    needs: [test]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # create the GitHub release
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -135,21 +72,6 @@ jobs:
             cp "$reviewed" RELEASE_NOTES.md
           fi
 
-      - uses: actions/download-artifact@v8
-        with:
-          name: package
-          path: artifact
-
-      - name: Assemble release assets
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          mkdir -p release
-          cp artifact/out/*.tgz release/
-          (cd artifact && zip -r "../release/ournotes-player-dist-${VERSION}.zip" dist)
-          (cd release && sha256sum ./* > SHA256SUMS)
-          ls -la release
-          cat RELEASE_NOTES.md
-
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
@@ -158,4 +80,3 @@ jobs:
           body_path: RELEASE_NOTES.md
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
-          files: release/*

@@ -4,10 +4,19 @@
 // A script (format SCRIPT_FORMAT) names a base story of the site (`base`: the path of its story manifest) whose
 // stages, music, story UI and player settings it uses, the language of its texts, the font family the browser draws
 // them with, the cast (models of the site's models.json and the names they speak under) and the beats in order:
-//   {"scene": <stage>, "music"?, "location"?, "camera"?, "positions"?}   a new stage behind a fade
-//   {"positions": {...}, "camera"?}                                     who stands where from this beat on
-//   {"say": <cast id>, "text", "motion"?, "expression"?}                a line of a character
-//   {"narrate": <text>}                                                 a line without a speaker
+//   {"scene": <stage>, "music"?, "location"?, "camera"?, "focus"?, "track"?, "positions"?} a new stage behind a fade
+//   {"positions": {...}, "camera"?, "focus"?, "track"?}                           who stands where from this beat on
+//   {"say": <cast id>, "text", "motion"?, "expression"?, "lookAt"?, "focus"?, "camera"?, "track"?, "actions"?}
+//   {"narrate": <text>, "focus"?, "camera"?, "track"?, "actions"?}                a line without a speaker
+//   {"camera": <distance|{distance, focus, track}>, "focus"?, "track"?, "duration"?} a camera move, no movement
+//   {"fade": "out"|"in", "duration"?}                                             a screen fade
+//   {"pause": <seconds>}                                                         a silent beat
+//   {"action": <cast id>, "motion"?, "expression"?, "lookAt"?, "duration"?}       acting between lines
+// `actions` on a line are timed events inside it: {"at": 0..1, "cast"?, "motion"?, "expression"?, "lookAt"?}.
+// An action at 0 plays before the line starts (the game's usual listener reaction); a later one plays during the
+// text. They play on the speaker's or a listener's Live2D model; `focus` names a cast member, a position, or a focus
+// point 1..9 and moves the story camera to it; `track` offsets the camera horizontally from that focus the way the
+// game's Track command does.
 // parseScript checks the document's shape; checkScript checks its names against the site (stages, music, models,
 // motions, expressions) and the staging (positions, speakers on stage). Every problem names the JSON pointer of the
 // value, an unknown name comes with the names that exist and the nearest one, and a problem with a known fix carries it
@@ -31,15 +40,37 @@ const SIDE = { 1: "L", 3: "L", 5: "C", 7: "R", 9: "R" };
 export const freeSlot = (slot, occupied) =>
   Object.keys(POSITIONS).sort((a, b) => Math.abs(POSITIONS[a] - slot) - Math.abs(POSITIONS[b] - slot) || POSITIONS[a] - POSITIONS[b])
     .find((k) => !occupied.has(POSITIONS[k])) || null;
-// focus data: the camera distance
-export const CAMERAS = Object.freeze({ near: 1, middle: 2, far: 3 });
+// Focus data camera distances. Each distance is the game's field zoom for that focus data: 1 = 1.2x (the widest, an
+// establishing shot), 2 = 1.4x (the two-shot), 3 = 1.8x (a group or a tight medium), 4 = 2.8x (a close-up) and
+// 5 = 4x (a big close-up). The official episodes use 2/3 for group shots and 4 for emotional close-ups; 1 and 5 are
+// rare.
+export const CAMERAS = Object.freeze({ near: 1, middle: 2, far: 3, close: 4, "very-close": 5 });
+export const FADE_DIRECTIONS = Object.freeze({ out: "FadeOut", in: "FadeIn" });
 export const FONT_PRESETS = Object.freeze(["sans", "serif", "rounded"]);
 export const MUSIC_STOP = "stop";
+export const MAX_ACTIONS = 12;
+// Focus points 1..9 are the game's camera anchors: 1/3/5/7/9 are the character slots, 2/4/6/8 sit between two slots
+// and frame a pair. Track moves the camera by a horizontal offset from the focus point.
+export const FOCUS_POINT_MIN = 1;
+export const FOCUS_POINT_MAX = 9;
+export const TRACK_MIN = -4;
+export const TRACK_MAX = 4;
+const MAX_CAMERA_DURATION = 10;
+const MAX_PAUSE = 60;
+const MAX_ACTION_PAUSE = 10;
 
 const NAME_COLOR = "#FFFFFF";
 const SCENE_FADE = 1;                                          // seconds of the fade between scenes
 const CAST_FADE = 0.2;                                         // seconds a character takes to enter or leave
+// A Motion / Expression row without MotionFadeIn plays with a 0 s fade: the player replaces the current pose with the
+// new clip's first frame and the switch snaps. -1 uses the motion's own FadeInTime from the game's fade data (1 s for
+// the MyGO motions), so a new motion cross-fades from the pose on screen.
+const MOTION_FADE = -1;
 const FOCUS_MOVE = 0.5;                                        // seconds the camera takes to follow a positions beat
+// The official episodes cut in to a closer shot (no Duration) and ease back out over about 1.2 s; a lateral move at
+// the same distance is a short 0.5 s pan, except between close-ups, which cut.
+const FOCUS_RETURN = 1.2;
+const FOCUS_PAN = 0.5;
 const BGM_FADE = "1.5";
 const TITLE_ID = "custom_title";
 const CAST_ID = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -366,10 +397,14 @@ export const withBrowserFonts = (fonts, family) => {
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const TOP_KEYS = ["format", "base", "language", "title", "font", "cast", "beats"];
 const BEAT_KEYS = {
-  scene: ["id", "scene", "music", "location", "camera", "positions"],
-  say: ["id", "say", "text", "motion", "expression"],
-  narrate: ["id", "narrate"],
-  positions: ["id", "positions", "camera"],
+  scene: ["id", "scene", "music", "location", "camera", "focus", "track", "positions"],
+  say: ["id", "say", "text", "motion", "expression", "lookAt", "focus", "camera", "track", "zoom", "zoomDuration", "actions"],
+  narrate: ["id", "narrate", "focus", "camera", "track", "zoom", "zoomDuration", "actions"],
+  positions: ["id", "positions", "camera", "focus", "track"],
+  camera: ["id", "camera", "focus", "track", "zoom", "zoomDuration", "duration"],
+  fade: ["id", "fade", "duration"],
+  pause: ["id", "pause"],
+  action: ["id", "action", "motion", "expression", "lookAt", "duration"],
 };
 const KINDS = Object.keys(BEAT_KEYS);
 
@@ -397,6 +432,98 @@ export const parseScript = (doc) => {
     if (typeof v !== "string") { err(path, "type", `${what} must be a string`, { expected: Object.keys(table) }); return undefined; }
     if (!(v in table)) { errors.push(unknown(path, code, what, v, Object.keys(table))); return undefined; }
     return table[v];
+  };
+  // a finite number in [min, max]; `defaultValue` when the key is absent
+  const numberOf = (o, k, path, { min = 0, max = Infinity, defaultValue = undefined, what = k } = {}) => {
+    if (!(k in o)) return defaultValue;
+    const v = o[k];
+    if (typeof v !== "number" || !Number.isFinite(v)) { err(path, "type", `${what} must be a number`); return undefined; }
+    if (v < min || v > max) { err(path, "range", `${what} must be between ${min} and ${max}`); return undefined; }
+    return v;
+  };
+  // a camera target: a cast id, a position name, or one of the game's focus points 1..9
+  const targetOf = (o, k, path, what = k) => {
+    if (!(k in o)) return "";
+    const v = o[k];
+    if (typeof v === "number") {
+      if (Number.isInteger(v) && v >= FOCUS_POINT_MIN && v <= FOCUS_POINT_MAX) return v;
+      err(path, "range", `${what} must be a focus point ${FOCUS_POINT_MIN}..${FOCUS_POINT_MAX}, a position or a cast id`);
+      return "";
+    }
+    if (typeof v !== "string") {
+      err(path, "type", `${what} must be a cast id, a position or a focus point ${FOCUS_POINT_MIN}..${FOCUS_POINT_MAX}`);
+      return "";
+    }
+    return v;
+  };
+  // the Track offset in stage units
+  const trackOf = (o, k, path) => {
+    if (!(k in o)) return undefined;
+    const v = o[k];
+    if (typeof v !== "number" || !Number.isFinite(v)) { err(path, "type", `${k} must be a number`); return undefined; }
+    if (v < TRACK_MIN || v > TRACK_MAX) { err(path, "range", `${k} must be between ${TRACK_MIN} and ${TRACK_MAX}`); return undefined; }
+    return v;
+  };
+  // an optional slow Zoom on a line or a camera beat: a zoom ratio (0.8..1.5) and its seconds
+  const zoomOf = (b, path) => {
+    const zoom = numberOf(b, "zoom", `${path}/zoom`, { min: 0.8, max: 1.5, what: "zoom" });
+    const duration = numberOf(b, "zoomDuration", `${path}/zoomDuration`,
+                              { min: 0.5, max: MAX_CAMERA_DURATION, what: "zoomDuration" });
+    if (duration !== undefined && zoom === undefined)
+      err(`${path}/zoom`, "empty", "zoomDuration needs a zoom");
+    return { zoom, duration };
+  };
+  // `camera` is a distance name, or {distance, focus, track}; `focus`/`track` on the beat override the object's
+  const cameraOf = (b, path) => {
+    let distance, focus = "", track;
+    if ("camera" in b) {
+      const v = b.camera;
+      if (typeof v === "string") distance = named(v, CAMERAS, `${path}/camera`, "unknownCamera", "camera");
+      else if (isObj(v)) {
+        keys(v, ["distance", "focus", "track"], `${path}/camera`);
+        distance = "distance" in v
+          ? named(v.distance, CAMERAS, `${path}/camera/distance`, "unknownCamera", "camera distance")
+          : CAMERAS.middle;
+        focus = targetOf(v, "focus", `${path}/camera/focus`, "camera focus");
+        track = trackOf(v, "track", `${path}/camera/track`);
+      } else {
+        err(`${path}/camera`, "type",
+            `camera must be a distance (${Object.keys(CAMERAS).join(", ")}) or {distance, focus, track}`);
+      }
+    }
+    if ("focus" in b) {
+      const own = targetOf(b, "focus", `${path}/focus`, "focus");
+      if (own !== "") focus = own;
+    }
+    if ("track" in b) {
+      const own = trackOf(b, "track", `${path}/track`);
+      if (own !== undefined) track = own;
+    }
+    return { distance, focus, track };
+  };
+  // timed acting events inside a line: [{"at": 0..1, "cast"?, "motion"?, "expression"?, "lookAt"?}]
+  const actionsOf = (b, path) => {
+    if (!("actions" in b)) return [];
+    if (!Array.isArray(b.actions)) { err(`${path}/actions`, "type", "actions must be an array of timed events"); return []; }
+    if (b.actions.length > MAX_ACTIONS)
+      err(`${path}/actions`, "tooManyActions", `at most ${MAX_ACTIONS} actions per line`);
+    const out = [];
+    b.actions.slice(0, MAX_ACTIONS).forEach((a, i) => {
+      const ap = `${path}/actions/${i}`;
+      if (!isObj(a)) { err(ap, "type", "an action is an object {at, cast, motion, expression, lookAt}"); return; }
+      keys(a, ["at", "cast", "motion", "expression", "lookAt"], ap);
+      const at = numberOf(a, "at", `${ap}/at`, { min: 0, max: 1, defaultValue: 0, what: "at" });
+      const cast = text(a, "cast", `${ap}/cast`) || "";
+      const motion = text(a, "motion", `${ap}/motion`) || "";
+      const expression = text(a, "expression", `${ap}/expression`) || "";
+      const lookAt = targetOf(a, "lookAt", `${ap}/lookAt`, "lookAt");
+      if (cast && !CAST_ID.test(cast))
+        err(`${ap}/cast`, "castId", `cast id ${JSON.stringify(cast)} must be a letter followed by letters, digits or _`);
+      if (!motion && !expression && !lookAt)
+        err(ap, "emptyAction", "an action needs a motion, an expression or a lookAt");
+      out.push({ at: at ?? 0, cast, motion, expression, lookAt, path: ap });
+    });
+    return out;
   };
 
   if (!isObj(doc)) { err("", "type", "a script is a JSON object"); return { script: null, errors }; }
@@ -485,7 +612,10 @@ export const parseScript = (doc) => {
         if ("music" in b) beat.music = text(b, "music", `${path}/music`);
         beat.location = text(b, "location", `${path}/location`, { empty: true }) || "";
       }
-      beat.camera = "camera" in b ? named(b.camera, CAMERAS, `${path}/camera`, "unknownCamera", "camera") : undefined;
+      const cam = cameraOf(b, path);
+      beat.camera = cam.distance;
+      beat.focus = cam.focus;
+      beat.track = cam.track;
       beat.positions = "positions" in b ? positions(b.positions, `${path}/positions`) : (kind === "scene" ? [] : null);
       if (kind === "positions" && !beat.positions) return;
     } else if (kind === "say") {
@@ -493,9 +623,59 @@ export const parseScript = (doc) => {
       beat.text = text(b, "text", `${path}/text`, { required: true });
       beat.motion = text(b, "motion", `${path}/motion`) || "";
       beat.expression = text(b, "expression", `${path}/expression`) || "";
-    } else {
+      beat.lookAt = targetOf(b, "lookAt", `${path}/lookAt`, "lookAt");
+      const cam = cameraOf(b, path);
+      beat.camera = cam.distance;
+      beat.focus = cam.focus;
+      beat.track = cam.track;
+      const zoom = zoomOf(b, path);
+      if (zoom.zoom !== undefined) beat.zoom = zoom.zoom;
+      if (zoom.duration !== undefined) beat.zoomDuration = zoom.duration;
+      beat.actions = actionsOf(b, path);
+    } else if (kind === "narrate") {
       beat.speaker = null;
       beat.text = text(b, "narrate", `${path}/narrate`, { required: true });
+      const cam = cameraOf(b, path);
+      beat.camera = cam.distance;
+      beat.focus = cam.focus;
+      beat.track = cam.track;
+      const zoom = zoomOf(b, path);
+      if (zoom.zoom !== undefined) beat.zoom = zoom.zoom;
+      if (zoom.duration !== undefined) beat.zoomDuration = zoom.duration;
+      beat.actions = actionsOf(b, path);
+    } else if (kind === "camera") {
+      const cam = cameraOf(b, path);
+      beat.camera = cam.distance;
+      beat.focus = cam.focus;
+      beat.track = cam.track;
+      const zoom = zoomOf(b, path);
+      if (zoom.zoom !== undefined) beat.zoom = zoom.zoom;
+      if (zoom.duration !== undefined) beat.zoomDuration = zoom.duration;
+      beat.duration = numberOf(b, "duration", `${path}/duration`, { min: 0.01, max: MAX_CAMERA_DURATION, what: "duration" });
+      if (beat.camera === undefined && !beat.focus && beat.track === undefined && beat.zoom === undefined)
+        err(path, "empty", "a camera beat needs a camera distance, a focus, a track or a zoom");
+    } else if (kind === "fade") {
+      const dir = text(b, "fade", `${path}/fade`, { required: true });
+      if (dir && !(dir in FADE_DIRECTIONS))
+        errors.push(unknown(`${path}/fade`, "unknownFade", "fade direction", dir, Object.keys(FADE_DIRECTIONS)));
+      else beat.fade = dir;
+      beat.duration = numberOf(b, "duration", `${path}/duration`,
+                               { min: 0.01, max: MAX_CAMERA_DURATION, defaultValue: SCENE_FADE, what: "duration" });
+    } else if (kind === "pause") {
+      beat.pause = numberOf(b, "pause", `${path}/pause`, { min: 0.01, max: MAX_PAUSE, what: "pause" });
+      if (beat.pause === undefined) err(`${path}/pause`, "missing", "pause is required");
+    } else {
+      const id = text(b, "action", `${path}/action`, { required: true });
+      if (id && !CAST_ID.test(id))
+        err(`${path}/action`, "castId", `cast id ${JSON.stringify(id)} must be a letter followed by letters, digits or _`);
+      beat.action = id;
+      beat.motion = text(b, "motion", `${path}/motion`) || "";
+      beat.expression = text(b, "expression", `${path}/expression`) || "";
+      beat.lookAt = targetOf(b, "lookAt", `${path}/lookAt`, "lookAt");
+      if (!beat.motion && !beat.expression && !beat.lookAt)
+        err(path, "emptyAction", "an action needs a motion, an expression or a lookAt");
+      beat.duration = numberOf(b, "duration", `${path}/duration`,
+                               { min: 0.01, max: MAX_ACTION_PAUSE, what: "duration" });
     }
     script.beats.push(beat);
   });
@@ -527,6 +707,46 @@ export const checkScript = (script, site) => {
       errors.push(unknown(`${path}/motion`, "unknownMotion", "motion", motion, motionStems(a.motions).sort(byName), cast.get(id).model));
     if (expression && !a.expressions.includes(expression))
       errors.push(unknown(`${path}/expression`, "unknownExpression", "expression", expression, [...a.expressions].sort(byName), cast.get(id).model));
+  };
+  // `focus` is a focus point, a position name or a cast member standing on stage
+  const checkFocus = (b, staged) => {
+    if (!b.focus) return;
+    if (typeof b.focus === "number") return;                       // parseScript checked 1..9
+    if (b.focus in POSITIONS) return;
+    if (!cast.has(b.focus)) {
+      errors.push(unknown(`${b.path}/focus`, "unknownFocus", "focus", b.focus, [...Object.keys(POSITIONS), ...cast.keys()]));
+      return;
+    }
+    if (!staged.has(b.focus))
+      errors.push({ path: `${b.path}/focus`, code: "offStage", message: `${b.focus} is not on stage: the camera cannot focus on it` });
+  };
+  // `lookAt` is a focus point, a position name or a cast member standing on stage
+  const checkLookAt = (a, on) => {
+    if (!a.lookAt && a.lookAt !== 0) return;
+    if (typeof a.lookAt === "number") return;                      // parseScript checked 1..9
+    if (a.lookAt in POSITIONS) return;
+    if (!cast.has(a.lookAt)) {
+      errors.push(unknown(`${a.path}/lookAt`, "unknownLookAt", "lookAt", a.lookAt, [...Object.keys(POSITIONS), ...cast.keys()]));
+      return;
+    }
+    if (!on.has(a.lookAt))
+      errors.push({ path: `${a.path}/lookAt`, code: "offStage", message: `${a.lookAt} is not on stage: nobody can look at it` });
+  };
+  // the timed actions of a line; `speaker` is the line's speaker, the default target
+  const checkActions = (b, on, speaker) => {
+    for (const a of b.actions || []) {
+      const id = a.cast || speaker;
+      if (!id) { errors.push({ path: a.path, code: "missing", message: "an action needs a cast id" }); continue; }
+      if (!cast.has(id)) {
+        errors.push(unknown(a.cast ? `${a.path}/cast` : `${b.path}/say`, "unknownCast", "cast member", id, cast.keys()));
+        continue;
+      }
+      used.add(id);
+      if (!on.has(id))
+        errors.push({ path: a.path, code: "offStageAction", message: `${id} is not on stage: a timed action needs the character on stage` });
+      checkAction(id, a.motion, a.expression, a.path);
+      checkLookAt(a, on);
+    }
   };
   const stageIds = base.stages.map((s) => s.id), cues = base.music.map((m) => m.cue);
   const used = new Set();
@@ -561,6 +781,7 @@ export const checkScript = (script, site) => {
         checkAction(p.cast, p.motion, p.expression, p.path);
       }
       on = new Set(b.positions.map((p) => p.cast));
+      checkFocus(b, on);
     }
     if (b.kind === "say" && b.speaker) {
       if (!cast.has(b.speaker)) { errors.push(unknown(`${b.path}/say`, "unknownCast", "cast member", b.speaker, cast.keys())); continue; }
@@ -571,6 +792,24 @@ export const checkScript = (script, site) => {
         else warnings.push({ path: `${b.path}/say`, code: "speakerOffStage", message: `${b.speaker} speaks from off stage` });
       }
       checkAction(b.speaker, b.motion, b.expression, b.path);
+      checkFocus(b, on);
+      checkLookAt({ lookAt: b.lookAt, path: b.path }, on);
+      checkActions(b, on, b.speaker);
+    } else if (b.kind === "narrate") {
+      checkFocus(b, on);
+      checkActions(b, on, null);
+    } else if (b.kind === "camera") {
+      checkFocus(b, on);
+    } else if (b.kind === "action") {
+      if (!cast.has(b.action)) {
+        errors.push(unknown(`${b.path}/action`, "unknownCast", "cast member", b.action, cast.keys()));
+      } else {
+        used.add(b.action);
+        if (!on.has(b.action))
+          errors.push({ path: b.path, code: "offStageAction", message: `${b.action} is not on stage: an action needs the character on stage` });
+        checkAction(b.action, b.motion, b.expression, b.path);
+        checkLookAt(b, on);
+      }
     }
   }
   for (const c of script.cast) if (!used.has(c.id)) warnings.push({ path: c.path, code: "unusedCast", message: `${c.id} never comes on stage or speaks` });
@@ -621,10 +860,59 @@ export const compileScript = (script, site, language) => {
   }
 
   let on = new Map(), scenes = 0, bgm = 0, camera = CAMERAS.middle;
+  let lastShot = null;                                          // the distance and focus of the last Focus row
   const expression = new Map();                                 // cast id -> the expression it shows
   const focus = (staged) => {
     const slots = [...staged.values()].map((m) => m.slot);
     return slots.length ? Math.min(9, Math.max(1, Math.round(slots.reduce((a, b) => a + b, 0) / slots.length))) : 5;
+  };
+  // Focus row fields: an explicit focus point, position or cast member, else the group's centre. A cast focus writes
+  // the cast member's slot as PositionType, like the official solo close-ups (their TargetName rows are pair framings
+  // that follow one character's head); PositionType keeps the distance's own vertical framing, so a 2.8x shot is a
+  // head-and-shoulders close-up and not a face-only crop.
+  const focusFields = (b, staged, distance) => {
+    const fields = { CameraDistance: distance };
+    if (typeof b.focus === "number") fields.PositionType = b.focus;
+    else if (b.focus && b.focus in POSITIONS) fields.PositionType = POSITIONS[b.focus];
+    else if (b.focus && staged.has(b.focus)) fields.PositionType = staged.get(b.focus).slot;
+    else fields.PositionType = focus(staged);
+    return fields;
+  };
+  const positionOf = (target, staged) => {
+    if (typeof target === "number") return target;
+    if (target && target in POSITIONS) return POSITIONS[target];
+    return target && staged.get(target) ? staged.get(target).slot : 0;
+  };
+  // The official cut: a closer distance cuts (no Duration), a wider one eases back over 1.2 s, and a lateral move at
+  // the same distance pans over 0.5 s (close-ups cut between sides). `auto` uses it; an explicit duration wins.
+  const autoDuration = (fields, distance) => {
+    if (!lastShot) return 0;
+    if (distance > lastShot.distance) return 0;
+    if (distance < lastShot.distance) return FOCUS_RETURN;
+    if ((fields.PositionType ?? 0) !== lastShot.pos || (fields.TargetName || "") !== lastShot.name)
+      return distance >= CAMERAS.close ? 0 : FOCUS_PAN;
+    return 0;
+  };
+  // A Focus row and, when the beat asks for one, a Track row: the camera pans by `track` from the focus point. A
+  // track without a focus keeps the camera's current focus and only pans; a scene always re-establishes its focus.
+  const cameraRows = (b, staged, distance, { duration = 0, noWait = false, focusAlways = false, auto = false } = {}) => {
+    let move = duration;
+    if (b.focus || b.camera !== undefined || b.track === undefined || focusAlways) {
+      const fields = focusFields(b, staged, distance);
+      if (auto) move = autoDuration(fields, distance);
+      if (move) fields.Duration = move;
+      if (noWait) fields.IsNoWait = 1;
+      row("Focus", fields);
+      lastShot = { distance, pos: fields.PositionType ?? 0, name: fields.TargetName || "" };
+    }
+    if (b.track !== undefined)
+      row("Track", { Parameter1: String(b.track), ...(move ? { Duration: move } : {}), IsNoWait: 1 });
+  };
+  // a slow Zoom after the Focus/Track rows: the line's shot pushes in or pulls out over `zoomDuration` seconds
+  const zoomRow = (b) => {
+    if (b.zoom === undefined) return;
+    const duration = b.zoomDuration ?? (b.duration !== undefined ? b.duration : 4);
+    row("Zoom", { Parameter1: String(b.zoom), Duration: duration, IsNoWait: 1 });
   };
   const enter = (m, duration) => {
     const motion = enterMotion(m);
@@ -648,7 +936,7 @@ export const compileScript = (script, site, language) => {
       }
       for (const m of next.values()) enter(m, 0);
       camera = b.camera || CAMERAS.middle;
-      row("Focus", { PositionType: focus(next), CameraDistance: camera });
+      cameraRows(b, next, camera, { focusAlways: true });
       if (scenes) row("FadeIn", { Duration: SCENE_FADE });
       if (b.location.trim()) row("Location", { AdvTextID: textId(`custom_location_${b.index}`, plainText(b.location)) });
       on = next;
@@ -663,34 +951,99 @@ export const compileScript = (script, site, language) => {
         else if (m.motion || m.expression) {
           const motion = resolveMotion(m.motion, m.slot, motionsOf(m.cast));
           const exp = m.expression || expression.get(m.cast) || "";
-          if (motion) row("Motion", { TargetName: m.cast, MotionName: motion, ...(exp ? { ExpressionName: exp } : {}) });
-          else row("Expression", { TargetName: m.cast, ExpressionName: exp });
+          if (motion) row("Motion", { TargetName: m.cast, MotionName: motion, MotionFadeIn: MOTION_FADE, ...(exp ? { ExpressionName: exp } : {}) });
+          else row("Expression", { TargetName: m.cast, ExpressionName: exp, MotionFadeIn: MOTION_FADE });
           expression.set(m.cast, exp);
         }
       }
       if (b.camera) camera = b.camera;
-      row("Focus", { PositionType: focus(next), CameraDistance: camera, Duration: FOCUS_MOVE, IsNoWait: 1 });
+      cameraRows(b, next, camera, { duration: FOCUS_MOVE, noWait: true, focusAlways: true });
       on = next;
-    } else {
+    } else if (b.kind === "say" || b.kind === "narrate") {
       const speaker = b.speaker ? cast.get(b.speaker) : null;
+      if (b.camera) camera = b.camera;
+      if (b.focus || b.camera || b.track !== undefined)
+        cameraRows(b, on, camera, { auto: true, noWait: true });
+      zoomRow(b);
+      // actions at 0 are the game's usual pre-line reactions (a listener turning, smiling, looking over); later ones
+      // stay timed inside the line and are played by Talk's HostActions
+      for (const a of b.actions || []) {
+        if (a.at > 0) continue;
+        const id = a.cast || b.speaker;
+        if (!id || !on.has(id)) continue;
+        const motion = resolveMotion(a.motion, on.get(id).slot, motionsOf(id));
+        if (motion) {
+          const exp = a.expression || expression.get(id) || "";
+          row("Motion", { TargetName: id, MotionName: motion, MotionFadeIn: MOTION_FADE, ...(exp ? { ExpressionName: exp } : {}) });
+          expression.set(id, exp);
+        } else if (a.expression) {
+          row("Expression", { TargetName: id, ExpressionName: a.expression, MotionFadeIn: MOTION_FADE });
+          expression.set(id, a.expression);
+        }
+        const pos = positionOf(a.lookAt, on);
+        if (pos) row("LookTarget", { TargetName: id, PositionType: pos, Duration: 0.2, IsNoWait: 1 });
+      }
       if (speaker && on.has(speaker.id)) {
         const motion = resolveMotion(b.motion, on.get(speaker.id).slot, motionsOf(speaker.id));
         if (motion) {
           // a Motion row sets the expression too (an empty one is the default): the current one unless the line sets one
           const exp = b.expression || expression.get(speaker.id) || "";
-          row("Motion", { TargetName: speaker.id, MotionName: motion, ...(exp ? { ExpressionName: exp } : {}) });
+          row("Motion", { TargetName: speaker.id, MotionName: motion, MotionFadeIn: MOTION_FADE, ...(exp ? { ExpressionName: exp } : {}) });
           expression.set(speaker.id, exp);
         } else if (b.expression) {
-          row("Expression", { TargetName: speaker.id, ExpressionName: b.expression });
+          row("Expression", { TargetName: speaker.id, ExpressionName: b.expression, MotionFadeIn: MOTION_FADE });
           expression.set(speaker.id, b.expression);
         }
+        const pos = positionOf(b.lookAt, on);
+        if (pos) row("LookTarget", { TargetName: speaker.id, PositionType: pos, Duration: 0.2, IsNoWait: 1 });
+      }
+      const hostActions = [];
+      for (const a of b.actions || []) {
+        if (a.at <= 0) continue;
+        const id = a.cast || b.speaker;
+        if (!id || !on.has(id)) continue;
+        const action = { at: a.at, TargetName: id, MotionFadeIn: 0.15 };
+        const motion = resolveMotion(a.motion, on.get(id).slot, motionsOf(id));
+        if (motion) action.MotionName = motion;
+        if (a.expression) action.ExpressionName = a.expression;
+        const pos = positionOf(a.lookAt, on);
+        if (pos) action.LookTargetPosition = pos;
+        hostActions.push(action);
       }
       const fields = { AdvTextID: textId(`custom_line_${b.index}`, plainText(b.text)) };
+      if (hostActions.length) fields.HostActions = hostActions;
       if (speaker) Object.assign(fields, { TargetName: speaker.id, TargetTextIDs: [textId(`custom_name_${speaker.id}`, plainText(speaker.name))],
                                            TargetTextColors: [NAME_COLOR] });
       row("Talk", fields);
       lines.push({ line: lines.length, beat: b.index, path: b.path, ...(b.id ? { id: b.id } : {}),
                    speaker: speaker ? speaker.id : null, name: speaker ? speaker.name : "", text: b.text });
+    } else if (b.kind === "camera") {
+      if (b.camera) camera = b.camera;
+      if (b.camera !== undefined || b.focus || b.track !== undefined) {
+        if (b.duration !== undefined) cameraRows(b, on, camera, { duration: b.duration, noWait: true });
+        else cameraRows(b, on, camera, { auto: true, noWait: true });
+      }
+      zoomRow(b);
+    } else if (b.kind === "fade") {
+      row(FADE_DIRECTIONS[b.fade], { Duration: b.duration || SCENE_FADE });
+    } else if (b.kind === "pause") {
+      row("Delay", { Duration: b.pause });
+    } else if (b.kind === "action") {
+      const m = on.get(b.action);
+      if (m) {
+        const motion = resolveMotion(b.motion, m.slot, motionsOf(b.action));
+        if (motion) {
+          const exp = b.expression || expression.get(b.action) || "";
+          row("Motion", { TargetName: b.action, MotionName: motion, MotionFadeIn: MOTION_FADE, ...(exp ? { ExpressionName: exp } : {}) });
+          expression.set(b.action, exp);
+        } else if (b.expression) {
+          row("Expression", { TargetName: b.action, ExpressionName: b.expression, MotionFadeIn: MOTION_FADE });
+          expression.set(b.action, b.expression);
+        }
+        const pos = positionOf(b.lookAt, on);
+        if (pos) row("LookTarget", { TargetName: b.action, PositionType: pos, Duration: 0.2, IsNoWait: 1 });
+        if (b.duration) row("Delay", { Duration: b.duration });
+      }
     }
   }
 
