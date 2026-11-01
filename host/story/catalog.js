@@ -22,6 +22,7 @@ export class StoryCatalog {
     if (!fs.existsSync(this.dir) || !fs.statSync(this.dir).isDirectory())
       throw new SiteCatalogError(`paths.site is not a directory: ${this.dir}`);
     this.site = new Site(this.dir);
+    this.kind = "product";
     this.language = language || "";
     this.maxModels = maxModels;
     this.castFilter = new Set((cast || []).map(String));

@@ -63,8 +63,24 @@ export const runDoctor = (config, { logger = console } = {}) => {
         issue(errors, warnings, "paths.site", checks.site.detail);
       }
     }
+  } else if (config.paths.siteFormat) {
+    const dir = config.paths.siteFormat;
+    const storiesDir = path.join(dir, "stories");
+    const hasStories = fs.existsSync(path.join(dir, "stories.json")) ||
+      (fs.existsSync(storiesDir) && fs.readdirSync(storiesDir).some((name) => name.endsWith(".json")));
+    checks.site = {
+      ok: fs.existsSync(dir) && fs.statSync(dir).isDirectory() && hasStories,
+      detail: `${dir} (site-format; /api/v1/script/generate only)`,
+    };
+    if (!checks.site.ok) {
+      checks.site.detail = `${dir}: not a story site with stories.json or stories/*.json`;
+      issue(errors, warnings, "paths.siteFormat", checks.site.detail);
+    }
   } else {
-    checks.site = { ok: false, detail: "not set; /api/v1/generate needs an nnnotes product site" };
+    checks.site = {
+      ok: false,
+      detail: "not set; /api/v1/generate needs an nnnotes product site, /api/v1/script/generate can use paths.siteFormat",
+    };
     issue(null, warnings, "paths.site", checks.site.detail);
   }
 

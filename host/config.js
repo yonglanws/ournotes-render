@@ -19,7 +19,7 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const DEFAULTS = {
   server: { port: 9881, host: "127.0.0.1", cors: false, corsOrigins: [] },
   security: { apiKeyEnv: "OURNOTES_API_KEY", allowPrivateServiceEndpoints: false },
-  paths: { site: "", output: "output", cache: "cache" },
+  paths: { site: "", siteFormat: "", output: "output", cache: "cache" },
   story: { base: "", language: "", font: "sans", title: "", targetMinutes: 3, maxModels: 24, maxLines: 120,
            maxOnStage: 3, cast: [], personas: [], personaDirs: [] },
   llm: { enabled: true, baseUrl: "https://api.openai.com/v1", apiKeyEnv: "OURNOTES_LLM_API_KEY",
@@ -161,7 +161,7 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
     delete disk.logLevel;
   }
   for (const [section, key] of [
-    ["server", "host"], ["paths", "site"], ["paths", "output"], ["paths", "cache"],
+    ["server", "host"], ["paths", "site"], ["paths", "siteFormat"], ["paths", "output"], ["paths", "cache"],
     ["story", "base"], ["story", "language"], ["story", "font"], ["story", "title"],
     ["llm", "baseUrl"], ["llm", "model"], ["llm", "apiKeyEnv"],
     ["tts", "baseUrl"], ["tts", "apiKeyEnv"], ["tts", "textLang"], ["tts", "promptLang"], ["tts", "voicesFile"],
@@ -213,6 +213,7 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   set(cfg.server, "port", num(env("OURNOTES_PORT"), undefined));
   set(cfg.server, "host", env("OURNOTES_HOST"));
   set(cfg.paths, "site", env("OURNOTES_SITE"));
+  set(cfg.paths, "siteFormat", env("OURNOTES_SITE_FORMAT"));
   set(cfg.paths, "output", env("OURNOTES_OUTPUT"));
   set(cfg.paths, "cache", env("OURNOTES_CACHE"));
   set(cfg.llm, "baseUrl", env("OURNOTES_LLM_BASE_URL"));
@@ -226,6 +227,7 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   // resolve relative paths against the repository root
   const abs = (p) => (p ? path.resolve(ROOT, String(p)) : "");
   cfg.paths.site = abs(cfg.paths.site);
+  cfg.paths.siteFormat = abs(cfg.paths.siteFormat);
   cfg.paths.output = abs(cfg.paths.output);
   cfg.paths.cache = abs(cfg.paths.cache);
   if (cfg.render.core && !/^https?:\/\//i.test(cfg.render.core)) cfg.render.core = abs(cfg.render.core);
@@ -330,8 +332,12 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
       message: `server.host is ${cfg.server.host} but ${cfg.security.apiKeyEnv || "the API key variable"} is empty; ` +
         "the API would be reachable without authentication" });
   }
-  if (!cfg.paths.site) {
-    warnings.push({ path: "paths.site", message: "not set; /api/v1/generate needs an nnnotes product site" });
+  if (!cfg.paths.site && !cfg.paths.siteFormat) {
+    warnings.push({ path: "paths.site",
+      message: "not set; /api/v1/generate needs an nnnotes product site (or set paths.siteFormat for script generation)" });
+  } else if (!cfg.paths.site) {
+    warnings.push({ path: "paths.site",
+      message: "not set; only /api/v1/script/generate is available through paths.siteFormat" });
   }
   if (Math.abs(cfg.video.width / cfg.video.height - 13 / 6) > 0.01) {
     warnings.push({ path: "video.width", message: "the game's ADV viewport is 13:6; other aspect ratios letterbox or crop" });

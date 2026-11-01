@@ -49,6 +49,7 @@ test("missing config falls back to built-in defaults", () => {
   assert.equal(cfg.video.width, 1300);
   assert.equal(cfg.video.height, 600);
   assert.equal(cfg.paths.site, "");
+  assert.equal(cfg.paths.siteFormat, "");
   assert.equal(cfg.tts.defaultVoice.refAudioPath, "");
   assert.deepEqual(cfg.tts.voices, []);
   assert.throws(() => requireSite(cfg), /paths\.site/);

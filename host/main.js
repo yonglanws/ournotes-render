@@ -5,6 +5,7 @@ import { loadConfig, ensureDirs, publicConfig, ROOT } from "./config.js";
 import { runDoctor } from "./doctor.js";
 import { Logger } from "./util/logger.js";
 import { StoryCatalog } from "./story/catalog.js";
+import { SiteFormatCatalog } from "./story/siteFormat.js";
 import { LLMClient } from "./ai/llm.js";
 import { GptSovitsClient, VoiceBook } from "./tts/tts.js";
 import { Renderer } from "./render/renderer.js";
@@ -55,8 +56,17 @@ const main = async () => {
     } catch (e) {
       logger.error(`site: ${e.message}`);
     }
+  } else if (config.paths.siteFormat) {
+    try {
+      catalog = new SiteFormatCatalog({ dir: config.paths.siteFormat, language: config.story.language,
+        personas: config.story.personas, base: config.story.base, logger: logger.child("site") });
+      logger.info(`site-format: ${config.paths.siteFormat} (${catalog.bases().length} story/stories; ` +
+        "script generation only)");
+    } catch (e) {
+      logger.error(`site-format: ${e.message}`);
+    }
   } else {
-    logger.warn("paths.site is empty: /api/v1/generate cannot run until a nnnotes site is configured");
+    logger.warn("paths.site and paths.siteFormat are empty: AI script generation cannot run until a site is configured");
   }
 
   let llm = null;

@@ -49,6 +49,10 @@ TTS voices are configured in this project's own format: inline `tts.voices`, or 
 larger cast (see `voices.example.yaml`). [TTS guide](docs/tts.md) covers reference audio, weights, emotions and
 `npm run tts:check`.
 
+Without an nnnotes product site, point `paths.siteFormat` at a downloaded bdon site such as `resources/site`:
+`/api/v1/script/generate` still writes scripts from it. Full rendering continues to need `paths.site`, or the
+`render-story` / `site-story` tools.
+
 ```sh
 curl -sS -X POST http://127.0.0.1:9881/api/v1/generate \
   -H 'Content-Type: application/json' \

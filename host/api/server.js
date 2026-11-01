@@ -117,7 +117,11 @@ export class ApiServer {
     try { browser = findBrowser(this.config.render.chrome || ""); } catch (e) { browser = { error: e.message }; }
     sendJson(res, 200, {
       success: true, service: "ournotes-player-host", version, uptimeSeconds: Math.round((Date.now() - this.startedAt) / 1000),
-      site: this.config.paths.site ? { configured: true, dir: this.config.paths.site } : { configured: false },
+      site: this.config.paths.site
+        ? { configured: true, kind: "product", dir: this.config.paths.site }
+        : this.config.paths.siteFormat
+          ? { configured: true, kind: "site-format", dir: this.config.paths.siteFormat, scriptOnly: true }
+          : { configured: false },
       queue: this.queue.summary(),
       render: { concurrency: this.config.queue.concurrency, gpu: this.config.render.gpu },
       ffmpeg, browser,

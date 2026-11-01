@@ -14,7 +14,7 @@ AstrBot 插件：在聊天里用一条指令生成 **Our Notes 导演剧本**。
 
 ## 前置条件
 
-1. 已部署 ournotes-render，并且 `paths.site` 指向 nnnotes 产品站点、`llm` 可用。
+1. 已部署 ournotes-render，并且 `paths.site` 指向 nnnotes 产品站点（或用 `paths.siteFormat` 指向下载好的 bdon 站点）、`llm` 可用。
 2. AstrBot 4.5 或更新版本。
 3. AstrBot 能访问到 host 的 HTTP 地址（同一台机器用 `http://127.0.0.1:9881`，跨机器用内网地址）。
 
@@ -50,7 +50,7 @@ pip install -r requirements.txt
 | `base_story` | 空 | 底本 manifest，如 `stories/10610.json`；留空自动选第一篇 Normal |
 | `target_minutes` | `2` | 目标时长（分钟） |
 | `max_lines` | `40` | 最大台词条数 |
-| `timeout_seconds` | `300` | 生成请求超时 |
+| `timeout_seconds` | `600` | 生成请求超时；52 句的三轮生成可能超过 5 分钟 |
 | `max_prompt_chars` | `500` | 场景描述长度上限 |
 | `preview_lines` | `20` | 聊天预览的台词条数，`0` = 全部 |
 | `max_text_chars` | `1800` | 聊天预览字符上限，适配平台单条消息限制 |
@@ -121,7 +121,7 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/render \
 
 | 现象 | 检查 |
 | --- | --- |
-| `宿主还不能生成剧本（HTTP 503）` | host 的 `paths.site` 是否指向 nnnotes 产品站点，`llm` 是否启用并有密钥 |
+| `宿主还不能生成剧本（HTTP 503）` | host 的 `paths.site`（产品站点）或 `paths.siteFormat`（bdon 站点）是否配置，`llm` 是否启用并有密钥 |
 | `宿主鉴权失败（HTTP 401/403）` | 插件 `api_key` 是否与 host 的 `security.apiKeyEnv` 环境变量一致 |
 | `无法连接 ournotes-render` | `api_base` 是否正确；从 AstrBot 所在机器执行 `curl <api_base>/api/v1/health` |
 | 生成超时 | 提高 `timeout_seconds`；确认 LLM 端点和模型正常 |

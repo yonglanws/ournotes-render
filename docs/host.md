@@ -42,7 +42,7 @@
 | Node.js 22+ | 宿主 | 与引擎一致 |
 | Chrome / Chromium / Edge | 无头渲染 | 宿主自动查找；`render.chrome` 可指定 |
 | ffmpeg | 编码/解码 | 根目录 `npm install` 安装 `ffmpeg-static` 即自带；也可 `video.ffmpegPath` 指定 |
-| 剧情站点 | 游戏资源 | AI 路径：`paths.site` 指向 nnnotes 的 `nnnotes.product/1` 站点；示例渲染：`fetch-story` 下载的站点格式 |
+| 剧情站点 | 游戏资源 | `paths.site` 指向 nnnotes 的 `nnnotes.product/1` 站点（完整渲染）；只有 bdon 站点时用 `paths.siteFormat` 提供剧本生成 |
 | Live2D Cubism Core | Live2D | `render.core` 指向本地 `live2dcubismcore.min.js` 或 URL |
 | OpenAI 兼容 LLM | AI 剧本 | `llm.baseUrl` / `llm.model`，密钥只从环境变量读取 |
 | GPT-SoVITS 兼容 TTS | 配音 | `tts.baseUrl`；没有 TTS 也能渲染无声/仅有 BGM 的视频 |
@@ -51,6 +51,9 @@
 
 - **AI 队列/剧本生成的站点**：用你自己的游戏文件通过 [nnnotes](https://github.com/MetaSekaiLab/nnnotes) 构建，
   产物格式 `nnnotes.product/1`，由本仓库 0.2 引擎读取；`paths.site` 指向它，`/api/v1/generate` 才能工作。
+- **没有产品站点时仍可生成剧本**：把 `paths.siteFormat` 指向 `fetch-story` 下载的 bdon 站点（如
+  `resources/site`），`/api/v1/script/generate` 会从该站点的舞台、BGM、模型和角色卡生成导演脚本；完整渲染仍走
+  `render-story` / `site-story`，或另外配置 `paths.site`。
 - **现成剧情/站点格式的站点**：[bdon.moe 剧情播放器](https://bdon.moe/tools/story-player)发布的公开站点
   （`ournotes.story-manifest/2`）。`fetch-story` 下载一集剧情、UI/字体/音频与 Live2D 模型；
   `render-story` 用 `ournotes-player@0.1.8`（bdon.moe 播放器使用的同一引擎）直接渲染；
@@ -172,7 +175,7 @@ git clone https://github.com/empty-sekai/ournotes-player.git
 cd ournotes-player
 npm install                       # 根目录一次安装；host 是 npm workspace
 cp config.example.yaml config.yaml
-# 编辑 config.yaml 中标了 ← 的 paths.site / llm / tts
+# 编辑 config.yaml 中标了 ← 的 paths.site / paths.siteFormat / llm / tts
 npm run check                     # 配置、ffmpeg、Chrome、站点、音色
 npm start                         # API: http://127.0.0.1:9881
 ```
@@ -306,7 +309,8 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
 
 | 配置 | 说明 |
 | --- | --- |
-| `paths.site` | nnnotes 产品站点目录（AI 队列必需） |
+| `paths.site` | nnnotes 产品站点目录（`/api/v1/generate` 完整渲染必需） |
+| `paths.siteFormat` | bdon 站点格式目录；没有产品站点时让 `/api/v1/script/generate` 仍可生成剧本 |
 | `paths.output` / `paths.cache` | 成片、故事 JSON、TTS 缓存 |
 | `story.base` / `story.language` | 默认底本与语言；留空自动选择 |
 | `story.cast` | 提供给 AI 的角色白名单（模型 id 或 character） |
@@ -459,7 +463,7 @@ node --test host/tests/e2e-director.test.mjs
 
 | 现象 | 检查 |
 | --- | --- |
-| `/generate` 返回 503 `site_missing` | `paths.site` 是否指向含 `stories.json`/`models.json` 的目录 |
+| `/generate` 返回 503 `site_missing` | `paths.site` 是否指向含 `stories.json`/`models.json` 的产品站点；只想生成剧本时用 `paths.siteFormat` 和 `/script/generate` |
 | 页面报 `Live2D Cubism MotionSync Core is not loaded` | 本管线用 `airlipsync_voice`，不需要 MotionSync；若底本模型强制要求，配置 `render.motionsync` |
 | 页面报 WebGL2 不可用 | Chrome 是否支持 SwiftShader；尝试 `render.gpu: true` 或更新浏览器 |
 | 渲染很慢 | 软件渲染正常；可降低 `video.width/height`、提高 `render.gpu`，或增加 `queue.concurrency` 但注意内存 |

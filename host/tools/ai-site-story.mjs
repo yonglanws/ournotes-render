@@ -10,62 +10,8 @@ import { generateScript, prepareScript } from "../ai/storyWriter.js";
 import { loadConfig } from "../config.js";
 import { configureFfmpeg } from "../render/ffmpeg.js";
 import { GptSovitsClient, synthesizeStory, VoiceBook } from "../tts/tts.js";
-import { buildSiteStory, readSiteCatalog } from "./site-story.mjs";
-
-// The site's model ids carry a character key (`adv_live2d_nagi_018_...`). The names come from the character sheets
-// loaded by `story.personaDirs`; the MyGO/Ave Mujica names below keep the base tutorial usable without any sheet.
-const CHARACTER_NAMES = {
-  tomori: "高松灯", anon: "千早爱音", soyo: "长崎素世", taki: "椎名立希", rana: "要乐奈",
-  sakiko: "丰川祥子", mutsumi: "若叶睦", uika: "三角初华", umiri: "八幡海铃", nyamu: "祐天寺若麦",
-  sub_mortis: "墨提斯",
-  arale: "仲町阿拉蕾", yuno: "千石由乃", nonoka: "宫永野乃花", ritsu: "峰月律", miyako: "藤都子",
-  sub_viola: "薇欧拉",
-  natsume: "伊泽枣", nagi: "琴平凪", hotaru: "汐见萤", houka: "和泉朋花", mahoro: "滨崎茉幌",
-  sub_kanata: "泽海奏多",
-  shizuku: "四宫宁月", chieri: "梅里千樱梨", yomogi: "矢仓蓬咲", raika: "须贺蕾叶", miku: "马桥心玖",
-};
-
-const modelKey = (id) => {
-  const sub = /^adv_live2d_(sub_[a-z0-9]+?)_/i.exec(String(id));
-  if (sub) return sub[1].toLowerCase();
-  const m = /^adv_live2d_([a-z0-9]+?)_\d+_/i.exec(String(id));
-  return m ? m[1].toLowerCase() : "";
-};
-
-const characterName = (id, personas = []) => {
-  const key = modelKey(id);
-  if (CHARACTER_NAMES[key]) return CHARACTER_NAMES[key];
-  const hit = (personas || []).find((p) =>
-    (Array.isArray(p.aliases) ? p.aliases : []).some((a) => String(a).toLowerCase() === key));
-  return hit ? hit.name : id;
-};
-
-// The prompt catalog of a site-format story: every model whose character has a name (a sheet or the map above), one
-// costume per character, base-story outfits first. A model without a sheet (an NPC, or a band the operator did not
-// provide) is left out so the AI cannot cast a character it knows nothing about.
-export const catalogFromSite = (site, baseRel, language = "", { personas = [] } = {}) => {
-  const c = readSiteCatalog(site, baseRel, language);
-  const baseIds = new Set(Object.keys(c.baseManifest.models || {}));
-  const all = [];
-  for (const id of c.models) {
-    const name = characterName(id, personas);
-    if (!name || name === id) continue;
-    const a = c.actions.get(id);
-    if (!a) continue;
-    const sheet = (personas || []).find((p) => p.name === name);
-    all.push({ id, name, character: name, group: sheet?.group || "", motions: a.motions,
-               expressions: a.expressions, defaultMotion: a.defaultMotion, defaultExpression: a.defaultExpression,
-               actionsKnown: true });
-  }
-  all.sort((a, b) => Number(baseIds.has(b.id)) - Number(baseIds.has(a.id)));
-  const models = [];
-  for (const m of all) {
-    if (models.some((x) => x.character === m.character)) continue;
-    models.push(m);
-  }
-  return { manifest: baseRel, language: c.lang, languages: c.base.languages, title: "",
-           stages: c.base.stages, music: c.base.music, models, font: "sans" };
-};
+import { buildSiteStory } from "./site-story.mjs";
+import { catalogFromSite } from "../story/siteFormat.js";
 
 export const parseArgs = (argv) => {
   const o = { site: "", base: "", prompt: "", script: "", adv: "", lang: "", title: "", config: "", out: "",

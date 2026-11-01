@@ -35,8 +35,11 @@ security:
 # ---------------------------------------------------------------------------
 paths:
   site: ""                   # ← nnnotes.product/1 产品站点（含 stories.json / models.json / assets/）
-                             #   只渲染 bdon.moe 站点剧情时不需要它，用 host/tools/render-story.mjs --site
+                             #   只有产品站点才能用 /api/v1/generate 完整渲染；见下方 siteFormat
                              # env: OURNOTES_SITE
+  siteFormat: ""             # 可选：bdon 站点格式目录（fetch-story 下载的 resources/site）。没有产品站点时，
+                             #   它让 /api/v1/script/generate 仍能生成剧本；完整渲染仍需要 paths.site
+                             # env: OURNOTES_SITE_FORMAT
   output: output             # 成片 MP4、故事 JSON、渲染帧（env: OURNOTES_OUTPUT）
   cache: cache               # TTS / 资源缓存（env: OURNOTES_CACHE）
 

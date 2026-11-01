@@ -45,6 +45,9 @@ TTS 音色表是本项目自己的格式：角色少时写在 `tts.voices`，角
 （模板见 `voices.example.yaml`）。不再读取 AstrBot 等外部机器人的配置；配置与试音步骤见
 [TTS 配置与试音](docs/tts.md)。
 
+没有 nnnotes 产品站点时，可把 `paths.siteFormat` 指向 `resources/site`：`/api/v1/script/generate` 仍能基于
+bdon 站点生成剧本；完整渲染仍需要 `paths.site` 或使用 `render-story` / `site-story`。
+
 ```sh
 npm run tts:check                          # 列出音色表
 npm run tts:check -- --synthesize          # 每个音色合成一句到 output/tts-check/

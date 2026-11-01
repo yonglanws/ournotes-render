@@ -34,7 +34,7 @@ export class Pipeline {
 
   // The AI stage on its own: prompt -> validated ournotes.story-script/1 document, without TTS or rendering.
   async generateScriptOnly(request, { signal = null } = {}) {
-    if (!this.catalog) throw new PipelineError("the site is not configured (paths.site)", { status: 503, code: "site_missing" });
+    if (!this.catalog) throw new PipelineError("the site is not configured (paths.site / paths.siteFormat)", { status: 503, code: "site_missing" });
     if (!this.llm?.available) throw new PipelineError("LLM is not configured (llm.enabled / llm.model / llm key)",
       { status: 503, code: "llm_missing" });
     const base = String(request.base || "").trim();
@@ -57,7 +57,11 @@ export class Pipeline {
 
   async run(request, { signal, jobId, progress }) {
     const t0 = Date.now();
-    if (!this.catalog) throw new PipelineError("the site is not configured (paths.site)", { status: 503, code: "site_missing" });
+    if (!this.catalog) throw new PipelineError("the site is not configured (paths.site / paths.siteFormat)", { status: 503, code: "site_missing" });
+    if (this.catalog.kind === "site-format")
+      throw new PipelineError(
+        "paths.siteFormat can only generate scripts; use /api/v1/script/generate, or configure a product site for /api/v1/generate",
+        { status: 400, code: "site_format" });
     const req = {
       prompt: String(request.prompt || "").trim().slice(0, 4000),
       script: request.script ? parseJsonArg(request.script) : null,

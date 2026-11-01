@@ -6,6 +6,9 @@ All notable changes to this package. Versions follow [Semantic Versioning](https
 
 ### Configuration and TTS
 
+- Add `paths.siteFormat`: when no nnnotes product site is configured, a downloaded bdon site (`resources/site`) still
+  provides the stages, BGM, models and character sheets for `POST /api/v1/script/generate`. Full rendering keeps using
+  `paths.site` or the `render-story` / `site-story` tools, and `/api/v1/generate` reports a clear error on this path.
 - Add `astrbot_plugin_ournotes_script`: the `/剧本生成` AstrBot command (aliases `/写剧本`, `/storygen`) calls
   `POST /api/v1/script/generate`, sends a readable scene/dialogue/camera preview and attaches the complete
   `ournotes.story-script/1` JSON. Configuration covers the host URL, API key, language, base story, duration, line

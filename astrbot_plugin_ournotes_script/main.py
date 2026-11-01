@@ -63,7 +63,7 @@ class OurnotesScriptPlugin(Star):
         self.base_story = self._str("base_story", "")
         self.target_minutes = self._float("target_minutes", 2.0, 0.5, 10.0)
         self.max_lines = self._int("max_lines", 40, 6, 200)
-        self.timeout_seconds = self._int("timeout_seconds", 300, 30, 900)
+        self.timeout_seconds = self._int("timeout_seconds", 600, 30, 1800)
         self.max_prompt_chars = self._int("max_prompt_chars", 500, 20, 2000)
         self.preview_lines = self._int("preview_lines", 20, 0, 100)
         self.max_text_chars = self._int("max_text_chars", 1800, 200, 6000)

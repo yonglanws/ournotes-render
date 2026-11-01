@@ -41,8 +41,8 @@
   "timeout_seconds": {
     "description": "生成超时（秒）",
     "type": "int",
-    "default": 300,
-    "slider": { "min": 30, "max": 900, "step": 10 },
+    "default": 600,
+    "slider": { "min": 30, "max": 1800, "step": 10 },
     "hint": "AI 写作可能持续几分钟；超时后本次命令失败，不会影响其它任务。"
   },
   "max_prompt_chars": {
