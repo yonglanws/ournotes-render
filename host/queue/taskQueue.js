@@ -125,7 +125,8 @@ export class TaskQueue {
     const timer = setTimeout(() => {
       task.controller.abort(new TaskTimeoutError(`task timed out after ${Math.round(this.taskTimeoutMs / 1000)} s`));
     }, this.taskTimeoutMs);
-    timer.unref?.();
+    // Keep the timeout referenced: a process whose only pending work is a task must still fire it. (The periodic
+    // cleanup below is the one that may be unref'd, so an idle queue does not hold the process open.)
 
     const ctx = {
       signal: task.controller.signal,
