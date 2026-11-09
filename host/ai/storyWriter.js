@@ -1,12 +1,18 @@
 // AI story writer: prompt -> JSON -> parse/check -> apply known fixes -> ask the model to repair -> repeat.
 // The writer only produces the script; TTS, compilation and rendering are separate stages.
+//
+// Two pipelines in the MySekaiStoryteller harness style:
+//   single  — a fast cast pre-pass narrows the model pool first, then one call writes the whole script; failures go
+//             through a repair loop that keeps the conversation and appends the problem list.
+//   staged  — cast -> dialogue (full trimmed personas of the chosen cast only) -> storyboard. Every stage has its own
+//             focused repair and a fallback, and the result carries per-stage diagnostics (stages/warnings/usage).
 import { applyFixes, checkScript, parseScript, SCRIPT_FORMAT } from "../../scripts/lib/story-author/script.js";
 import { extractJson } from "./json.js";
-import { buildPlanMessages, buildRepairMessages, buildStoryMessages } from "./prompt.js";
+import { buildPlanMessages, buildQuickCastMessages, buildStoryMessages, MAX_PROMPT_MODELS } from "./prompt.js";
 import {
-  buildCastMessages, buildDialogueMessages, buildDialogueRepairMessages, buildStoryboardMessages,
-  buildStoryboardRepairMessages, fallbackCastPlan, mergeStagedScript, normalizeCastPlan, normalizeDialogue,
-  onStageProblems, spreadPositions,
+  buildCastMessages, buildDialogueLengthPrompt, buildDialogueMessages, buildDialogueRepairMessages,
+  buildStoryboardMessages, buildStoryboardRepairMessages, fallbackCastPlan, mergeStagedScript, modelIndex,
+  normalizeCastPlan, normalizeDialogue, onStageProblems, resolveModel, spreadPositions, countDialogueChars,
 } from "./staged.js";
 
 export class StoryWriterError extends Error {
@@ -21,6 +27,16 @@ export class StoryWriterError extends Error {
 
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const lower = (s) => String(s || "").trim().toLowerCase();
+
+// The staged repair loop asks for a fresh storyboard, so a failure keeps the finished dialogue. This hint does the
+// same job for the single pipeline without resending the whole prompt template.
+const REPAIR_HINT = (problems) => {
+  const list = problems.map((p) => `- ${p.path || "/"}: [${p.code}] ${p.message}` +
+    (p.expected ? `（可用值：${p.expected.slice(0, 40).join(", ")}${p.expected.length > 40 ? "…" : ""}）` : "") +
+    (p.suggestion ? `（建议：${p.suggestion}）` : "")).join("\n");
+  return `上一次输出的剧本没有通过校验：\n${list}\n\n` +
+    "请只输出修复后的完整 JSON 对象（ournotes.story-script/1），保留原有剧情、台词与演出，不要解释，不要 markdown。";
+};
 
 const unwrap = (doc) => {
   if (!isObj(doc)) return doc;
@@ -133,6 +149,54 @@ const trimLines = (doc, maxLines, logger) => {
   return doc;
 };
 
+// A narrowed catalog for the fast cast: everything else (stages, music, manifest…) stays as configured.
+const withModels = (catalog, models) => ({ ...catalog, models });
+
+const maxOnStageOf = (config) => Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
+
+/**
+ * single 的前置快速选角：把大角色池缩到这场戏需要的 1~maxOnStage 人，
+ * 主提示词只带入选角色的紧凑人设，而不是几十份完整表格。
+ * 顺序：场景点名角色 → 一次很短的选角调用；两步失败都保留完整目录（staged 自带选角段，不走这里）。
+ */
+const resolveFastCast = async ({ catalog, request, config, llm, logger, signal }) => {
+  const maxOnStage = maxOnStageOf(config);
+  const pool = (catalog.models || []).slice(0, MAX_PROMPT_MODELS);
+  if (pool.length <= maxOnStage) return catalog;
+
+  const prompt = String(request.prompt || "");
+  const mentioned = pool.filter((m) => [m.name, m.character]
+    .filter((n) => n && String(n).length >= 2)
+    .some((n) => prompt.includes(n)));
+  if (mentioned.length) {
+    logger.info?.(`场景点名角色：${mentioned.slice(0, maxOnStage).map((m) => m.name).join("、")}`);
+    return withModels(catalog, mentioned.slice(0, maxOnStage));
+  }
+
+  if (!llm.available) return catalog;
+  try {
+    const answer = await llm.json(buildQuickCastMessages({ catalog, request, config }), { signal, label: "quick-cast" });
+    const data = extractJson(answer.content);
+    const raw = Array.isArray(data) ? data
+      : isObj(data) && Array.isArray(data.cast) ? data.cast
+        : isObj(data) && data.cast != null ? [data.cast] : [];
+    const index = modelIndex(catalog);
+    const cast = [];
+    for (const item of raw) {
+      const model = resolveModel(index, String(item ?? "").trim());
+      if (model && !cast.some((m) => m.id === model.id)) cast.push(model);
+    }
+    if (cast.length) {
+      logger.info?.(`快速选角：${cast.map((m) => m.name).join("、")}`);
+      return withModels(catalog, cast.slice(0, maxOnStage));
+    }
+  } catch (e) {
+    if (signal?.aborted) throw signal.reason || e;
+    logger.warn?.(`快速选角失败，保留完整角色池：${e.message}`);
+  }
+  return catalog;
+};
+
 const siteFor = (catalog) => ({
   base: { language: catalog.language, languages: catalog.languages, stages: catalog.stages, music: catalog.music },
   models: catalog.models.map((m) => m.id),
@@ -185,13 +249,15 @@ const combineUsage = (calls) => {
 };
 
 const generateSingle = async ({ llm, catalog, request, config, logger, signal, onProgress = () => {} }) => {
-  const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
+  const maxOnStage = maxOnStageOf(config);
+  // single 只有一次主生成：先把大角色池缩到这场戏需要的几个人，主提示词只带他们的紧凑人设。
+  const narrowed = await resolveFastCast({ catalog, request, config, llm, logger, signal });
   // Optional first pass: a short director's plan. It improves shot flow and acting; a failure only loses the notes.
   let plan = null;
   if (config.llm.directorPlan === true) {
     onProgress("planning", 0, "AI 设计分镜");
     try {
-      const answer = await llm.json(buildPlanMessages({ catalog, request, config }), { signal, label: "plan" });
+      const answer = await llm.json(buildPlanMessages({ catalog: narrowed, request, config }), { signal, label: "plan" });
       plan = extractJson(answer.content);
       if (!plan) logger.warn?.("the director plan was not JSON; writing the script without it");
     } catch (e) {
@@ -199,30 +265,46 @@ const generateSingle = async ({ llm, catalog, request, config, logger, signal, o
       logger.warn?.(`the director plan failed (${e.message}); writing the script without it`);
     }
   }
-  const messages = buildStoryMessages({ catalog, request, config, plan });
+  const messages = buildStoryMessages({ catalog: narrowed, request, config, plan });
   onProgress("writing", 0, "AI 编写剧本");
-  let answer;
-  try {
-    answer = await llm.json(messages, { signal, label: "story" });
-  } catch (e) {
-    if (signal?.aborted) throw signal.reason || e;
-    throw new StoryWriterError(`AI 剧本生成失败：${e.message}`, { cause: e });
-  }
-  let doc = normalize(extractJson(answer.content), { catalog, request, config });
-  if (!isObj(doc)) {
-    throw new StoryWriterError("AI 没有返回 JSON 对象", { details: answer.content.slice(0, 1000) });
-  }
-  doc = trimLines(doc, Number(request.maxLines ?? config.story.maxLines ?? 120), logger);
-  spreadPositions(doc.beats, maxOnStage);
-
-  const site = siteFor(catalog);
-  let lastProblems = [];
+  const site = siteFor(narrowed);
+  const maxLines = Number(request.maxLines ?? config.story.maxLines ?? 120);
   const rounds = Math.max(0, config.llm.repairRounds ?? 2);
+  const details = [];
+  let answer = null;
+  let doc = null;
+  let lastProblems = [];
+
   for (let round = 0; round <= rounds; round++) {
     if (signal?.aborted) throw signal.reason || new Error("aborted");
-    const parsed = parseScript(doc);
-    let problems = parsed.errors;
+    if (round) onProgress("writing", round / (rounds + 1), `AI 修正剧本 (${round}/${rounds})`);
+    try {
+      answer = await llm.json(messages, { signal, label: round ? "repair" : "story" });
+    } catch (e) {
+      if (signal?.aborted) throw signal.reason || e;
+      throw new StoryWriterError(`AI 剧本生成失败：${e.message}`, { cause: e });
+    }
+
+    // The answer itself is repairable too: keep the conversation, append the problem, try again (one focused retry
+    // per round instead of failing the job).
+    doc = normalize(extractJson(answer.content), { catalog: narrowed, request, config });
+    if (!isObj(doc)) {
+      const problem = { path: "/", code: "type", message: "the answer was not a JSON object" };
+      details.push(problem.message);
+      lastProblems = [problem];
+      logger.warn?.(`round ${round}: the answer was not a JSON object`);
+      if (round >= rounds) break;
+      messages.push({ role: "assistant", content: answer.content.slice(0, 20_000) });
+      messages.push({ role: "user", content: REPAIR_HINT([problem]) });
+      continue;
+    }
+    doc = trimLines(doc, maxLines, logger);
+    spreadPositions(doc.beats, maxOnStage);
+
+    let problems = [];
     let warnings = [];
+    const parsed = parseScript(doc);
+    problems = parsed.errors;
     if (!problems.length) {
       const checked = checkScript(parsed.script, site);
       problems = checked.errors;
@@ -249,33 +331,33 @@ const generateSingle = async ({ llm, catalog, request, config, logger, signal, o
         continue;
       }
     }
-    if (round === rounds) break;
-    onProgress("writing", (round + 1) / (rounds + 1), `AI 修正剧本 (${round + 1}/${rounds})`);
-    let repaired;
-    try {
-      repaired = await llm.json(buildRepairMessages({ previous: doc, problems, catalog, request, config, plan }),
-                                { signal, label: "repair" });
-    } catch (e) {
-      if (signal?.aborted) throw signal.reason || e;
-      throw new StoryWriterError(`AI 修正剧本失败：${e.message}`, { cause: e });
-    }
-    const next = normalize(extractJson(repaired.content), { catalog, request, config });
-    if (!isObj(next)) throw new StoryWriterError("AI 修正结果不是 JSON 对象", { details: repaired.content.slice(0, 1000) });
-    doc = trimLines(next, Number(request.maxLines ?? config.story.maxLines ?? 120), logger);
-    spreadPositions(doc.beats, maxOnStage);
+    if (round >= rounds) break;
+    // Repair in the same conversation: the model sees its own answer and the problem list.
+    messages.push({ role: "assistant", content: answer.content.slice(0, 20_000) });
+    messages.push({ role: "user", content: REPAIR_HINT(problems) });
   }
   throw new StoryWriterError("AI 剧本经过自动修复后仍有错误", { details: lastProblems });
 };
 
 // Three calls instead of one: cast -> dialogue (full persona prompts, selected cast only) -> storyboard. The repair
-// loop only asks for a new storyboard: the finished dialogue is restored verbatim after every merge.
+// loop only asks for a new storyboard: the finished dialogue is restored verbatim after every merge. Every stage has
+// a fallback and reports into `stages`, so a caller can see which leg needed help.
 const generateStaged = async ({ llm, catalog, request, config, logger, signal, onProgress = () => {} }) => {
   const usages = [];
+  const stages = [];
+  const stageWarnings = [];
   const ask = async (messages, label) => {
     if (signal?.aborted) throw signal.reason || new Error("aborted");
+    const startedAt = Date.now();
     const answer = await llm.json(messages, { signal, label });
     if (answer.usage) usages.push({ stage: label, ...answer.usage });
+    stages.push({ stage: label, model: answer.model ?? null, latencyMs: Date.now() - startedAt,
+                  usage: answer.usage ?? null, ok: true });
     return answer;
+  };
+  const markStageFailed = (note, stage) => {
+    const last = stage ? [...stages].reverse().find((entry) => entry.stage === stage) : stages[stages.length - 1];
+    if (last) { last.ok = false; last.note = note; }
   };
   const failed = (label, e) => {
     if (signal?.aborted) throw signal.reason || e;
@@ -287,9 +369,14 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
   try {
     const answer = await ask(buildCastMessages({ catalog, request, config }), "cast");
     plan = normalizeCastPlan(extractJson(answer.content), { catalog, request, config });
-    if (!plan) logger.warn?.("选角结果里没有已知模型；改用站点角色顺序");
+    if (!plan) {
+      markStageFailed("没有返回目录中的角色");
+      stageWarnings.push("选角结果没有可用角色，已按站点角色顺序回退");
+      logger.warn?.("选角结果里没有已知模型；改用站点角色顺序");
+    }
   } catch (e) {
     if (signal?.aborted) throw signal.reason || e;
+    stageWarnings.push(`选角失败，已按站点角色顺序回退：${e.message}`);
     logger.warn?.(`选角失败（${e.message}）；改用站点角色顺序`);
   }
   if (!plan) plan = fallbackCastPlan({ catalog, request, config });
@@ -302,17 +389,69 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
   const dialogueRaw = extractJson(dialogueAnswer.content);
   let dialogue = normalizeDialogue({ raw: dialogueRaw, plan, request, config });
   if (!dialogue) {
+    markStageFailed("没有返回至少 2 条可用台词");
+    stageWarnings.push("台词稿为空或不完整，已请求重写一次");
     logger.warn?.("the dialogue pass returned no usable lines; retrying once");
     onProgress("dialogue", 0.34, "AI 修正台词稿");
     const retry = await ask(buildDialogueRepairMessages({ plan, catalog, request, config, previous: dialogueRaw }),
                             "dialogue-repair").catch((e) => failed("修正台词稿", e));
     dialogue = normalizeDialogue({ raw: extractJson(retry.content), plan, request, config });
+    if (!dialogue) markStageFailed("重写后仍没有至少 2 条可用台词");
   }
   if (!dialogue) {
     throw new StoryWriterError("AI 没有返回可用的台词稿", { details: String(dialogueAnswer.content).slice(0, 1000) });
   }
   if (!request.title && dialogue.title) plan.title = dialogue.title;
   logger.info?.(`staged: ${plan.cast.length} cast, ${dialogue.lines.length} dialogue lines`);
+
+  // ---- 台词长度闸 ------------------------------------------------------------------------------------------
+  // 台词太短（模型偶尔只写十几句或总字数不够）会让整场明显短于目标时长。测试与调试用的极短
+  // targetMinutes 不启用；只有配置/请求里真的给了时长才闸。补写最多两次，每次都保留原事件与人物关系。
+  const targetMinutes = Number(request.targetMinutes ?? config.story?.targetMinutes ?? 0);
+  const enforceDialogueLength = targetMinutes >= 0.5;
+  const minDialogueLines = Math.max(2, Math.round(targetMinutes * 10));
+  // 官方每句 7~17 字；下限按 ~110 字/分钟给，避免把正常场次误判成过短。
+  const minDialogueChars = Math.max(10, Math.round(targetMinutes * 110));
+  const actualDialogueChars = countDialogueChars(dialogue);
+  if (enforceDialogueLength &&
+      (dialogue.lines.length < minDialogueLines || actualDialogueChars < minDialogueChars)) {
+    const requiredLines = Math.max(minDialogueLines, Math.ceil(minDialogueChars / 12));
+    const expandDialogue = async (label) => {
+      const current = dialogue;
+      const currentLines = current.lines.length;
+      const currentChars = countDialogueChars(current);
+      logger.info?.(`${label}: ${currentLines} 句 / ${currentChars} 字，目标 ${requiredLines} 句 / ${minDialogueChars} 字`);
+      const answer = await ask(buildDialogueLengthPrompt({ plan, catalog, request, config, previous: current,
+        actualLines: currentLines, requiredLines, requiredChars: minDialogueChars }), label);
+      const expanded = normalizeDialogue({ raw: extractJson(answer.content), plan, request, config });
+      if (expanded &&
+          (expanded.lines.length > currentLines || countDialogueChars(expanded) > currentChars)) {
+        dialogue = expanded;
+        return true;
+      }
+      return false;
+    };
+    markStageFailed(
+      `台词太短（${dialogue.lines.length} 句 / ${actualDialogueChars} 字，至少需要 ${requiredLines} 句 / ${minDialogueChars} 字）`);
+    stageWarnings.push(
+      `台词只有 ${dialogue.lines.length} 句 / ${actualDialogueChars} 字，已请求补写（至少 ${requiredLines} 句 / ${minDialogueChars} 字）`);
+    try {
+      await expandDialogue("dialogue-expand");
+    } catch (e) {
+      if (signal?.aborted) throw signal.reason || e;
+      stageWarnings.push(`台词补写失败：${e.message}`);
+    }
+    // 第一次补写仍明显偏短（不到目标的 3/4）时再补一次，避免成片只有两分多钟。
+    if (countDialogueChars(dialogue) < Math.round(minDialogueChars * 0.75)) {
+      stageWarnings.push("补写后仍然偏短，已再补写一次");
+      try {
+        await expandDialogue("dialogue-expand-2");
+      } catch (e) {
+        if (signal?.aborted) throw signal.reason || e;
+        stageWarnings.push(`台词二次补写失败：${e.message}`);
+      }
+    }
+  }
 
   onProgress("storyboard", 0.48, "AI 设计分镜");
   let answer = await ask(buildStoryboardMessages({ plan, dialogue, catalog, request, config }), "storyboard")
@@ -323,7 +462,7 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
   let mergeWarnings = merged.warnings;
 
   const site = siteFor(catalog);
-  const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
+  const maxOnStage = maxOnStageOf(config);
   let lastProblems = [];
   const rounds = Math.max(0, config.llm.repairRounds ?? 2);
   for (let round = 0; round <= rounds; round++) {
@@ -350,8 +489,8 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
         } else {
           logger.info?.(`script ok: ${lines} lines, ${plan.cast.length} cast, ${warnings.length} warning(s)`);
           return {
-            script: parsed.script, doc, warnings: [...mergeWarnings, ...warnings], raw: answer.content,
-            usage: combineUsage(usages), plan, dialogue,
+            script: parsed.script, doc, warnings: [...stageWarnings, ...mergeWarnings, ...warnings], raw: answer.content,
+            usage: combineUsage(usages), plan, dialogue, stages,
           };
         }
       }
@@ -380,10 +519,33 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
     doc = normalize(merged.doc, { catalog, request, config });
     mergeWarnings = merged.warnings;
   }
+
+  // ---- 分镜降级 ---------------------------------------------------------------------------------------------
+  // 分镜经修复仍有错误时不再直接失败：台词稿逐字保留，退回“默认走位 + 无动作演出”的可用剧本，
+  // 与选角/台词段的降级策略一致。合成结果仍要过一遍完整校验，过不了才报错。
+  try {
+    const bare = mergeStagedScript({ plan, dialogue, storyboard: { beats: [] }, catalog, request, config });
+    const bareDoc = normalize(bare.doc, { catalog, request, config });
+    const parsed = parseScript(bareDoc);
+    let problems = parsed.errors;
+    if (!problems.length) problems = checkScript(parsed.script, site).errors;
+    if (!problems.length && !onStageProblems(bareDoc.beats, maxOnStage).length) {
+      markStageFailed("分镜经修复仍有错误，已退回无动作演出");
+      stageWarnings.push("分镜不可用，已退回默认走位与无动作演出");
+      logger.warn?.("storyboard unusable after repairs; falling back to bare lines");
+      return {
+        script: parsed.script, doc: bareDoc, warnings: [...stageWarnings, ...bare.warnings], raw: answer.content,
+        usage: combineUsage(usages), plan, dialogue, stages,
+      };
+    }
+  } catch { /* the fallback failed too; report the storyboard problems below */ }
+
   throw new StoryWriterError("AI 分镜经过自动修复后仍有错误", { details: lastProblems, plan, dialogue });
 };
 
 export const generateScript = async (args) => {
   if (!args.llm.available) throw new StoryWriterError("LLM is not configured (llm.enabled and llm.model)");
-  return args.config.llm?.pipeline === "single" ? generateSingle(args) : generateStaged(args);
+  const startedAt = Date.now();
+  const out = args.config.llm?.pipeline === "single" ? await generateSingle(args) : await generateStaged(args);
+  return { ...out, durationMs: Date.now() - startedAt };
 };

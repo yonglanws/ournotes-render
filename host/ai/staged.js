@@ -3,9 +3,9 @@
 // camera, motion, expression, gaze, listener reactions, BGM). The dialogue is final after pass 2: pass 3 references
 // line ids and mergeStagedScript restores the exact text, so a direction pass can never silently rewrite a line.
 import { motionStems } from "../../scripts/lib/story-author/script.js";
-import { expressionListFor, motionListFor, personaEntryFor, stagingRules, voiceStyleFor } from "./prompt.js";
+import { dialoguePersonaPrompt } from "./personas.js";
+import { MAX_PROMPT_MODELS, expressionListFor, motionListFor, personaEntryFor, stagingRules, voiceStyleFor } from "./prompt.js";
 
-const MAX_PROMPT_MODELS = 24;
 const MAX_CAST = 3;
 
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
@@ -55,7 +55,7 @@ const castableModels = (catalog) => {
   return out;
 };
 
-const modelIndex = (catalog) => {
+export const modelIndex = (catalog) => {
   const byId = new Map((catalog.models || []).map((m) => [m.id, m]));
   const byText = new Map();
   for (const m of catalog.models || []) {
@@ -64,7 +64,7 @@ const modelIndex = (catalog) => {
   return { byId, byText };
 };
 
-const resolveModel = (index, text) => index.byId.get(s(text)) || index.byText.get(lower(text)) || null;
+export const resolveModel = (index, text) => index.byId.get(s(text)) || index.byText.get(lower(text)) || null;
 
 const sanitizeId = (v) => (/^[A-Za-z][A-Za-z0-9_]*$/.test(s(v)) ? s(v) : "");
 
@@ -270,7 +270,8 @@ export const buildDialogueMessages = ({ plan, catalog, request, config }) => {
   const castLines = plan.cast.map((c) => {
     const model = index.byId.get(c.model) || { id: c.model, name: c.name, character: c.name };
     const entry = personaEntryFor(config.story?.personas, model);
-    const persona = String(entry?.prompt || "").trim();
+    // 与单段生成共用同一套核心人设提取：长表格只保留核心机制/语言与风格/角色档案/核心禁忌。
+    const persona = dialoguePersonaPrompt(entry);
     const style = voiceStyleFor(model);
     return [
       `### ${c.name}${c.group ? `（${c.group}）` : ""}（say: "${c.id}"）`,
@@ -284,12 +285,20 @@ export const buildDialogueMessages = ({ plan, catalog, request, config }) => {
 
   const outline = plan.outline.length ? plan.outline.map((x, i) => `${i + 1}. ${x}`).join("\n") : "(自由发挥，但仍要围绕这个小事件)";
   const a = plan.cast[0], b = plan.cast[1] || plan.cast[0];
+  const minLines = Math.max(12, Math.round(budget * 0.85));
+  const maxLines = Math.round(budget * 1.1);
+  const singleTurns = Math.max(8, Math.round(budget * 0.4));
+  const shortLines = Math.max(4, Math.round(budget * 0.16));
+  const turnCount = Math.max(6, Math.round(budget / 2.2));
   const example = {
     title: plan.title || "标题",
-    lines: [
-      { id: "l1", say: a.id, text: "今天也……一起练吧。" },
-      ...(b && b.id !== a.id ? [{ id: "l2", say: b.id, text: "嗯！\n那先从哪首开始？" }] : []),
-      { id: "l3", narrate: "（……）" },
+    turns: [
+      { speaker: a.id, lines: ["今天也……顺利练完了呢。", "……嗯。"] },
+      ...(b && b.id !== a.id ? [{ speaker: b.id, lines: ["嗯。刚开始还担心会来不及。\n不过今天总算跟上了！"] }] : []),
+      { speaker: a.id, lines: ["你也会……担心吗？"] },
+      ...(b && b.id !== a.id ? [{ speaker: b.id, lines: ["……会啊。", "毕竟是你的事嘛。"] }] : []),
+      { speaker: a.id, lines: ["那……下次一起练到最后一班车吧。"] },
+      { narrate: "（雨声轻了下来。）" },
     ],
   };
 
@@ -319,28 +328,33 @@ ${outline}
 ## 角色（请完整阅读每个人的提示词）
 ${castLines}
 
-## 台词要求
-- 语言：${language}；总共约 ${budget} 句（60 秒 15~20 句，2 分钟 30~40 句）。
-- 每句 7~17 字（按该语言的自然长度），单行最多 22 个全角字符；约 20~35% 的台词用 \\n 分成两行。
-- 每 5~6 句至少 1 句 2~6 字的短反应（「…………」「……嗯。」「真的？」「诶？」）。
+## 台词要求（按 ${budget} 句的场次计算）
+- 语言：${language}；总共 ${minLines}~${maxLines} 句（目标约 ${budget} 句）；少于 ${minLines} 句或超过 ${maxLines} 句都视为不合格。
+- 用 turns 组织：一个角色的一次发言 = 一个 turn，turn 里放 1~6 条 lines。
+  整场约 ${turnCount} 个 turns，长短要有明显起伏（官方一半以上是单句）：
+  约 45% 的 turn 只放 1 条（短反应、抢话、被打断），至少 ${singleTurns} 个；
+  约 1/5 的 turn 放 2 条；剩下约 1/3 放 3~6 条，其中至少 2 个 turn 放 6 条以上
+  （情绪最重、回忆或解释来龙去脉处）。
+  单句负责节奏，长段负责情绪，两种都要有；不要每个 turn 都写 2 条，也不要机械一人一句。
+- 句长：每句 7~17 字为主（按该语言的自然长度），单行最多 22 个全角字符；
+  约 20~35% 的台词用 \\n 分成两行；至少 ${shortLines} 句是 2~6 字的短反应
+  （「…………」「……嗯。」「真的？」「诶？」）；不要所有台词都 10~15 字。
 - 每个角色要有自己的句长和语气，严格按角色提示词；不要所有人都用同一种 12~15 字的书面句。
+- 一条 line 通常只放一句话；换行只放在标点之后，不要在词中间断开。
 - 只写说出口的话。不要括号动作（例如「（笑）」）、不要「她转过头」这类叙述；唯一的例外是 narrate。
 - narrate 全场 0~2 条，用「（……）」这种短句，放在开场、沉默反应或收尾；不要用旁白推进剧情。
 - 允许重复对方的话、停顿、欲言又止；不要每句都完整主谓宾。
 - 结尾用一句短话、一个没说完的句子或一句日常收束，不要总结主题，不要写“未完待续”。
 - 台词里不要提镜头、分镜、BGM 或“场景”。
 
-## 输出 JSON
-{
-  "title": "短标题",
-  "lines": [
-    { "id": "l1", "say": "${a.id}", "text": "第一句" },
-    { "id": "l2", "say": "${b.id}", "text": "第一行\\n第二行" },
-    { "id": "l3", "narrate": "（……）" }
-  ]
-}
+## 写完后自检（不要输出自检过程）
+- 把 turns 里每条 lines 数一遍：总句数是否在 ${minLines}~${maxLines} 句？
+- 是否有约 ${singleTurns} 个单条 turn、约 1/5 的两条 turn、其余 3 条以上，且至少 2 个 6 条以上？
+- 是否有至少 ${shortLines} 句 2~6 字？是否约 20~35% 的台词分两行？
+- 是否只有清单里的角色，且没有括号动作和镜头词？
 
-示例（只演示结构，台词请按上面的要求重写）：
+## 输出 JSON
+示例（只演示 turns 结构，台词请按上面的要求重写）：
 ${JSON.stringify(example, null, 2)}
 
 只输出 JSON 对象本身，不要 markdown 或解释。`,
@@ -353,31 +367,96 @@ export const normalizeDialogue = ({ raw, plan, request, config }) => {
   if (!isObj(raw)) return null;
   const doc = unwrap(raw);
   if (!isObj(doc)) return null;
-  const body = Array.isArray(doc.lines) ? doc.lines
-    : Array.isArray(doc.dialogue) ? doc.dialogue
-      : Array.isArray(doc.beats) ? doc.beats.filter((b) => isObj(b) && (b.say || b.narrate))
-        : [];
   const ids = new Set(plan.cast.map((c) => c.id));
   const names = byName(plan);
   const lines = [];
-  for (const item of body) {
-    if (!isObj(item)) continue;
-    if (typeof item.narrate === "string" && item.narrate.trim() && !item.say) {
-      const text = cleanText(item.narrate);
+  const pushSay = (say, text) => {
+    if (!ids.has(say)) say = names.get(lower(say)) || "";
+    if (!say) return;
+    const clean = cleanText(text);
+    if (clean) lines.push({ id: `l${lines.length + 1}`, say, text: clean });
+  };
+
+  // 首选 turns：一个角色的一次发言 = 一个 turn，内部 1~6 条 lines。
+  // 这种结构能自然产生官方那种「同一个人连说 2~3 句」，比扁平 lines 更稳。
+  const turns = Array.isArray(doc.turns) ? doc.turns : [];
+  for (const turn of turns) {
+    if (!isObj(turn)) continue;
+    if (typeof turn.narrate === "string" && turn.narrate.trim() && !turn.speaker && !turn.say) {
+      const text = cleanText(turn.narrate);
       if (text) lines.push({ id: `l${lines.length + 1}`, narrate: text });
       continue;
     }
-    let say = s(item.say || item.cast || item.speaker);
-    if (!ids.has(say)) say = names.get(lower(say)) || "";
-    if (!say) continue;
-    const text = cleanText(item.text ?? item.line ?? item.content);
-    if (!text) continue;
-    lines.push({ id: `l${lines.length + 1}`, say, text });
+    const say = s(turn.speaker ?? turn.say ?? turn.cast ?? turn.name);
+    const rawLines = Array.isArray(turn.lines) ? turn.lines : [];
+    for (const item of rawLines) {
+      pushSay(say, isObj(item) ? (item.text ?? item.line ?? item.content) : item);
+    }
+  }
+
+  if (lines.length === 0) {
+    const body = Array.isArray(doc.lines) ? doc.lines
+      : Array.isArray(doc.dialogue) ? doc.dialogue
+        : Array.isArray(doc.beats) ? doc.beats.filter((b) => isObj(b) && (b.say || b.narrate))
+          : [];
+    for (const item of body) {
+      if (!isObj(item)) continue;
+      if (typeof item.narrate === "string" && item.narrate.trim() && !item.say) {
+        const text = cleanText(item.narrate);
+        if (text) lines.push({ id: `l${lines.length + 1}`, narrate: text });
+        continue;
+      }
+      pushSay(s(item.say || item.cast || item.speaker), item.text ?? item.line ?? item.content);
+    }
   }
   const maxLines = Math.max(2, Number(request.maxLines ?? config.story?.maxLines ?? 120));
   if (lines.length > maxLines) lines.length = maxLines;
   if (lines.length < 2) return null;
   return { title: (s(doc.title) || plan.title || "").slice(0, 64), lines };
+};
+
+// 台词总字数（不含空白）：长度闸用「句数 + 总字数」两个下限，只看句数会被大量 2~4 字短句骗过。
+export const countDialogueChars = (dialogue) =>
+  (dialogue?.lines || []).reduce((sum, line) => {
+    const text = String(line?.text ?? line?.narrate ?? "").replace(/\s/g, "");
+    return sum + [...text].length;
+  }, 0);
+
+// 台词太短（模型偶尔只写十几句）会让整场明显短于目标时长；这是针对性的补写提示词，
+// 保留原事件与人物关系，只把对话的来回、停顿和情绪铺垫补足。
+export const buildDialogueLengthPrompt = ({ plan, catalog, request, config, previous, actualLines, requiredLines, requiredChars = 0 }) => {
+  const base = buildDialogueMessages({ plan, catalog, request, config });
+  const raw = typeof previous === "string" ? previous : JSON.stringify(previous);
+  const upper = Math.round(requiredLines * 1.15);
+  const actualChars = countDialogueChars(
+    typeof previous === "string" ? (() => { try { return JSON.parse(previous); } catch { return null; } })() : previous,
+  );
+  const charRule = requiredChars
+    ? `- 总字数至少 ${requiredChars} 字（上一轮约 ${actualChars} 字），平均每句 8~15 字；`
+    : "";
+  const actualMean = actualLines > 0 ? (actualChars / actualLines).toFixed(1) : "0";
+  const longRule = requiredChars
+    ? `- 上一轮平均每句只有 ${actualMean} 字；这一轮不要用大量 2~4 字短句凑句数，把对话的来回写满。`
+    : "";
+  return [
+    base[0],
+    {
+      role: "user",
+      content: `${base[1].content}\n\n## 上一轮的问题
+上一轮只写了 ${actualLines} 句台词${requiredChars ? `、约 ${actualChars} 字` : ""}，
+少于要求的 ${requiredLines} 句${requiredChars ? ` / ${requiredChars} 字` : ""}。请保留原来的小事件和人物关系，
+重写一份完整台词稿：
+- 总句数 ${requiredLines}~${upper} 句，仍然用 turns 结构，每个 turn 1~6 条 lines；
+${charRule}
+${longRule}
+- 不要靠重复台词凑数；补足对话的来回、停顿、短反应和情绪铺垫；
+- 只用出场角色，不要旁白和动作描写。
+上一轮的输出开头如下：
+${raw.slice(0, 4000)}
+
+只输出 JSON 对象本身，不要 markdown 或解释。`,
+    },
+  ];
 };
 
 // A dialogue answer can be well-formed JSON with no usable lines (wrong keys, speakers outside the cast, one line).
@@ -389,7 +468,8 @@ export const buildDialogueRepairMessages = ({ plan, catalog, request, config, pr
     {
       role: "user",
       content: `${base[1].content}\n\n## 上一轮的问题\n` +
-        "上一轮没有给出至少 2 条可用的 lines：每条必须同时有 say（上面列出的 cast id）和 text，或者只有 narrate。\n\n" +
+        "上一轮没有给出至少 2 条可用的台词：必须用 turns 数组，每个 turn 同时有 speaker（上面列出的 cast id）" +
+        "和 lines（1~6 条台词字符串），narrate 只能单独成条。\n\n" +
         `## 上一轮输出\n${typeof previous === "string" ? previous : JSON.stringify(previous)}\n\n` +
         "请按上面的角色提示词和格式重写台词稿，输出完整的 JSON 对象。",
     },
@@ -792,6 +872,28 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
         delete beat.expression;
         warnings.push({ code: "standaloneExpression", message: "独立表情一场最多 1 次，已省略多余的表情" });
       }
+    }
+  }
+  // 动作预算：官方 5~22% 的台词完全没有动作。模型（尤其关掉思考时）容易每句都给，
+  // 这里从最短的台词开始摘掉说话者动作/表情；上限按官方带的上沿再松一档（90% 有动作），
+  // 只压“每句都动”的退化输出，不动正常场次。
+  const says = merged.filter((beat) => "say" in beat);
+  const maxDirected = Math.ceil(says.length * 0.9);
+  let directedCount = says.filter((beat) => beat.motion || beat.expression).length;
+  if (directedCount > maxDirected) {
+    const candidates = says
+      .map((beat, index) => ({ beat, index,
+        length: [...String(beat.text || "").replace(/\s/g, "")].length }))
+      .filter((item) => item.beat.motion || item.beat.expression)
+      .sort((a, b) => a.length - b.length || b.index - a.index);
+    for (const item of candidates) {
+      if (directedCount <= maxDirected) break;
+      delete item.beat.motion;
+      delete item.beat.expression;
+      directedCount -= 1;
+    }
+    if (directedCount <= maxDirected) {
+      warnings.push({ code: "staticLineBudget", message: `台词几乎全都有动作，已摘掉 ${says.length - directedCount} 句的演出，保留官方比例的静止句` });
     }
   }
   const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));

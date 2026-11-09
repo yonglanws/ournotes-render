@@ -3,8 +3,9 @@
 // measured from eight official episodes (four two-person friendship stories, three chapters and 10610); the output is
 // checked and repaired afterwards.
 import { motionStems } from "../../scripts/lib/story-author/script.js";
+import { dialoguePersonaPrompt } from "./personas.js";
 
-const MAX_PROMPT_MODELS = 24;
+export const MAX_PROMPT_MODELS = 24;
 const MAX_MOTIONS = 28;
 const MAX_EXPRESSIONS = 16;
 const MAX_PLAN_CHARS = 5000;
@@ -222,7 +223,10 @@ export const buildStoryMessages = ({ catalog, request, config, plan = null }) =>
   const lineBudget = Math.max(10, Math.min(maxLines, Math.round(minutes * 16)));
   const models = catalog.models.slice(0, MAX_PROMPT_MODELS);
   const modelLines = models.map((m) => {
-    const persona = personaFor(config.story.personas, m);
+    // The single pass writes dialogue too, so a persona is trimmed the same way the staged dialogue pass trims it.
+    // The fast cast has usually narrowed the pool to 1~3 models by now, so the full sheet would also fit — the trim
+    // keeps the two paths consistent for operators who do configure 20 KB sheets.
+    const persona = dialoguePersonaPrompt(personaEntryFor(config.story.personas, m));
     const style = voiceStyleFor(m);
     return [
       `- model: ${m.id}`,
@@ -407,17 +411,29 @@ ${modelLines}
   ];
 };
 
-export const buildRepairMessages = ({ previous, problems, catalog, request, config, plan = null }) => {
-  const list = problems.map((p) => `- ${p.path || "/"}: [${p.code}] ${p.message}` +
-    (p.expected ? `（可用值：${p.expected.slice(0, 40).join(", ")}${p.expected.length > 40 ? "…" : ""}）` : "") +
-    (p.suggestion ? `（建议：${p.suggestion}）` : "")).join("\n");
-  const base = buildStoryMessages({ catalog, request, config, plan });
+// The single pipeline's pre-pass: narrow a large model pool to the characters this scene needs, so the story prompt
+// carries 1~3 compact personas instead of every sheet. The staged pipeline does the same with its cast pass.
+export const buildQuickCastMessages = ({ catalog, request, config, history = [] }) => {
+  const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
+  const roster = catalog.models.slice(0, MAX_PROMPT_MODELS)
+    .map((m) => {
+      const entry = personaEntryFor(config.story?.personas, m);
+      const summary = entry?.summary || "";
+      return `- ${m.id} — ${m.name}${m.character && m.character !== m.name ? ` (${m.character})` : ""}${summary ? `：${summary}` : ""}`;
+    })
+    .join("\n") || "(none)";
+  const recent = history.slice(-4).map((h) => `${h.role}: ${h.content}`).join("\n");
   return [
-    base[0],
+    {
+      role: "system",
+      content:
+        "你是角色选择器。根据用户消息从角色池选出最适合出演这场戏的角色：通常 1~2 个，" +
+        `用户明确描述多人互动时最多 ${maxOnStage} 个。只输出 JSON：{"cast":["模型 id",...]}。`,
+    },
     {
       role: "user",
-      content: `你上一轮输出的剧本没有通过校验。请输出修正后的完整 JSON 对象（不要只输出差异，不要解释）。\n\n` +
-        `原始要求：\n${request.prompt || ""}\n\n校验问题：\n${list}\n\n上一轮输出：\n${typeof previous === "string" ? previous : JSON.stringify(previous)}`,
+      content: `用户说：${request.prompt || "写一段安静的日常对话。"}\n` +
+        `${recent ? `最近对话：\n${recent}\n\n` : ""}可选角色：\n${roster}\n\n只输出 JSON。`,
     },
   ];
 };

@@ -85,6 +85,75 @@ export const loadPersonaDirs = (dirs, { logger = console } = {}) => {
   return out;
 };
 
+// A persona for callers that pass none: keep the model in character without inventing an AI framing.
+export const GENERIC_PROFILE = "未配置专属人设：依据角色名、当前场景与其他角色的互动自然演绎，保持前后一致；不要提及自己是 AI 或程序。";
+
+// The sections a dialogue pass actually needs; the rest of a sheet is chatbot protocol (safety rules, output formats,
+// empathy formulas) that dilutes the voice information. Kept in this order so a trimmed sheet still reads top down.
+const DIALOGUE_SECTION_ORDER = ["核心机制", "语言与风格", "角色档案", "核心禁忌"];
+const DIALOGUE_PERSONA_MAX_CHARS = 5000;
+
+const sectionRanges = (lines, wanted) => {
+  const ranges = [];
+  for (let index = 0; index < lines.length; index++) {
+    const match = /^(#{2,3})\s+(.+?)\s*$/.exec(lines[index]);
+    if (!match) continue;
+    const level = match[1].length;
+    const title = match[2];
+    if (!wanted.some((keyword) => title.includes(keyword))) continue;
+    let end = lines.length;
+    for (let next = index + 1; next < lines.length; next++) {
+      const heading = /^(#{1,6})\s+/.exec(lines[next]);
+      if (heading && heading[1].length <= level) { end = next; break; }
+    }
+    ranges.push({ start: index, end, title });
+  }
+  // An H2 covers the H3s under it, so overlapping ranges merge into one.
+  ranges.sort((a, b) => a.start - b.start);
+  const merged = [];
+  for (const range of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && range.start < last.end) last.end = Math.max(last.end, range.end);
+    else merged.push({ ...range });
+  }
+  return merged;
+};
+
+const truncateAtLine = (text, maxChars) => {
+  if (text.length <= maxChars) return text;
+  const cut = text.slice(0, maxChars);
+  const lineEnd = cut.lastIndexOf("\n");
+  const body = (lineEnd > maxChars * 0.6 ? cut.slice(0, lineEnd) : cut).trimEnd();
+  return `${body}\n……`;
+};
+
+// The persona a dialogue/story pass reads: long sheets keep only the core sections, short ones pass through whole.
+// Twenty full sheets can be hundreds of thousands of characters; the kept sections carry the voice, the档案 and the
+// taboos, which is what writing dialogue needs.
+export const dialoguePersonaPrompt = (persona, maxChars = DIALOGUE_PERSONA_MAX_CHARS) => {
+  if (!persona) return "";
+  const text = String(persona.prompt || "").trim();
+  if (!text || text.length <= maxChars) return text;
+
+  const lines = text.split("\n");
+  const ranges = sectionRanges(lines, DIALOGUE_SECTION_ORDER);
+  if (!ranges.length) return truncateAtLine(text, maxChars);
+
+  const used = new Set();
+  let output = "";
+  for (const keyword of DIALOGUE_SECTION_ORDER) {
+    const range = ranges.find((item) => !used.has(item.start) && item.title.includes(keyword));
+    if (!range) continue;
+    const chunk = lines.slice(range.start, range.end).join("\n").trim();
+    if (!chunk) continue;
+    const candidate = output ? `${output}\n\n${chunk}` : chunk;
+    if (candidate.length <= maxChars) { output = candidate; used.add(range.start); continue; }
+    if (output.length < maxChars * 0.6) { output = truncateAtLine(candidate, maxChars); used.add(range.start); }
+    break;
+  }
+  return output.length >= 600 ? output : truncateAtLine(text, maxChars);
+};
+
 // Directory sheets first; an explicit `story.personas` entry with the same name overrides its fields (a prompt-only
 // override keeps the sheet's group, summary and aliases).
 export const mergePersonas = (fromDirs, explicit) => {

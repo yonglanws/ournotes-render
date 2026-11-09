@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildStoryMessages } from "../ai/prompt.js";
+import { buildQuickCastMessages, buildStoryMessages } from "../ai/prompt.js";
 import { generateScript, prepareScript } from "../ai/storyWriter.js";
-import { onStageProblems, spreadPositions } from "../ai/staged.js";
+import { buildDialogueMessages, mergeStagedScript, normalizeDialogue, onStageProblems, spreadPositions } from "../ai/staged.js";
 import { quietLogger } from "./helpers.mjs";
 
 const CATALOG = {
@@ -417,4 +417,175 @@ test("an unusable cast plan falls back to the site's own models", async () => {
   assert.equal(llm.calls.length, 3);
   assert.deepEqual(out.plan.cast.map((c) => c.id), ["tomori", "soyo"]);
   assert.equal(out.doc.beats.filter((b) => b.say).length, 2);
+});
+
+// --- single pipeline: fast cast -------------------------------------------------------------------------------------
+
+const CATALOG4 = { ...CATALOG, models: [
+  ...CATALOG.models,
+  { id: "m_c", name: "乐奈", character: "rana", group: "rana", motions: ["mtn_idle01_C"],
+    expressions: ["exp_idle01"], defaultMotion: "mtn_idle01_C", defaultExpression: "exp_idle01" },
+  { id: "m_d", name: "立希", character: "taki", group: "taki", motions: ["mtn_idle01_C"],
+    expressions: ["exp_idle01"], defaultMotion: "mtn_idle01_C", defaultExpression: "exp_idle01" },
+] };
+
+const duoScript = () => ({
+  format: "ournotes.story-script/1", base: "stories/1.json", language: "zh-Hans", title: "测试",
+  cast: { a: { model: "m_b", name: "爽世" }, b: { model: "m_d", name: "立希" } },
+  beats: [
+    { scene: "stage_a", location: "教室", camera: "middle", positions: { a: "far-left", b: "far-right" } },
+    { say: "a", text: "今天也一起练习吧。", motion: "mtn_smile01" },
+    { say: "b", text: "嗯。", expression: "exp_idle01" },
+  ],
+});
+
+test("the single pipeline narrows a large pool to the characters the scene names", async () => {
+  const calls = [];
+  const llm = { available: true,
+    async json(messages) { calls.push(messages.map((m) => m.content).join("\n")); return { content: JSON.stringify(duoScript()) }; } };
+  const out = await generateScript({
+    llm, catalog: CATALOG4, request: { prompt: "爽世和立希在练习室", language: "zh-Hans" },
+    config: CONFIG, logger: quietLogger(),
+  });
+  assert.equal(calls.length, 1, "a named cast skips the quick-cast call");
+  assert.match(calls[0], /model: m_b/);
+  assert.match(calls[0], /model: m_d/);
+  assert.doesNotMatch(calls[0], /model: m_[ac]/, "unnamed models stay out of the story prompt");
+  assert.equal(out.script.cast.length, 2);
+});
+
+test("a large unnamed pool gets one short quick-cast call before the story prompt", async () => {
+  const calls = [];
+  const llm = { available: true,
+    async json(messages) {
+      calls.push(messages.map((m) => m.content).join("\n"));
+      if (calls.length === 1) return { content: JSON.stringify({ cast: ["m_b", "m_d"] }) };
+      return { content: JSON.stringify(duoScript()) };
+    } };
+  const out = await generateScript({
+    llm, catalog: CATALOG4, request: { prompt: "写一场放学后的对话", language: "zh-Hans" },
+    config: CONFIG, logger: quietLogger(),
+  });
+  assert.equal(calls.length, 2);
+  assert.match(calls[0], /角色选择器/);
+  assert.match(calls[0], /m_c/, "the quick-cast roster lists the whole pool");
+  assert.match(calls[1], /model: m_b/);
+  assert.doesNotMatch(calls[1], /model: m_[ac]/, "the story prompt only carries the chosen cast");
+  assert.equal(out.script.cast.length, 2);
+});
+
+test("the quick-cast prompt asks for model ids and keeps the roster compact", () => {
+  const [system, user] = buildQuickCastMessages({ catalog: CATALOG4, request: { prompt: "放学后" },
+    config: CONFIG, history: [{ role: "用户", content: "上次聊到练习" }] });
+  assert.match(system.content, /"cast"/);
+  assert.match(user.content, /m_a/);
+  assert.match(user.content, /上次聊到练习/);
+  assert.doesNotMatch(user.content, /PERSONA/, "the roster carries summaries, not persona prompts");
+});
+
+// --- staged pipeline: turns dialogue --------------------------------------------------------------------------------
+
+const PLAN2 = { title: "雨", logline: "", event: "等雨停", setting: { stage: "", location: "", music: "" },
+  cast: [{ id: "a", model: "m_a", name: "灯", group: "", role: "" },
+         { id: "b", model: "m_b", name: "爽世", group: "", role: "" }], outline: [] };
+
+test("the dialogue pass accepts turns and flattens them into line ids", () => {
+  const dialogue = normalizeDialogue({
+    raw: { title: "雨", turns: [
+      { speaker: "a", lines: ["今天也一起练习吧。", "……嗯。"] },
+      { narrate: "（雨声轻了下来。）" },
+      { speaker: "爽世", lines: ["嗯，先从音程开始吧。"] },
+    ] },
+    plan: PLAN2, request: {}, config: STAGED_CONFIG,
+  });
+  assert.deepEqual(dialogue.lines.map((l) => l.say ?? null), ["a", "a", null, "b"]);
+  assert.equal(dialogue.lines[2].narrate, "（雨声轻了下来。）");
+  assert.deepEqual(dialogue.lines.map((l) => l.id), ["l1", "l2", "l3", "l4"]);
+});
+
+test("the dialogue pass teaches turns and carries only the core persona sections", () => {
+  const long = [
+    "## 核心机制",
+    "你不是AI——你就是高松灯。" + "说话很轻，常带着省略号，想清楚才开口。".repeat(40),
+    "",
+    "## 交互协议",
+    "回复要保持简短。".repeat(700),
+    "",
+    "## 角色档案",
+    "- 姓名：高松灯（MyGO!!!!!主唱）",
+  ].join("\n");
+  const config = { ...STAGED_CONFIG, story: { ...STAGED_CONFIG.story, personas: [{ name: "灯", prompt: long }] } };
+  const [, user] = buildDialogueMessages({ plan: PLAN2, catalog: CATALOG, request: { prompt: "放学后" }, config });
+  assert.match(user.content, /turns/);
+  assert.match(user.content, /核心机制/);
+  assert.match(user.content, /角色档案/);
+  assert.doesNotMatch(user.content, /交互协议/, "chatbot-only sections are trimmed away");
+  assert.doesNotMatch(user.content, /回复要保持简短/);
+});
+
+test("a dialogue that is too short for the configured minutes is expanded", async () => {
+  const longTurns = {
+    title: "雨",
+    turns: [
+      { speaker: "a", lines: Array.from({ length: 16 }, (_, i) => `第${i + 1}句：今天也一起练习吧，雨停之前先练完这一段。`) },
+      { speaker: "b", lines: Array.from({ length: 16 }, (_, i) => `第${i + 17}句：好，那我先把谱子翻到那一页。`) },
+    ],
+  };
+  const calls = [];
+  const llm = { available: true,
+    async json(messages) {
+      calls.push(messages.map((m) => m.content).join("\n"));
+      if (calls.length === 1) return { content: JSON.stringify(CAST_DOC) };
+      if (calls.length === 2) return { content: JSON.stringify(DIALOGUE_DOC) };
+      if (calls.length === 3) return { content: JSON.stringify(longTurns) };
+      return { content: JSON.stringify(STORYBOARD_DOC) };
+    } };
+  const out = await generateScript({
+    llm, catalog: CATALOG, request: { prompt: "放学后", language: "zh-Hans" },
+    config: { ...STAGED_CONFIG, story: { ...STAGED_CONFIG.story, targetMinutes: 3 } }, logger: quietLogger(),
+  });
+  assert.equal(calls.length, 4, "one expansion call between dialogue and storyboard");
+  assert.match(calls[2], /少于要求的 30 句/);
+  assert.equal(out.dialogue.lines.length, 32);
+  assert.match(calls[3], /l32/, "the storyboard is written for the expanded dialogue");
+});
+
+test("a storyboard that directs every line keeps the official share of still lines", () => {
+  const dialogue = { title: "雨", lines: Array.from({ length: 10 }, (_, i) =>
+    ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `第${i + 1}句台词的内容。` })) };
+  const storyboard = { beats: [
+    { scene: "stage_a", camera: "middle", positions: { a: "far-left", b: "far-right" } },
+    ...dialogue.lines.map((l) => ({ line: l.id, motion: "mtn_smile01" })),
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
+  const says = merged.doc.beats.filter((b) => "say" in b);
+  const still = says.filter((b) => !b.motion && !b.expression).length;
+  assert.equal(still, 1, "one line in ten loses its motion");
+  assert.ok(merged.warnings.some((w) => w.code === "staticLineBudget"));
+});
+
+test("a storyboard that can never pass falls back to bare lines instead of failing the job", async () => {
+  const calls = [];
+  const llm = { available: true,
+    async json(messages) {
+      calls.push(messages.map((m) => m.content).join("\n"));
+      if (calls.length === 1) return { content: JSON.stringify(CAST_DOC) };
+      if (calls.length === 2) return { content: JSON.stringify(DIALOGUE_DOC) };
+      return { content: JSON.stringify({ beats: [
+        { scene: "stage_a", camera: "middle", positions: { a: "far-left", b: "far-right" } },
+        { line: "l1", motion: "mtn_totally_unknown" },
+      ] }) };
+    } };
+  const out = await generateScript({
+    llm, catalog: CATALOG, request: { prompt: "放学后", language: "zh-Hans" },
+    config: STAGED_CONFIG, logger: quietLogger(),
+  });
+  assert.equal(calls.length, 3, "repairRounds is 0 so no repair call is made");
+  const spoken = out.doc.beats.filter((b) => "say" in b || "narrate" in b);
+  assert.equal(spoken.length, 3, "the dialogue is restored verbatim");
+  assert.equal(spoken[0].text, "今天也一起练习吧。");
+  assert.ok(!("motion" in spoken[0]), "the bare fallback carries no acting");
+  assert.ok(out.warnings.some((w) => String(w.message ?? w).includes("无动作演出")));
+  assert.ok(out.stages.every((s) => s.stage !== "storyboard-repair"), "no repair stage was recorded");
+  assert.equal(out.stages.find((s) => s.stage === "storyboard").ok, false);
 });
