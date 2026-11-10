@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { dialogueBudgetFor, directionBudgetFor, OFFICIAL_TARGETS } from "../ai/official-targets.js";
-import { buildStoryboardMessages } from "../ai/staged.js";
+import { buildCastMessages, buildDialogueMessages, buildStoryboardMessages } from "../ai/staged.js";
+import { buildStoryMessages, stagingRules } from "../ai/prompt.js";
 
 test("line and character budgets use one 2-minute formula", () => {
   assert.deepEqual(dialogueBudgetFor(2), { lines: 36, chars: 480, minLines: 32, maxLines: 47 });
@@ -31,6 +32,7 @@ test("checked close-run, two-motion and standalone-expression shares are exposed
 const CATALOG = {
   manifest: "stories/1.json",
   language: "zh-Hans",
+  languages: ["zh-Hans"],
   stages: [{ id: "stage_a", caption: "教室" }],
   music: [{ cue: "bgm_a", label: "Quiet" }],
   models: [
@@ -73,6 +75,40 @@ test("staged messages built from 40 lines carry the 30-sample official targets",
     assert.ok(text.includes(needle), `staged messages must mention ${needle}`);
   }
   assert.ok(!text.includes("8 部官方剧情实测"), "the old 8-episode provenance is gone");
+});
+
+test("configured maxLines is a strict cap for the single and staged dialogue prompts", () => {
+  const capped = { ...CONFIG, story: { ...CONFIG.story, maxLines: 5 } };
+  const [, user] = buildStoryMessages({
+    catalog: CATALOG, request: { prompt: "放学后", targetMinutes: 3 }, config: capped,
+  });
+  assert.match(user.content, /台词总量 5~5 条/);
+  assert.doesNotMatch(user.content, /台词总量 10~10 条/);
+
+  const [, cast] = buildCastMessages({
+    catalog: CATALOG, request: { prompt: "放学后", targetMinutes: 3, maxLines: 5 }, config: capped,
+  });
+  assert.match(cast.content, /约 5 句台词/);
+
+  const [, dialogue] = buildDialogueMessages({
+    plan: PLAN, catalog: CATALOG, request: { prompt: "放学后", targetMinutes: 3 }, config: capped,
+  });
+  const range = /总共 (\d+)~(\d+) 句/.exec(dialogue.content);
+  assert.ok(range, "the dialogue prompt states a line range");
+  assert.ok(Number(range[1]) <= Number(range[2]), "min <= max");
+  assert.ok(Number(range[2]) <= 5, "the configured cap is respected");
+  assert.match(dialogue.content, /总共 5~5 句/);
+});
+
+test("the shared staging rules use the same zoom budget as the storyboard prompt", () => {
+  assert.match(stagingRules(3), /一场 2~5 次/);
+  assert.doesNotMatch(stagingRules(3), /一场 0~2 次/);
+});
+
+test("the single-pass extended-field example is a say beat, not a staged line reference", () => {
+  const [, user] = buildStoryMessages({ catalog: CATALOG, request: { prompt: "放学后" }, config: CONFIG });
+  assert.match(user.content, /"say": "a", "text": "……嗯。"/);
+  assert.doesNotMatch(user.content, /"line": "l7"/);
 });
 
 test("no official target is NaN and every numeric field is finite", () => {

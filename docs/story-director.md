@@ -28,9 +28,10 @@ Our Notes 自己的 `Talk` 行 + `HostActions` 扩展，并在官方 ADV 的虚�
 2. 平均 **0.40 次 `Focus`/`Talk` 行**（按有文本行约 0.45）。`CameraDistance` 在 `Talk` 行上的占比：
    2（1.4×）38.9%、3（1.8×）36.1%、4（2.8×）20.4%；1（1.2×）和 5（4×）是少数。按有文本行算，
    **约 20% 的台词在 4（近景）**、39% 在 2、36% 在 3：近景不是稀有镜头，群像/双人仍以 2/3 为主。
-   近景连续 1~2 句约占 **77.9%**（`closeRunOneOrTwoShare`），3 句及以上约 22%。
-3. `Motion` 约 1.30 个/有文本行；5.96% 的句子没有 `Motion`；约 **44.7%** 的有文本行有 2 个 `Motion`
-   （`twoMotionShare`）。1508 条 `Motion` 中 1497 条携带 `ExpressionName`。
+   近景连续 1~2 句约占 **77.9%**（149 段近景中 116 段为 1~2 句，`closeRunOneOrTwoShare`），3 句及以上约 22%。
+3. `Motion` 约 1.30 个/有文本行；5.96% 的句子没有 `Motion`；约 **44.7%** 的有文本行有 >=2 个表演动作
+   （`Motion + Expression + Look + LookTarget` = 518/1158，`twoMotionShare`）。归属有文本 Talk 的 1502 条
+   `Motion` 中 1497 条携带 `ExpressionName`；全语料 1508 条中 1503 条携带。
 4. 独立 `Expression` 全语料只有 2 条（约 0.067 条/集）：表情基本都挂在 `Motion` 上；默认 `idle`，不是每句都笑。
 5. `Look` 217 + `LookTarget` 145 = 362，约 0.313 次/有文本行；31.26% 的句子带视线。双人戏开场常先 1 人，
    2~4 句后另一人 `In`。
@@ -307,7 +308,7 @@ stage：先两人对话，`positions` 引入第三人，再让一人退场、最
 
 - `at` 是 0..1，表示台词正文的百分比；省略为 0。
 - **`at: 0` 的动作在台词开始前执行**，编译成独立的 `Motion` / `Expression` / `LookTarget` 行。官方大多数听者反应都是这样发生的。
-- `at > 0` 的动作由 `Talk` 的 `HostActions` 扩展在虚拟时钟上调度；正文长度取“语音时长，或按字数估算的显示时长”，至少 `_minTalkDisplayTime`。只用于确实需要压住长句后半段的反应。8 部官方样本都没有 `at > 0` 的句中动作，所以 AI 提示词要求听者反应一律写 `at: 0`；`HostActions` 仍保留给手工脚本。
+- `at > 0` 的动作由 `Talk` 的 `HostActions` 扩展在虚拟时钟上调度；正文长度取“语音时长，或按字数估算的显示时长”，至少 `_minTalkDisplayTime`。只用于确实需要压住长句后半段的反应。30 部官方样本都没有 `at > 0` 的句中动作，所以 AI 提示词要求听者反应一律写 `at: 0`；`HostActions` 仍保留给手工脚本。
 - `cast` 省略时默认说话者；`narrate` 必须写。
 - 每条至少写 `motion`、`expression`、`lookAt` 之一；格式允许最多 12 条，但提示词建议最多 1 条听者反应（加上 `say.motion` 共 2 个动作）。
 - 目标必须在台上，动作/表情必须是该模型真实存在的名称。

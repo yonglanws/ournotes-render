@@ -2,6 +2,12 @@ const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0)
 const sum = (lines, k) => lines.reduce((a, b) => a + (b[k] || 0), 0);
 const rate = (n, d) => (d ? n / d : 0);
 
+// Total performance actions attributed to a text-bearing Talk line. Official
+// two-action lines include speaker/listener Motion and Expression plus the two
+// gaze command families (Look and LookTarget).
+export const performanceActionCount = (line) =>
+  (line?.motions || 0) + (line?.expressions || 0) + (line?.looks || 0) + (line?.lookTargets || 0);
+
 export const percentile = (values, q) => {
   if (!Number.isFinite(q) || q < 0 || q > 1) throw new RangeError("q must be a finite number in [0, 1]");
   if (!values.length) return 0;
@@ -37,6 +43,7 @@ export const summarize = (lines) => {
       questionShare: rate(lines.filter((l) => /[?？]/.test(l.body)).length, lines.length),
       exclaimShare: rate(lines.filter((l) => /[!！]/.test(l.body)).length, lines.length),
       noMotionShare: rate(lines.filter((l) => !l.motions).length, lines.length),
+      twoActionShare: rate(lines.filter((l) => performanceActionCount(l) >= 2).length, lines.length),
       distance2Share: rate(lines.filter((l) => l.distance === 2).length, lines.length),
       distance3Share: rate(lines.filter((l) => l.distance === 3).length, lines.length),
       distance4Share: rate(lines.filter((l) => l.distance === 4).length, lines.length),
@@ -52,6 +59,8 @@ export const summarize = (lines) => {
     speakerRunCount: runLengths.length,
     speakerRunMean: mean(runLengths), soloRunShare: rate(runLengths.filter((n) => n === 1).length, runLengths.length),
     motions: sum(lines, "motions"), expressions: sum(lines, "expressions"),
+    motionExpressions: sum(lines, "motionExpressions"),
+    twoActionLines: lines.filter((l) => performanceActionCount(l) >= 2).length,
     lookAny: sum(lines, "looks") + sum(lines, "lookTargets"),
     focus: sum(lines, "focus"), track: sum(lines, "track"), zoom: sum(lines, "zoom"),
     pedestal: sum(lines, "pedestal"), panV2: sum(lines, "panV2"), dof: sum(lines, "dof"),
@@ -86,6 +95,7 @@ export const summarizeTailCounts = (records) => {
   const tail = records.filter((l) => l.tail);
   return {
     motions: sum(tail, "motions"), expressions: sum(tail, "expressions"),
+    motionExpressions: sum(tail, "motionExpressions"),
     lookAny: sum(tail, "looks") + sum(tail, "lookTargets"),
     focus: sum(tail, "focus"), track: sum(tail, "track"), zoom: sum(tail, "zoom"),
     pedestal: sum(tail, "pedestal"), panV2: sum(tail, "panV2"), dof: sum(tail, "dof"),

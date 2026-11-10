@@ -3,8 +3,16 @@
 // measured from 30 official episodes (8 local chapters plus 22 duo friendship stories; 1300 Talk rows, 1158 text
 // lines); the output is checked and repaired afterwards.
 import { motionStems } from "../../scripts/lib/story-author/script.js";
-import { dialogueBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
+import { dialogueBudgetFor, directionBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
 import { dialoguePersonaPrompt } from "./personas.js";
+
+const pct = (value) => Math.round(value * 100);
+const pct1 = (value) => (Math.round(value * 1000) / 10).toFixed(1);
+const fixed = (value, digits = 2) => Number(value).toFixed(digits);
+// Per-episode counts are the checked per-text-line rate times the checked
+// mean episode length; they are formats of OFFICIAL_TARGETS, not new literals.
+const perEpisode = (rate) =>
+  (rate * OFFICIAL_TARGETS.textLinesPerEpisodeMean).toFixed(1);
 
 export const MAX_PROMPT_MODELS = 24;
 const MAX_MOTIONS = 28;
@@ -206,8 +214,8 @@ export const stagingRules = (maxOnStage = 3) => {
       : "两人同台必须站在 far-left / far-right；不要用 center+right、center+left 或 left+right，两个角色会叠在一起。",
     "镜头档位：near 1.2× 是最广的全景（只在开场/收尾用，全场 0~1 次）；middle 1.4× 是双人中景（默认）；far 1.8× 是群像/紧中景；close 2.8× 是情绪近景；very-close 4× 是大特写（最多 1 次）。不要把 near 当近景。",
     "镜头每 3~4 句换一次：双人戏用二人同框（middle，focus 5）和说话者近景（close，focus 该角色）交替；三人群像用 far + focus 5，偶尔用两人构图（middle，focus 4/6）。不要每句切，也不要只在一个机位站桩。近景停 1~2 句（偶尔 3 句），随后回到二人/群像；不要连续两句都切 close。",
-    "慢推镜（可选）：zoom 1.03~1.10 缓慢推近、0.92~0.98 拉远，zoomDuration 3~5 秒；一场 0~2 次，只给情绪句、近景或结尾，一个机位最多 1 次。",
-    "表演：一句台词最多一个说话者动作，听者反应最多一个；约 6% 的台词没有动作；表情和动作一起写，默认 idle，不要每句都笑。",
+    `慢推镜（可选）：zoom 1.03~1.10 缓慢推近、0.92~0.98 拉远，zoomDuration 3~5 秒；一场 ${directionBudgetFor(30).zoomMin}~${directionBudgetFor(40).zoomMax} 次，只给情绪句、近景或结尾，一个机位最多 1 次。`,
+    `表演：一句台词最多一个说话者动作，听者反应最多一个；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的台词没有动作；表情和动作一起写，默认 idle，不要每句都笑。`,
     limit === 2 ? "视线：双人戏每 2~3 句写一个 lookAt。" : "视线：双人戏每 2~3 句写一个 lookAt；三人以上只在被点名或明显反应时用。",
     "留白只用于 0.1~0.5 秒的呼吸；fade out/in 只用于真正的时间或地点跳跃。",
   ].join("\n");
@@ -222,7 +230,7 @@ export const buildStoryMessages = ({ catalog, request, config, plan = null }) =>
   const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story.maxOnStage ?? 3) || 3)));
   // One shared line/character budget for both pipelines; maxLines stays a configured cap applied after it.
   const budget = dialogueBudgetFor(minutes);
-  const lineBudget = Math.max(10, Math.min(maxLines, budget.lines));
+  const lineBudget = Math.min(maxLines, Math.max(1, budget.lines));
   const minLineTarget = Math.min(budget.minLines, lineBudget);
   const maxLineTarget = Math.max(minLineTarget, Math.min(budget.maxLines, maxLines));
   const lineRange = `${minLineTarget}~${maxLineTarget}`;
@@ -340,12 +348,12 @@ ${request.prompt || "写一段安静的日常对话。"}
 - 可用语言：${catalog.languages.join(", ")}
 ${planNotes}
 ## 官方节奏（30 部官方样本：8 部本地章节 + 22 部双人友情戏）
-- 台词：整条台词常见 1~30 字（均值 15.5 字、中位 14、p90 30）；显式换行片段常见 7~17 字、均值 11.1 字；约 38% 两行，三行以上不足 1%；2~6 字短反应约 22%；省略号约 46%、问号约 26%、叹号约 21%。
-- 话轮：约 73% 的连续说话人段只有一句，均值约 1.4 句；官方单集约 32~47 条有文本台词（均值约 38.6，时长约 1~2.5 分钟），本场按 18 条/分钟换算成上面的目标范围。先 1 人开场，2~4 句后第二人进场；不要机械一人一句，也不要每次都写长段。
-- 镜头：Focus 约 0.40/句（按 Talk 行计；按有文本行约 0.45）；距离 2/3/4 分别约 39%/36%/20%；近景连续 1~2 句约占 77.9%，每 3~4 句换一次构图。
-- 运镜：官方常用 Focus、Track、Zoom、Pedestal、PanV2、DoF；Zoom 每集约 5 次、Pedestal 约 4 次、PanV2 约 5.6 次、DoF 约 0.8 次；Se 每集约 4.9 条、Bgm 每集约 2.4 条。AI 每场默认 2~5 次 Zoom、0~2 次 Track，Pedestal/PanV2/DoF 只在明确情绪或空间变化时用，Se 约 5 条/场。
-- 表演：Motion 约 1.30/句；约 6% 的句子没有动作；有动作的句子里约 45% 有 2 个动作；独立 Expression 每集约 0.07 条（默认 0~1 条/场），表情都挂在 Motion 上。
-- 视线：Look + LookTarget 约 0.31/句（31% 的句子带视线）；双人戏每 2~3 句一个 lookAt。
+- 台词：整条台词常见 1~${OFFICIAL_TARGETS.lineCharsP90} 字（均值 ${fixed(OFFICIAL_TARGETS.lineCharsMean, 1)} 字、中位 ${OFFICIAL_TARGETS.lineCharsMedian}、p90 ${OFFICIAL_TARGETS.lineCharsP90}）；显式换行片段常见 7~17 字、均值 ${fixed(OFFICIAL_TARGETS.segmentCharsMean, 1)} 字；约 ${pct(OFFICIAL_TARGETS.twoLineShare)}% 两行，三行以上不足 1%；2~6 字短反应约 ${pct(OFFICIAL_TARGETS.shortShare)}%；省略号约 ${pct(OFFICIAL_TARGETS.ellipsisShare)}%、问号约 ${pct(OFFICIAL_TARGETS.questionShare)}%、叹号约 ${pct(OFFICIAL_TARGETS.exclaimShare)}%。
+- 话轮：约 ${pct(OFFICIAL_TARGETS.soloRunShare)}% 的连续说话人段只有一句，均值约 ${fixed(OFFICIAL_TARGETS.speakerRunMean, 1)} 句；官方单集约 ${OFFICIAL_TARGETS.textLinesPerEpisodeMin}~${OFFICIAL_TARGETS.textLinesPerEpisodeMax} 条有文本台词（均值约 ${fixed(OFFICIAL_TARGETS.textLinesPerEpisodeMean, 1)}，时长约 1~2.5 分钟），本场按 ${OFFICIAL_TARGETS.linesPerMinute} 条/分钟换算成上面的目标范围。先 1 人开场，2~4 句后第二人进场；不要机械一人一句，也不要每次都写长段。
+- 镜头：Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句（按 Talk 行计；按有文本行约 ${fixed(OFFICIAL_TARGETS.focusPerTextLine, 2)}）；距离 2/3/4 分别约 ${pct(OFFICIAL_TARGETS.distance2Share)}%/${pct(OFFICIAL_TARGETS.distance3Share)}%/${pct(OFFICIAL_TARGETS.distance4Share)}%；近景连续 1~2 句约占 ${pct1(OFFICIAL_TARGETS.closeRunOneOrTwoShare)}%，每 3~4 句换一次构图。
+- 运镜：官方常用 Focus、Track、Zoom、Pedestal、PanV2、DoF；Zoom 每集约 ${perEpisode(OFFICIAL_TARGETS.zoomPerTextLine)} 次、Pedestal 约 ${perEpisode(OFFICIAL_TARGETS.pedestalPerTextLine)} 次、PanV2 约 ${perEpisode(OFFICIAL_TARGETS.panV2PerTextLine)} 次、DoF 约 ${perEpisode(OFFICIAL_TARGETS.dofPerTextLine)} 次；Se 每集约 ${perEpisode(OFFICIAL_TARGETS.sePerTextLine)} 条、Bgm 每集约 ${fixed(OFFICIAL_TARGETS.bgmPerEpisode, 1)} 条。AI 每场默认 ${directionBudgetFor(30).zoomMin}~${directionBudgetFor(40).zoomMax} 次 Zoom、0~${directionBudgetFor(30).track} 次 Track，Pedestal/PanV2/DoF 只在明确情绪或空间变化时用，Se 约 ${Math.round(OFFICIAL_TARGETS.sePerTextLine * OFFICIAL_TARGETS.textLinesPerEpisodeMean)} 条/场。
+- 表演：Motion 约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的句子没有动作；有动作的句子里约 ${pct(OFFICIAL_TARGETS.twoMotionShare)}% 有 2 个动作；独立 Expression 每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条（默认 0~1 条/场），表情都挂在 Motion 上。
+- 视线：Look + LookTarget 约 ${fixed(OFFICIAL_TARGETS.lookAnyPerTextLine, 2)}/句（${pct(OFFICIAL_TARGETS.lookLineShare)}% 的句子带视线）；双人戏每 2~3 句一个 lookAt。
 - 10610 的 13 句教学场是特例（10 Focus / 5 Track / 20 Motion），镜头更碎；日常戏不要照它的密度写。
 
 ## 输出格式（ournotes.story-script/1）
@@ -359,20 +367,20 @@ ${JSON.stringify(example, null, 2)}
 - positions beat：{"positions": {角色: 位置}, "camera": 可选, "focus": 可选, "track": 可选}。位置只能是 far-left, left, center, right, far-right；两个角色不能占同一位置。省略的角色退场，新角色进场。**两人同台必须用 far-left / far-right**；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0）" : `同台最多 ${maxOnStage} 人，第 3 人必须等一人退场后再进场`}；不要用 center+right、center+left 或 left+right（会重叠）。一场最多 2 次 positions 变化；换组时让已有人物保持原位，只让 1 人进出；不要把同一角色从 left 移到 center（会重新进出场并可能闪一下）。
 - say beat：{"say": 角色 cast id, "text": 台词, "motion": 可选说话者动作, "expression": 可选说话者表情, "lookAt": 可选, "focus": 可选, "camera": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "actions": 可选, "id": 可选}。说话者必须已经站在舞台上。**不写 focus/camera/track 就保持当前镜头**；同一组连续对话不要每句都写镜头字段。表情尽量和 motion 一起写；没有 motion 就尽量不改表情。
 - narrate beat：{"narrate": 旁白文字, "focus": 可选, "camera": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "actions": 可选}。旁白的 actions 必须写 cast。narrate 全场 0~2 句，放在开场、沉默反应或收尾，用「（……）」这种短句，不要小说式描写。
-- camera beat：{"camera": "near|middle|far|close|very-close" 或 {"distance","focus","track"}, "focus": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "duration": 可选秒}。只移动镜头，不改变站位。只改距离时保持同一个 focus；near 是全景，全场最多 1 次；close 近景约占 20% 的台词（30 句约 6 次、40 句约 8 次），每次 1~2 句（偶尔 3 句）。
+- camera beat：{"camera": "near|middle|far|close|very-close" 或 {"distance","focus","track"}, "focus": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "duration": 可选秒}。只移动镜头，不改变站位。只改距离时保持同一个 focus；near 是全景，全场最多 1 次；close 近景约占 ${pct(OFFICIAL_TARGETS.distance4Share)}% 的台词（30 句约 ${directionBudgetFor(30).closeUps} 次、40 句约 ${directionBudgetFor(40).closeUps} 次），每次 1~2 句（偶尔 3 句）。
 - fade beat：{"fade": "out" 或 "in", "duration": 可选秒}。只用于时间/地点跳跃，连续对话里不要用。
 - pause beat：{"pause": 秒数}。只用于 0.1~0.5 秒的呼吸，不要每个场景都放。
 - action beat：{"action": 角色 cast id, "motion": 可选, "expression": 可选, "lookAt": 可选, "duration": 可选秒}。没有台词的反应镜头。
 - focus：优先写位置名；两人同框用 focus: 5，单人近景用角色 id 或该角色的位置名；角色 focus 只给情绪最重的 1~2 句。不要用 2/4/6/8 去框 far-left/far-right 的两个人。close / very-close **必须**给角色 id 或该角色的位置名，不要用 focus 5。
 - 近景节奏：close 只切给情绪最重的 1~2 句；下一句用 middle + focus 5 回到二人/群像，不要连续两句 close，也不要从 close 直接切到另一个 close；三人同台时 close 只给一个人的反应，另一人留在画外。
-- track：镜头相对焦点的横向偏移，-4~4；0 是正对焦点。两人对话用 ±0.2~0.8，群像横移可用 ±1.2~2。一场 0~2 次，双人通常 0~1 次；只在换组/群像横移时写，不要每句微调。
-- zoom：镜头缓慢推近/拉远，1.03~1.10 推近、0.92~0.98 拉远；zoomDuration 3~5 秒。一场 2~5 次，只给情绪句、近景或结尾，一个机位最多 1 次；不写就静止。
+- track：镜头相对焦点的横向偏移，-4~4；0 是正对焦点。两人对话用 ±0.2~0.8，群像横移可用 ±1.2~2。一场 0~${directionBudgetFor(30).track} 次，双人通常 0~1 次；只在换组/群像横移时写，不要每句微调。
+- zoom：镜头缓慢推近/拉远，1.03~1.10 推近、0.92~0.98 拉远；zoomDuration 3~5 秒。一场 ${directionBudgetFor(30).zoomMin}~${directionBudgetFor(40).zoomMax} 次，只给情绪句、近景或结尾，一个机位最多 1 次；不写就静止。
 - actions：一句台词内的听者反应，最多 1 条（加上 say.motion 共 2 个动作）：{"at": 0~1, "cast": 可选（默认说话者）, "motion": 可选, "expression": 可选, "lookAt": 可选}。至少写 motion/expression/lookAt 之一；cast 必须在台上。**听者反应一律写 at: 0**；官方样本没有句中动作，不要用 0.3~0.7。
 - lookAt：一个站在台上的 cast id、位置名，或 1~9 的构图点。双人戏每 2~3 句写一个 lookAt。
 - cast id 是字母开头、只含字母数字下划线的字符串；cast 的 model 必须是下方清单里的 model id，name 是显示名。
 - motion 可以写清单中的完整名，也可以写去掉 _L/_C/_R 的 stem；expression 必须是完整名。动作说明（括号里）是按名称推断的，只用来帮你选，不要写进 JSON。
 - 同一时刻最多 3 个角色在台上；用 positions 换组，不要为每次换人新开一个 scene。
-- 台词每行不超过 22 个全角字符，单条最多 2 行（用 \\n 换行）；约 38% 两行；约 22% 是 2~6 字的短反应；不要空行，不要首尾空白。
+- 台词每行不超过 22 个全角字符，单条最多 2 行（用 \\n 换行）；约 ${pct(OFFICIAL_TARGETS.twoLineShare)}% 两行；约 ${pct(OFFICIAL_TARGETS.shortShare)}% 是 2~6 字的短反应；不要空行，不要首尾空白。
 - 不要输出清单之外的任何名称；不确定的动作/表情就省略该字段。
 - 结尾用一句短话、一个小动作或一句没说完的话收束，不要总结主题，不要写“未完待续”。
 
@@ -386,14 +394,14 @@ ${JSON.stringify(example, null, 2)}
 - se / seDuration / seDelay / seStop：se 必须是站点声音清单里的 cue；duration 0.5~10，delay 0~10；seStop 与 se 互斥。
 - motionFadeIn / motionWait：fade -1~2，wait 布尔；默认 -1/false，只在明确需要节奏时写。
 示例（只演示字段位置，不要照抄数值）：
-{"line": "l7", "focusDuration": 1.5, "trackDuration": 2, "pedestal": -0.2, "pedestalDuration": 1.5,
+{"say": "a", "text": "……嗯。", "focusDuration": 1.5, "trackDuration": 2, "pedestal": -0.2, "pedestalDuration": 1.5,
  "pan": 12, "panDuration": 2.5, "panFocusSlide": 0.5, "dof": 0.4, "dofDuration": 1.5, "dofLayers": 2,
  "look": -0.4, "lookY": 0.1, "lookDuration": 0.5, "se": "se_cue", "seDuration": 2, "seDelay": 0.2,
  "seStop": false, "motionFadeIn": -1, "motionWait": false}
 
 ## 台词与角色
 - 每个角色要有自己的句长和语气：寡言角色 4~10 字、常带「……」、少分两行；活泼角色 16~24 字、可两行、感叹号多；稳重角色 12~18 字、少感叹号；嘴硬角色 12~18 字、短句反问；随性角色 4~8 字、答非所问。
-- 长短句交替：约 22% 是 2~6 字的短反应（「…………」「……嗯。」「真的？」「诶？」）；约 38% 两行；不要所有台词都 10~15 字。
+- 长短句交替：约 ${pct(OFFICIAL_TARGETS.shortShare)}% 是 2~6 字的短反应（「…………」「……嗯。」「真的？」「诶？」）；约 ${pct(OFFICIAL_TARGETS.twoLineShare)}% 两行；不要所有台词都 10~15 字。
 - 允许重复对方的话、停顿、欲言又止；不要每句都完整主谓宾。
 - 台词是角色当下会说的话，不是旁白或主题总结。
 
@@ -405,10 +413,10 @@ ${JSON.stringify(example, null, 2)}
 
 ## 演出质量
 - 先选一个具体的小事件，整场围绕它；结构是“小事件开场 → 2~3 句闲聊/跑题 → 一个很小的发现或请求 → 情绪转一次 → 收尾”，不要写成起承转合齐全的短篇小说。
-- 镜头：二人同框 ↔ 说话者一侧，3~4 句一组；三人用群像或两人构图；换组才切。Focus 约 0.40/句：一场 30 句约 12 次 Focus 变化（含换组、推近、回到群像），不要只写 4 个 Focus 就停。
-- 一场最多一次 near（全景）；情绪近景用 close，约占 20% 的台词（30 句约 6 次、40 句约 8 次），每次 1~2 句（偶尔 3 句），随后用 middle + focus 5 回到二人或群像，不要停在同一个 close 上直到结尾。推近时保持同一侧 focus，只改 camera distance，不要换焦点。
-- 动作预算：Motion 约 1.30/句（20 句约 26 个）；约 6% 的句子没有动作；有动作的句子里约 45% 有 2 个动作；不要给同一角色同一句叠 2 个动作。
-- 表情跟动作走，默认 idle；不要连续三句笑，也不要给同一角色连续两句相反表情；独立表情默认 0，确有必要最多 1 次（只改表情的静镜头）。
+- 镜头：二人同框 ↔ 说话者一侧，3~4 句一组；三人用群像或两人构图；换组才切。Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句：一场 30 句约 ${directionBudgetFor(30).focusChanges} 次 Focus 变化（含换组、推近、回到群像），不要只写 4 个 Focus 就停。
+- 一场最多一次 near（全景）；情绪近景用 close，约占 ${pct(OFFICIAL_TARGETS.distance4Share)}% 的台词（30 句约 ${directionBudgetFor(30).closeUps} 次、40 句约 ${directionBudgetFor(40).closeUps} 次），每次 1~2 句（偶尔 3 句），随后用 middle + focus 5 回到二人或群像，不要停在同一个 close 上直到结尾。推近时保持同一侧 focus，只改 camera distance，不要换焦点。
+- 动作预算：Motion 约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句（20 句约 ${Math.round(20 * OFFICIAL_TARGETS.motionsPerTextLine)} 个）；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的句子没有动作；有动作的句子里约 ${pct(OFFICIAL_TARGETS.twoMotionShare)}% 有 2 个动作；不要给同一角色同一句叠 2 个动作。
+- 表情跟动作走，默认 idle；不要连续三句笑，也不要给同一角色连续两句相反表情；独立表情默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 次（只改表情的静镜头）。
 - 情绪只转一次；结尾停在小动作、短句或没说完的话，不要总结主题。
 - 与其多切一次镜头，不如让听者的表情和视线承担反应。
 - 动作/表情必须服务台词；想不出合适的动作就省略，让镜头和表情承担演出。

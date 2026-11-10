@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   discoverOfficialCorpus, episodeText, episodeToLines, OFFICIAL_IDS,
-  rawCommandDistributions, decodeEpisodeAsset, tailAttribution,
+  rawCommandDistributions, decodeEpisodeAsset, tailAttribution, closeRunAttribution,
 } from "./official-corpus.mjs";
 import {
   aggregate, summarize, summarizeTailCounts, withCorpusRateDenominators, withTailCounts,
@@ -48,6 +48,8 @@ const CHECKED_DISTRIBUTIONS = Object.freeze({
   perTalkRowEffectiveDuoShare: 0.7654,
   attributedMotions: 1502,
   motions: 1508,
+  attributedMotionExpressions: 1497,
+  motionExpressions: 1503,
   lookAny: 362,
   se: 147,
   bgm: 71,
@@ -61,12 +63,13 @@ const CHECKED_DISTRIBUTIONS = Object.freeze({
   speakerRunCount: 832,
   speakerRunMean: 1.3918,
   soloRunShare: 0.7284,
-  // Direct checked audit measurements. Unlike the line aggregations above,
-  // these three are cited constants from the reviewed 30-episode audit: the
-  // current line adapter has no canonical boundary definition for close-up
-  // runs or the two-motion/two-action line share, so they are deliberately
-  // not synthesized here from unrelated rates.
+  // Raw-Talk-row close runs and performance-action lines, recomputed by
+  // closeRunAttribution and performanceActionCount rather than hardcoded in
+  // the prompt. closeRunOneOrTwoShare is oneOrTwo / total close runs.
+  closeRunCount: 149,
+  closeRunOneOrTwo: 116,
   closeRunOneOrTwoShare: 0.7785,
+  twoActionLines: 518,
   twoMotionShare: 0.4473,
   standaloneExpressionPerEpisode: 0.0667,
 });
@@ -266,6 +269,7 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
   const entries = corpus || discovery;
   const failures = [...(discovery.failures || [])];
   const episodes = [], summaries = [], allLines = [], tailLines = [];
+  const closeRuns = { total: 0, oneOrTwo: 0 };
   const rawDistributions = { talkRows: 0, textLines: 0, duoRows: 0, effectiveDuoRows: 0,
     noMotionLines: 0, distance2Rows: 0, distance3Rows: 0, distance4Rows: 0 };
   const totals = {
@@ -302,6 +306,9 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
       }
       const summary = summarize(adapted.lines);
       const tail = tailAttribution(episode, { id, language });
+      const close = closeRunAttribution(episode, { language });
+      closeRuns.total += close.total;
+      closeRuns.oneOrTwo += close.oneOrTwo;
       const raw = rawCommandDistributions(episode, { language });
       for (const key of Object.keys(rawDistributions)) rawDistributions[key] += raw[key];
       record.sha256 = entry.provenance?.sha256 || sha256(bytes);
@@ -317,6 +324,7 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
       record.rawTextTalkRows = textLines;
       record.summary = summary;
       record.tailAttribution = tail;
+      record.closeRuns = close;
       episodes.push(record);
       summaries.push(summary);
       allLines.push(...adapted.lines);
@@ -380,6 +388,7 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
           .map(([k, v]) => [`perTalkRow${k[0].toUpperCase()}${k.slice(1)}`, v])),
         ...withTailCounts(withCorpusRateDenominators(corpusSummary, rawDistributions, totals), tailLines),
         attributedMotions: corpusSummary.motions,
+        attributedMotionExpressions: corpusSummary.motionExpressions,
         // Flat aliases are retained for downstream traceability, with explicit names.
         perTextLineNoMotionShare: rateOrZero(rawDistributions.noMotionLines, rawDistributions.textLines),
         perTextLineLookLineShare: rateOrZero(totals.lookRows, totals.textLines),
@@ -390,6 +399,17 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
         perTalkRowEffectiveDuoShare: rateOrZero(rawDistributions.effectiveDuoRows, rawDistributions.talkRows),
         // Directly recomputable from the checked command totals above.
         standaloneExpressionPerEpisode: rateOrZero(totals.expression, totals.episodes),
+        // Raw-Talk-row close runs and >=2 performance-action lines.
+        closeRunCount: closeRuns.total,
+        closeRunOneOrTwo: closeRuns.oneOrTwo,
+        closeRunOneOrTwoShare: rateOrZero(closeRuns.oneOrTwo, closeRuns.total),
+        twoActionLines: corpusSummary.twoActionLines,
+        twoMotionShare: corpusSummary.perTextLine.twoActionShare,
+      },
+      closeRuns: {
+        total: closeRuns.total,
+        oneOrTwo: closeRuns.oneOrTwo,
+        share: rateOrZero(closeRuns.oneOrTwo, closeRuns.total),
       },
       perEpisodeMean: aggregate(summaries),
       rawDistributions,

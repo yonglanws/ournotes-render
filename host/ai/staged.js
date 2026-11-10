@@ -9,6 +9,13 @@ import { MAX_PROMPT_MODELS, expressionListFor, motionListFor, personaEntryFor, s
 
 const MAX_CAST = 3;
 
+const pct = (value) => Math.round(value * 100);
+const pct1 = (value) => (Math.round(value * 1000) / 10).toFixed(1);
+const fixed = (value, digits = 2) => Number(value).toFixed(digits);
+// Formats a checked per-text-line rate as a per-episode count.
+const perEpisode = (rate) =>
+  (rate * OFFICIAL_TARGETS.textLinesPerEpisodeMean).toFixed(1);
+
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const s = (v) => String(v ?? "").trim();
 const lower = (s) => String(s || "").trim().toLowerCase();
@@ -36,11 +43,11 @@ const unwrap = (doc) => {
 
 const minutes = (request, config) => Number(request.targetMinutes ?? config.story?.targetMinutes ?? 3);
 
-// The shared official line budget; maxLines is a configured cap applied afterwards.
+// The shared official line budget; maxLines is a strict configured cap.
 const lineBudgetFor = (request, config) => {
   const maxLines = Number(request.maxLines ?? config.story?.maxLines ?? 120);
   const budget = dialogueBudgetFor(minutes(request, config));
-  return Math.max(10, Math.min(maxLines, budget.lines));
+  return Math.min(maxLines, Math.max(1, budget.lines));
 };
 
 // One model per character (the site lists each costume separately), and only models whose motions are loaded: a cast
@@ -288,13 +295,18 @@ export const buildDialogueMessages = ({ plan, catalog, request, config }) => {
   const a = plan.cast[0], b = plan.cast[1] || plan.cast[0];
   const maxLinesConfig = Number(request.maxLines ?? config.story?.maxLines ?? 120);
   const dialogueBudget = dialogueBudgetFor(minutes(request, config));
-  const budget = Math.max(10, Math.min(maxLinesConfig, dialogueBudget.lines));
+  const lineCap = Math.max(1, Math.floor(Number(maxLinesConfig) || 120));
+  const budget = Math.min(lineCap, Math.max(1, dialogueBudget.lines));
   const minLines = Math.min(dialogueBudget.minLines, budget);
-  const maxLines = Math.max(minLines, Math.min(dialogueBudget.maxLines, maxLinesConfig));
-  const turnCount = Math.max(6, Math.round(budget / OFFICIAL_TARGETS.speakerRunMean));
-  const singleTurns = Math.max(2, Math.round(turnCount * OFFICIAL_TARGETS.soloRunShare));
-  const shortLines = Math.max(2, Math.round(budget * OFFICIAL_TARGETS.shortShare));
-  const twoLineLines = Math.max(1, Math.round(budget * OFFICIAL_TARGETS.twoLineShare));
+  const maxLines = Math.max(minLines, Math.min(dialogueBudget.maxLines, lineCap));
+  const turnCount = Math.max(1, Math.min(maxLines,
+    Math.round(budget / OFFICIAL_TARGETS.speakerRunMean)));
+  const singleTurns = Math.max(1, Math.min(turnCount,
+    Math.round(turnCount * OFFICIAL_TARGETS.soloRunShare)));
+  const shortLines = Math.max(1, Math.min(maxLines,
+    Math.round(budget * OFFICIAL_TARGETS.shortShare)));
+  const twoLineLines = Math.max(1, Math.min(maxLines,
+    Math.round(budget * OFFICIAL_TARGETS.twoLineShare)));
   const example = {
     title: plan.title || "标题",
     turns: [
@@ -336,11 +348,11 @@ ${castLines}
 ## 台词要求（按 ${budget} 句的场次计算）
 - 语言：${language}；总共 ${minLines}~${maxLines} 句（目标约 ${budget} 句）；少于 ${minLines} 句或超过 ${maxLines} 句都视为不合格。
 - 用 turns 组织：一个角色的一次发言 = 一个 turn，turn 里放 1~4 条 lines。
-  整场约 ${turnCount} 个 turns；约 73% 单句 turn、均值 1.4 句；短反应约 22%；整条台词均值 15.5 字、p90 30 字；换行片段均值 11.1 字。
+  整场约 ${turnCount} 个 turns；约 ${pct(OFFICIAL_TARGETS.soloRunShare)}% 单句 turn、均值 ${fixed(OFFICIAL_TARGETS.speakerRunMean, 1)} 句；短反应约 ${pct(OFFICIAL_TARGETS.shortShare)}%；整条台词均值 ${fixed(OFFICIAL_TARGETS.lineCharsMean, 1)} 字、p90 ${OFFICIAL_TARGETS.lineCharsP90} 字；换行片段均值 ${fixed(OFFICIAL_TARGETS.segmentCharsMean, 1)} 字。
   约 ${singleTurns} 个单句 turn；约 1/4 的 turn 放 2 条；其余放 3~4 条，只在情绪最重或解释来龙去脉时用 4 条。
   单句负责节奏，长段负责情绪；不要每个 turn 都写 2 条，也不要机械一人一句。
-- 句长：整条台词常见 1~30 字（均值 15.5 字、p90 30 字），显式换行片段常见 7~17 字（均值 11.1 字）；单行最多 22 个全角字符；
-  约 38% 两行（约 ${twoLineLines} 句），三行以上不足 1%；约 ${shortLines} 句是 2~6 字的短反应
+- 句长：整条台词常见 1~${OFFICIAL_TARGETS.lineCharsP90} 字（均值 ${fixed(OFFICIAL_TARGETS.lineCharsMean, 1)} 字、p90 ${OFFICIAL_TARGETS.lineCharsP90} 字），显式换行片段常见 7~17 字（均值 ${fixed(OFFICIAL_TARGETS.segmentCharsMean, 1)} 字）；单行最多 22 个全角字符；
+  约 ${pct(OFFICIAL_TARGETS.twoLineShare)}% 两行（约 ${twoLineLines} 句），三行以上不足 1%；约 ${shortLines} 句是 2~6 字的短反应
   （「…………」「……嗯。」「真的？」「诶？」）；不要所有台词都 10~15 字。
 - 每个角色要有自己的句长和语气，严格按角色提示词；不要所有人都用同一种 12~15 字的书面句。
 - 一条 line 通常只放一句话；换行只放在标点之后，不要在词中间断开。
@@ -353,7 +365,7 @@ ${castLines}
 ## 写完后自检（不要输出自检过程）
 - 把 turns 里每条 lines 数一遍：总句数是否在 ${minLines}~${maxLines} 句？
 - 是否有约 ${singleTurns} 个单句 turn、约 1/4 的两条 turn、其余 3~4 条？
-- 是否有至少 ${shortLines} 句 2~6 字？是否约 38% 两行？
+- 是否有至少 ${shortLines} 句 2~6 字？是否约 ${pct(OFFICIAL_TARGETS.twoLineShare)}% 两行？
 - 是否只有清单里的角色，且没有括号动作和镜头词？
 
 ## 输出 JSON
@@ -430,12 +442,13 @@ export const countDialogueChars = (dialogue) =>
 export const buildDialogueLengthPrompt = ({ plan, catalog, request, config, previous, actualLines, requiredLines, requiredChars = 0 }) => {
   const base = buildDialogueMessages({ plan, catalog, request, config });
   const raw = typeof previous === "string" ? previous : JSON.stringify(previous);
-  const upper = Math.round(requiredLines * 1.15);
+  const lineCap = Math.max(1, Math.floor(Number(request.maxLines ?? config.story?.maxLines ?? 120) || 120));
+  const upper = Math.max(requiredLines, Math.min(lineCap, Math.round(requiredLines * 1.15)));
   const actualChars = countDialogueChars(
     typeof previous === "string" ? (() => { try { return JSON.parse(previous); } catch { return null; } })() : previous,
   );
   const charRule = requiredChars
-    ? `- 总字数至少 ${requiredChars} 字（上一轮约 ${actualChars} 字），平均每句 8~15 字；`
+    ? `- 总字数至少 ${requiredChars} 字（上一轮约 ${actualChars} 字），平均每句约 ${fixed(OFFICIAL_TARGETS.lineCharsMean, 1)} 字；`
     : "";
   const actualMean = actualLines > 0 ? (actualChars / actualLines).toFixed(1) : "0";
   const longRule = requiredChars
@@ -449,7 +462,7 @@ export const buildDialogueLengthPrompt = ({ plan, catalog, request, config, prev
 上一轮只写了 ${actualLines} 句台词${requiredChars ? `、约 ${actualChars} 字` : ""}，
 少于要求的 ${requiredLines} 句${requiredChars ? ` / ${requiredChars} 字` : ""}。请保留原来的小事件和人物关系，
 重写一份完整台词稿：
-- 总句数 ${requiredLines}~${upper} 句，仍然用 turns 结构，每个 turn 1~6 条 lines；
+- 总句数 ${requiredLines}~${upper} 句，仍然用 turns 结构，每个 turn 1~4 条 lines；
 ${charRule}
 ${longRule}
 - 不要靠重复台词凑数；补足对话的来回、停顿、短反应和情绪铺垫；
@@ -472,7 +485,7 @@ export const buildDialogueRepairMessages = ({ plan, catalog, request, config, pr
       role: "user",
       content: `${base[1].content}\n\n## 上一轮的问题\n` +
         "上一轮没有给出至少 2 条可用的台词：必须用 turns 数组，每个 turn 同时有 speaker（上面列出的 cast id）" +
-        "和 lines（1~6 条台词字符串），narrate 只能单独成条。\n\n" +
+        "和 lines（1~4 条台词字符串），narrate 只能单独成条。\n\n" +
         `## 上一轮输出\n${typeof previous === "string" ? previous : JSON.stringify(previous)}\n\n` +
         "请按上面的角色提示词和格式重写台词稿，输出完整的 JSON 对象。",
     },
@@ -572,9 +585,9 @@ ${plan.logline ? `一句话：${plan.logline}` : ""}
 ${castBlock(plan)}
 
 ## 官方节奏（30 部官方样本：8 部本地章节 + 22 部双人友情戏）
-- 台词：整条台词常见 1~30 字（均值 15.5 字、p90 30 字），换行片段均值 11.1 字；约 38% 两行，三行以上不足 1%；2~6 字短反应约 22%。
-- 镜头：Focus 约 0.40/句；距离 2/3/4 分别约 39%/36%/20%；近景连续 1~2 句约占 77.9%。
-- 运镜：Pedestal 约 4 次/集、PanV2 约 5.6 次/集、DoF 约 0.8 次/集、Look + LookTarget 约 0.31/句、Se 约 4.9 条/集。
+- 台词：整条台词常见 1~${OFFICIAL_TARGETS.lineCharsP90} 字（均值 ${fixed(OFFICIAL_TARGETS.lineCharsMean, 1)} 字、p90 ${OFFICIAL_TARGETS.lineCharsP90} 字），换行片段均值 ${fixed(OFFICIAL_TARGETS.segmentCharsMean, 1)} 字；约 ${pct(OFFICIAL_TARGETS.twoLineShare)}% 两行，三行以上不足 1%；2~6 字短反应约 ${pct(OFFICIAL_TARGETS.shortShare)}%。
+- 镜头：Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句；距离 2/3/4 分别约 ${pct(OFFICIAL_TARGETS.distance2Share)}%/${pct(OFFICIAL_TARGETS.distance3Share)}%/${pct(OFFICIAL_TARGETS.distance4Share)}%；近景连续 1~2 句约占 ${pct1(OFFICIAL_TARGETS.closeRunOneOrTwoShare)}%。
+- 运镜：Pedestal 约 ${perEpisode(OFFICIAL_TARGETS.pedestalPerTextLine)} 次/集、PanV2 约 ${perEpisode(OFFICIAL_TARGETS.panV2PerTextLine)} 次/集、DoF 约 ${perEpisode(OFFICIAL_TARGETS.dofPerTextLine)} 次/集、Look + LookTarget 约 ${fixed(OFFICIAL_TARGETS.lookAnyPerTextLine, 2)}/句、Se 约 ${perEpisode(OFFICIAL_TARGETS.sePerTextLine)} 条/集。
 
 ## 台词稿（逐字定稿，按顺序）
 ${lineList}
@@ -614,11 +627,11 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
 - 非 line beat 只有 scene / positions / camera / fade / pause / action，插在合适的台词之间；不要为每一句新开 scene，也不要反复 fade。
 - line beat 只写演出字段：motion、expression、lookAt、focus、camera、track、zoom、zoomDuration、actions，以及可选的 focusDuration、trackDuration、pedestal、pedestalDuration、pan、panDuration、panFocusSlide、dof、dofDuration、dofLayers、look、lookY、lookDuration、se、seDuration、seDelay、seStop、motionFadeIn、motionWait。不写 focus/camera/track 就保持当前镜头。
 - 每个说话者开口前必须已经在台上；用 positions 让他进场。**两人同台必须 far-left / far-right**；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0）" : "同台最多 2 人，第 3 人必须等一人退场后再进场"}；不要用 center+right、center+left 或 left+right（会重叠）。
-- **镜头预算**：全场约 ${budget.focusChanges} 个 focus（含 scene/positions 上的；官方 Focus 约 0.40/句），其中 close 近景约 ${budget.closeUps} 次（距离 4 约占 20% 的台词），near 全景 0~1 次。close 停 1~2 句（偶尔 3 句），下一句用 middle + focus 5 回到二人/群像；不要连续两句 close，也不要停在同一个 close 上直到结尾。
+- **镜头预算**：全场约 ${budget.focusChanges} 个 focus（含 scene/positions 上的；官方 Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句），其中 close 近景约 ${budget.closeUps} 次（距离 4 约占 ${pct(OFFICIAL_TARGETS.distance4Share)}% 的台词），near 全景 0~1 次。close 停 1~2 句（偶尔 3 句），下一句用 middle + focus 5 回到二人/群像；不要连续两句 close，也不要停在同一个 close 上直到结尾。
   大部分 line beat 不要写 focus/camera/track，只有真的换机位时才写；同一机位保持 3~4 句，连续两句都写 focus 通常就是切太碎。推近（middle/far → close）是硬切，拉回（close → middle/far）会自动缓推，不需要写 duration。
 - **慢推镜**：全场约 ${budget.zoomMin}~${budget.zoomMax} 次 zoom，写在情绪句/近景或结尾：推近 1.03~1.10，拉远 0.92~0.98，zoomDuration 3~5 秒。一个机位最多 1 次；不写就静止，不要每个镜头都推。
 - **视线预算**：全场约 ${budget.lookAt} 个 lookAt；双人戏每 3 句最多 1 个，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名或 1~9 的构图点；不要每句都看着对方。
-- **表演预算**：全场约 ${motionBudget} 个表演动作（Motion/Expression，官方约 1.30/句）；约 ${noMotionTarget} 句完全没有动作（最多不超过 ${budget.maxStatic} 句）；约 ${twoMotion} 句有 2 个动作；独立 Expression 0~1 条。表情尽量和 motion 一起写，默认 idle。
+- **表演预算**：全场约 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；约 ${noMotionTarget} 句完全没有动作（最多不超过 ${budget.maxStatic} 句）；约 ${twoMotion} 句有 2 个动作；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。
 - **扩展运镜与声音**：Pedestal 约 ${budget.pedestal} 次（轻微上下移），PanV2 约 ${budget.panV2} 次（只在换组/横移），DoF 约 ${budget.dof} 次（情绪特写），Look/LookTarget 约 ${budget.lookAt} 次，Se 约 ${budget.se} 条（只用声音清单里的 cue），Track 约 ${budget.track} 次。可选字段：focusDuration、trackDuration、pedestalDuration、panDuration、panFocusSlide、dofDuration、dofLayers、look、lookY、lookDuration、seDuration、seDelay、seStop、motionFadeIn、motionWait；只在明确需要时写，不写就沿用默认值或不生成。
 - 听者反应写进 actions（at: 0），**每句最多 1 条**，cast 必须是台上的其他角色；不要给说话者本人写 actions，也不要一句叠两个听者。
 - focus 优先写构图点/位置，角色 focus 只给 close 近景和情绪最重的 1~2 句；close / very-close 必须 focus 到角色 id 或该角色的位置，不要用 focus 5。track 只在换组/群像横移时写，-4~4，双人通常 0~1 次。
@@ -893,8 +906,8 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
     }
   }
   // 表演预算：统计说话者动作/表情和听者反应的总数（say.motion、say.expression、actions[].motion、
-  // actions[].expression），按官方 Motion 约 1.30/句的 band 修剪极端过演；官方无动作约 6%，
-  // maxStatic（12%）只是上限，不要求把正常场次改成静止。
+  // actions[].expression），按 OFFICIAL_TARGETS.motionsPerTextLine 的官方 band 修剪极端过演；
+  // 官方 noMotionShare 约 6%，maxStatic（12%）只是上限，不要求把正常场次改成静止。
   const says = merged.filter((beat) => "say" in beat);
   const budget = directionBudgetFor(says.length);
   const performanceActions = (beat) => {

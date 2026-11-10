@@ -396,20 +396,10 @@ test("30-episode corpus recomputes the checked official totals", { skip: corpusS
 test("30-episode corpus reproduces the official distribution metrics", { skip: corpusSkip }, () => {
   const recomputed = buildBaseline(config);
   const all = recomputed.all.corpus;
-  // These two are direct checked audit constants (see CHECKED_DISTRIBUTIONS):
-  // the line adapter has no canonical close-run/two-motion boundary definition.
-  // Their frozen values are asserted above; every other distribution is
-  // recomputed from the corpus here.
-  const checkedConstants = new Set(["closeRunOneOrTwoShare", "twoMotionShare"]);
   for (const [key, expected] of Object.entries(BASELINE_TARGETS.distributions)) {
-    if (checkedConstants.has(key)) continue;
     const actual = typeof expected === "number" && !Number.isInteger(expected)
       ? Number(all[key].toFixed(4)) : all[key];
     assert.equal(actual, expected, `all.corpus.${key}`);
-  }
-  for (const key of checkedConstants) {
-    assert.equal(typeof BASELINE_TARGETS.distributions[key], "number");
-    assert.ok(Number.isFinite(BASELINE_TARGETS.distributions[key]));
   }
   assert.equal(Number(all.standaloneExpressionPerEpisode.toFixed(4)),
     BASELINE_TARGETS.distributions.standaloneExpressionPerEpisode);
@@ -421,6 +411,21 @@ test("30-episode corpus reproduces the official distribution metrics", { skip: c
   assert.equal(recomputed.all.rawDistributions.talkRows, BASELINE_TARGETS.rawDistributions.talkRows);
   assert.equal(recomputed.all.rawDistributions.textLines, BASELINE_TARGETS.rawDistributions.textLines);
   assert.equal(recomputed.all.rawDistributions.noMotionLines, BASELINE_TARGETS.rawDistributions.noMotionLines);
+});
+
+test("raw close-up runs and performance-action lines are recomputed from the corpus", { skip: corpusSkip }, () => {
+  const recomputed = buildBaseline(config);
+  const all = recomputed.all.corpus;
+  assert.equal(all.closeRunCount, 149);
+  assert.equal(all.closeRunOneOrTwo, 116);
+  assert.equal(Number(all.closeRunOneOrTwoShare.toFixed(4)), 0.7785);
+  assert.equal(all.twoActionLines, 518);
+  assert.equal(Number(all.twoMotionShare.toFixed(4)), 0.4473);
+  assert.equal(all.attributedMotionExpressions, 1497);
+  assert.equal(all.motionExpressions, 1503);
+  assert.deepEqual(recomputed.all.closeRuns, {
+    total: 149, oneOrTwo: 116, share: 116 / 149,
+  });
 });
 
 test("external baseline report is bound to freshly recomputed corpus evidence", { skip: reportSkip }, () => {

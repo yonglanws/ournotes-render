@@ -172,6 +172,47 @@ export const discoverOfficialCorpus = ({ siteRoot, sampleRoot, assetsRoot }) => 
 const visibleChars = (s) => [...s.replace(/\s/g, "")].length;
 const number = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
 
+// Close-up run attribution over the raw command stream. Every Talk row (text
+// or blank) inherits the most recent Focus CameraDistance. A new close run
+// starts at each Focus while the inherited distance is >=4, except a 4->5
+// refinement of the same shot. A run's length is the number of text-bearing
+// Talk rows until the next start; a trailing blank is a held reaction after
+// the final spoken line, so it ends the run and the closing line is not
+// counted separately. Zero-text runs count as one. This reproduces the checked
+// 149 close runs, 116 of them length 1-2 (0.7785).
+export const closeRunAttribution = (episode, { language = "zh-Hans" } = {}) => {
+  const commands = Array.isArray(episode?.commands) ? episode.commands : [];
+  const shots = [];
+  let distance = 0, current = null;
+  for (const c of commands) {
+    if (c.cmd === "Focus") {
+      const next = c.CameraDistance === undefined ? distance : number(c.CameraDistance);
+      const refinement = current && distance === 4 && next === 5;
+      if (next >= 4 && !refinement) {
+        if (current) shots.push(current);
+        current = { rows: [] };
+      } else if (next < 4 && current) {
+        shots.push(current);
+        current = null;
+      }
+      distance = next;
+    } else if (c.cmd === "Talk" && current) {
+      current.rows.push(Boolean(episodeText(episode, c, language)));
+    }
+  }
+  if (current) shots.push(current);
+  const lengths = shots.map((shot) => {
+    const text = shot.rows.filter(Boolean).length;
+    const trailingBlank = shot.rows.length > 0 && !shot.rows[shot.rows.length - 1];
+    return Math.max(1, text - (trailingBlank ? 1 : 0));
+  });
+  return {
+    total: lengths.length,
+    oneOrTwo: lengths.filter((n) => n <= 2).length,
+    lengths,
+  };
+};
+
 const TAIL_COMMANDS = Object.freeze({
   motions: ["Motion"], expressions: ["Expression"], looks: ["Look"],
   lookTargets: ["LookTarget"], focus: ["Focus"], track: ["Track"],
@@ -190,10 +231,12 @@ export const tailAttribution = (episode, { id, language = "zh-Hans" } = {}) => {
     if (commands[i].cmd === "Talk" && episodeText(episode, commands[i], language)) lastText = i;
   }
   const counts = Object.fromEntries(Object.keys(TAIL_COMMANDS).map((key) => [key, 0]));
+  counts.motionExpressions = 0;
   for (const c of commands.slice(lastText + 1)) {
     for (const [key, names] of Object.entries(TAIL_COMMANDS)) {
       if (names.includes(c.cmd)) counts[key]++;
     }
+    if (c.cmd === "Motion" && c.ExpressionName) counts.motionExpressions++;
   }
   return { id, speaker: "", body: "", chars: 0, renderedLines: 0,
     segmentChars: [], distance: 0, camera: null, ...counts,
@@ -243,7 +286,7 @@ export const rawCommandDistributions = (episode, { language = "zh-Hans" } = {}) 
 };
 
 export const episodeToLines = (episode, { id, language = "zh-Hans" }) => {
-  const lines = [], pending = { motions: 0, expressions: 0, looks: 0, lookTargets: 0,
+  const lines = [], pending = { motions: 0, motionExpressions: 0, expressions: 0, looks: 0, lookTargets: 0,
     focus: 0, track: 0, zoom: 0, pedestal: 0, panV2: 0, dof: 0, se: 0, bgm: 0, stage: 0,
     ins: 0, outs: 0, onStage: 0 };
   let talkRows = 0, distance = 0, speaker = "", lastCamera = null;
@@ -291,7 +334,7 @@ export const episodeToLines = (episode, { id, language = "zh-Hans" }) => {
       case "DoF": pending.dof++; break;
       case "Look": pending.looks++; break;
       case "LookTarget": pending.lookTargets++; break;
-      case "Motion": pending.motions++; break;
+      case "Motion": pending.motions++; if (c.ExpressionName) pending.motionExpressions++; break;
       case "Expression": pending.expressions++; break;
       case "Se": pending.se++; break;
       case "Bgm": pending.bgm++; break;

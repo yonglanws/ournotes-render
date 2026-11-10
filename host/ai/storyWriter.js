@@ -432,9 +432,13 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
   const enforceDialogueLength = targetMinutes >= 0.5;
   const budget = dialogueBudgetFor(targetMinutes);
   const maxLinesConfig = Number(request.maxLines ?? config.story?.maxLines ?? 120);
-  const minDialogueLines = Math.max(2, Math.min(budget.minLines, maxLinesConfig));
-  const minDialogueChars = Math.max(10, budget.chars);
-  const requiredLines = Math.max(minDialogueLines, Math.min(budget.lines, maxLinesConfig));
+  const lineCap = Math.max(1, Math.floor(Number(maxLinesConfig) || 120));
+  const minDialogueLines = Math.max(1, Math.min(budget.minLines, lineCap));
+  // A strict maxLines cap also scales the character floor; otherwise a 5-line
+  // cap would still demand a full 3-minute character count and never converge.
+  const lineScale = Math.min(1, lineCap / Math.max(1, budget.lines));
+  const minDialogueChars = Math.max(10, Math.round(budget.chars * lineScale));
+  const requiredLines = Math.min(lineCap, Math.max(minDialogueLines, budget.lines));
   const dialogueIsShort = () => dialogue.lines.length < minDialogueLines ||
     countDialogueChars(dialogue) < minDialogueChars;
   if (enforceDialogueLength && dialogueIsShort()) {
