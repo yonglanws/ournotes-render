@@ -278,6 +278,23 @@ test("OFFICIAL_TARGETS is a frozen flat adapter derived from one checked source"
     Number((BASELINE_TARGETS.totals.lookRows / BASELINE_TARGETS.totals.textLines).toFixed(3)));
   assert.equal(OFFICIAL_TARGETS.textLinesPerEpisodeMean,
     BASELINE_TARGETS.totals.textLines / BASELINE_TARGETS.totals.episodes);
+  assert.equal(OFFICIAL_TARGETS.duoShare, BASELINE_TARGETS.distributions.perTalkRowDuoShare);
+  assert.equal(OFFICIAL_TARGETS.duoShare, 0.7623);
+  assert.equal(OFFICIAL_TARGETS.effectiveDuoShare,
+    BASELINE_TARGETS.distributions.perTalkRowEffectiveDuoShare);
+  assert.equal(OFFICIAL_TARGETS.effectiveDuoShare, 0.7654);
+  assert.equal(OFFICIAL_TARGETS.closeUps, 10);
+  const exactBudgets = {
+    staticLineBudget: 47, motionBudget: 61, focusChanges: 19, lookAtBudget: 15,
+    linesPerMinute: 18, charsPerMinute: 240,
+    focusDurationDefault: 1.5, zoomDurationDefault: 1.5,
+    motionFadeInDefault: -1, zoomDefault: 1.2,
+  };
+  for (const [key, expected] of Object.entries(exactBudgets)) {
+    assert.equal(OFFICIAL_TARGETS[key], expected, `OFFICIAL_TARGETS.${key}`);
+  }
+  assert.equal(OFFICIAL_TARGETS.closeUps,
+    Math.max(1, Math.round(47 * BASELINE_TARGETS.distributions.perTalkRowDistance4Share)));
   for (const value of Object.values(OFFICIAL_TARGETS)) {
     assert.equal(typeof value, "number");
     assert.ok(Number.isFinite(value));
@@ -334,6 +351,7 @@ test("canonical report digest rejects tampering with every material report field
     ["generatedFrom", (r) => { r.generatedFrom.siteRoot = "forged"; }],
     ["per-episode summary", (r) => { r.episodes[0].summary.count += 1; }],
     ["per-episode provenance", (r) => { r.episodes[0].provenance.bytes += 1; }],
+    ["provenance metadata", (r) => { r.provenance.episodeCount += 1; }],
     ["omitted all", (r) => { delete r.all; }],
   ];
   for (const [name, tamper] of cases) {

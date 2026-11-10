@@ -123,8 +123,8 @@ export const OFFICIAL_TARGETS = Object.freeze({
   distance2Share: CHECKED_DISTRIBUTIONS.perTalkRowDistance2Share,
   distance3Share: CHECKED_DISTRIBUTIONS.perTalkRowDistance3Share,
   distance4Share: CHECKED_DISTRIBUTIONS.perTalkRowDistance4Share,
-  duoShare: CHECKED_DISTRIBUTIONS.perTalkRowEffectiveDuoShare,
-  effectiveDuoShare: CHECKED_DISTRIBUTIONS.perTalkRowDuoShare,
+  duoShare: CHECKED_DISTRIBUTIONS.perTalkRowDuoShare,
+  effectiveDuoShare: CHECKED_DISTRIBUTIONS.perTalkRowEffectiveDuoShare,
   textLinesPerEpisodeMean: rateOf(CHECKED_TOTALS.textLines, CHECKED_TOTALS.episodes),
   textLinesPerEpisodeMin: CHECKED_LINE_MIN,
   textLinesPerEpisodeMax: CHECKED_LINE_MAX,
@@ -136,7 +136,7 @@ export const OFFICIAL_TARGETS = Object.freeze({
   motionFadeInDefault: CHECKED_MOTION_FADE_IN_DEFAULT,
   zoomDefault: CHECKED_ZOOM_DEFAULT,
   staticLineBudget: CHECKED_LINE_MAX,
-  closeUps: budget(CHECKED_DISTRIBUTIONS.perTalkRowDistance2Share, CHECKED_LINE_MAX),
+  closeUps: budget(CHECKED_DISTRIBUTIONS.perTalkRowDistance4Share, CHECKED_LINE_MAX),
   motionBudget: budget(rateOf(CHECKED_TOTALS.motion, CHECKED_TOTALS.textLines), CHECKED_LINE_MAX),
   focusChanges: budget(rateOf(CHECKED_TOTALS.focus, CHECKED_TOTALS.talkRows), CHECKED_LINE_MAX),
   lookAtBudget: budget(rateOf(CHECKED_TOTALS.lookRows, CHECKED_TOTALS.textLines), CHECKED_LINE_MAX),
@@ -168,9 +168,14 @@ const stable = (value) => {
 };
 
 const canonicalPayload = (report) => {
-  const keys = Object.keys(report || {})
-    .filter((key) => key !== "generatedAt" && key !== "provenance");
-  return Object.fromEntries(sortByCodePoint(keys.map((key) => [key, stable(report[key])])));
+  const keys = Object.keys(report || {}).filter((key) => key !== "generatedAt");
+  return Object.fromEntries(sortByCodePoint(keys.map((key) => {
+    const value = key === "provenance"
+      ? Object.fromEntries(Object.entries(report[key] || {})
+        .filter(([field]) => field !== "digest"))
+      : report[key];
+    return [key, stable(value)];
+  })));
 };
 
 export const canonicalReportDigest = (report) =>
@@ -379,12 +384,12 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
         .filter(([, value]) => value !== 0)),
     },
   };
-  report.provenance = {
-    digest: canonicalReportDigest(report),
+  const provenance = {
     episodeCount: episodes.length,
     language,
     bytes: report.episodes.reduce((n, e) => n + (e.provenance.bytes || 0), 0),
   };
+  report.provenance = { ...provenance, digest: canonicalReportDigest({ ...report, provenance }) };
   return report;
 };
 
