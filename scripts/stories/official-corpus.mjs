@@ -80,6 +80,87 @@ const textOf = (episode, row, language) => {
 const visibleChars = (s) => [...s.replace(/\s/g, "")].length;
 const number = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
 
+const TAIL_COMMANDS = Object.freeze({
+  motions: ["Motion"], expressions: ["Expression"], looks: ["Look"],
+  lookTargets: ["LookTarget"], focus: ["Focus"], track: ["Track"],
+  zoom: ["Zoom"], pedestal: ["Pedestal"], panV2: ["PanV2"],
+  dof: ["DoF"], se: ["Se"], bgm: ["Bgm"], stage: ["Stage"],
+  ins: ["In"], outs: ["Out"],
+});
+
+// Commands carrying IgnoreData are still part of the official command stream:
+// their events count toward the next text Talk, but they are not replayed as
+// state mutations. Commands after the final text Talk have no next line and
+// are reported separately as a tail attribution.
+export const tailAttribution = (episode, { id, language = "zh-Hans" } = {}) => {
+  const commands = Array.isArray(episode?.commands) ? episode.commands : [];
+  let lastText = -1;
+  for (let i = 0; i < commands.length; i++) {
+    if (commands[i].cmd === "Talk" && textOf(episode, commands[i], language)) lastText = i;
+  }
+  const counts = Object.fromEntries(Object.keys(TAIL_COMMANDS).map((key) => [key, 0]));
+  for (const c of commands.slice(lastText + 1)) {
+    for (const [key, names] of Object.entries(TAIL_COMMANDS)) {
+      if (names.includes(c.cmd)) counts[key]++;
+    }
+  }
+  return {
+    id,
+    speaker: "",
+    body: "",
+    chars: 0,
+    renderedLines: 0,
+    segmentChars: [],
+    distance: 0,
+    camera: null,
+    ...counts,
+    onStage: 0,
+    tail: true,
+  };
+};
+
+// Corpus-wide distributions use every raw Talk row as the denominator for
+// inherited stage/camera state. The official checked shares also include the
+// state of IgnoreData commands in that raw command stream.
+export const rawCommandDistributions = (episode, { language = "zh-Hans" } = {}) => {
+  const commands = Array.isArray(episode?.commands) ? episode.commands : [];
+  const rawOn = new Map();
+  const on = new Map();
+  let distance = 0, pendingMotions = 0;
+  const totals = {
+    talkRows: 0, textLines: 0, duoRows: 0, effectiveDuoRows: 0, noMotionLines: 0,
+    distance2Rows: 0, distance3Rows: 0, distance4Rows: 0,
+  };
+  for (const c of commands) {
+    const name = typeof c.TargetName === "string" && c.TargetName ? c.TargetName : null;
+    const effectiveName = c.IgnoreData ? null : name;
+    for (const [map, target] of [[rawOn, name], [on, effectiveName]]) {
+      if (!target) continue;
+      if (c.cmd === "Character") map.set(target, null);
+      else if (c.cmd === "In") map.set(target, c.PositionType ?? null);
+      else if (c.cmd === "Out") map.delete(target);
+      else if (c.cmd === "MoveToDirection" && map.has(target)) map.set(target, c.PositionType ?? null);
+    }
+    if (c.cmd === "Focus" && c.CameraDistance !== undefined) distance = number(c.CameraDistance);
+    if (c.cmd === "Motion") pendingMotions++;
+    else if (c.cmd === "Talk") {
+      totals.talkRows++;
+      const onStage = (map) => [...map.values()].filter((v) => v !== null).length;
+      if (onStage(rawOn) === 2) totals.duoRows++;
+      if (onStage(on) === 2) totals.effectiveDuoRows++;
+      if (distance === 2) totals.distance2Rows++;
+      else if (distance === 3) totals.distance3Rows++;
+      else if (distance === 4) totals.distance4Rows++;
+      if (textOf(episode, c, language)) {
+        totals.textLines++;
+        if (!pendingMotions) totals.noMotionLines++;
+      }
+      pendingMotions = 0;
+    }
+  }
+  return totals;
+};
+
 export const episodeToLines = (episode, { id, language = "zh-Hans" }) => {
   const lines = [], pending = { motions: 0, expressions: 0, looks: 0, lookTargets: 0,
     focus: 0, track: 0, zoom: 0, pedestal: 0, panV2: 0, dof: 0, se: 0, bgm: 0, stage: 0,
@@ -87,23 +168,45 @@ export const episodeToLines = (episode, { id, language = "zh-Hans" }) => {
   let talkRows = 0, distance = 0, speaker = "", lastCamera = null;
   const on = new Map();
   const commands = Array.isArray(episode.commands) ? episode.commands : [];
+  const targetName = (c) => typeof c.TargetName === "string" && c.TargetName ? c.TargetName : null;
   for (const c of commands) {
-    if (c.IgnoreData) continue;
+    // Count the event even when its state mutation is intentionally ignored.
+    const ignored = !!c.IgnoreData;
     switch (c.cmd) {
-      case "Character": on.set(c.TargetName, null); break;
-      case "In": on.set(c.TargetName, c.PositionType ?? null); pending.ins++; break;
-      case "Out": on.delete(c.TargetName); pending.outs++; break;
-      case "MoveToDirection": on.set(c.TargetName, c.PositionType ?? null); break;
+      case "Character": {
+        const name = targetName(c);
+        if (!ignored && name) on.set(name, null);
+        break;
+      }
+      case "In": {
+        const name = targetName(c);
+        if (!ignored && name) on.set(name, c.PositionType ?? null);
+        pending.ins++;
+        break;
+      }
+      case "Out": {
+        const name = targetName(c);
+        if (!ignored && name) on.delete(name);
+        pending.outs++;
+        break;
+      }
+      // A slot transform without TargetName moves an existing stage position;
+      // it must never introduce an `undefined` character into the stage map.
+      case "MoveToDirection": {
+        const name = targetName(c);
+        if (!ignored && name && on.has(name)) on.set(name, c.PositionType ?? null);
+        break;
+      }
       case "Stage": pending.stage++; break;
       case "Focus":
-        distance = c.CameraDistance === undefined ? distance : number(c.CameraDistance);
+        if (!ignored) distance = c.CameraDistance === undefined ? distance : number(c.CameraDistance);
         pending.focus++;
-        lastCamera = { kind: "focus", duration: number(c.Duration), value: distance };
+        if (!ignored) lastCamera = { kind: "focus", duration: number(c.Duration), value: distance };
         break;
-      case "Track": pending.track++; lastCamera = { kind: "track", duration: number(c.Duration), value: number(c.Parameter1) }; break;
-      case "Zoom": pending.zoom++; lastCamera = { kind: "zoom", duration: number(c.Duration), value: number(c.Parameter1) }; break;
-      case "Pedestal": pending.pedestal++; lastCamera = { kind: "pedestal", duration: number(c.Duration), value: number(c.Parameter1) }; break;
-      case "PanV2": pending.panV2++; lastCamera = { kind: "panV2", duration: number(c.Duration), value: number(c.Parameter1) }; break;
+      case "Track": pending.track++; if (!ignored) lastCamera = { kind: "track", duration: number(c.Duration), value: number(c.Parameter1) }; break;
+      case "Zoom": pending.zoom++; if (!ignored) lastCamera = { kind: "zoom", duration: number(c.Duration), value: number(c.Parameter1) }; break;
+      case "Pedestal": pending.pedestal++; if (!ignored) lastCamera = { kind: "pedestal", duration: number(c.Duration), value: number(c.Parameter1) }; break;
+      case "PanV2": pending.panV2++; if (!ignored) lastCamera = { kind: "panV2", duration: number(c.Duration), value: number(c.Parameter1) }; break;
       case "DoF": pending.dof++; break;
       case "Look": pending.looks++; break;
       case "LookTarget": pending.lookTargets++; break;
@@ -117,7 +220,7 @@ export const episodeToLines = (episode, { id, language = "zh-Hans" }) => {
         if (!body) break;
         const segments = body.split("\n").filter((s) => s.length);
         const chars = visibleChars(body);
-        speaker = c.TargetName || speaker;
+        if (!ignored) speaker = c.TargetName || speaker;
         lines.push({ id, speaker, body, chars, renderedLines: segments.length,
           segmentChars: segments.map(visibleChars), distance,
           camera: lastCamera, ...pending, onStage: [...on.values()].filter((v) => v !== null).length });

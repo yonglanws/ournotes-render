@@ -2,8 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { discoverOfficialCorpus, episodeToLines, readEpisodeAsset } from "./official-corpus.mjs";
-import { aggregate, summarize } from "./story-metrics.mjs";
+import { discoverOfficialCorpus, episodeToLines, rawCommandDistributions, readEpisodeAsset, tailAttribution } from "./official-corpus.mjs";
+import { aggregate, summarize, summarizeTailCounts, withTailCounts } from "./story-metrics.mjs";
 
 export const BASELINE_EXPECTATIONS = Object.freeze({
   episodes: 30,
@@ -30,6 +30,7 @@ const CHECKED_COMMANDS = Object.freeze({
 });
 
 const resolveRoot = (value, fallback) => path.resolve(value || fallback);
+const rate = (n, d) => (d ? n / d : 0);
 
 const hasObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
@@ -65,7 +66,9 @@ const textOf = (episode, row) =>
 export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh-Hans" }) => {
   const corpus = discoverOfficialCorpus({ siteRoot, sampleRoot, assetsRoot });
   const failures = [];
-  const episodes = [], summaries = [], allLines = [];
+  const episodes = [], summaries = [], allLines = [], tailLines = [];
+  const rawDistributions = { talkRows: 0, textLines: 0, duoRows: 0, effectiveDuoRows: 0,
+    noMotionLines: 0, distance2Rows: 0, distance3Rows: 0, distance4Rows: 0 };
   const totals = {
     episodes: 0, commands: 0, talkRows: 0, rawTalkRows: 0,
     textLines: 0, blankTalkRows: 0,
@@ -95,6 +98,9 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
           continue;
         }
         const summary = summarize(adapted.lines);
+        const tail = tailAttribution(episode, { id, language });
+        const raw = rawCommandDistributions(episode, { language });
+        for (const key of Object.keys(rawDistributions)) rawDistributions[key] += raw[key];
         record.sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
         record.commands = commands.length;
         record.commandCount = episode.commandCount;
@@ -104,9 +110,11 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
         record.blankTalkRows = adapted.talkRows - adapted.lines.length;
         record.rawTextTalkRows = textLines;
         record.summary = summary;
+        record.tailAttribution = tail;
         episodes.push(record);
         summaries.push(summary);
         allLines.push(...adapted.lines);
+        tailLines.push(tail);
         totals.episodes++;
         totals.commands += commands.length;
         totals.talkRows += adapted.talkRows;
@@ -138,6 +146,7 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
     }
   }
 
+  const corpusSummary = summarize(allLines);
   return {
     generatedAt: new Date().toISOString(),
     corpusIds: corpus.map((e) => e.id),
@@ -157,8 +166,21 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
     commandHistogram: Object.fromEntries(
       Object.entries(commandHistogram).sort(([a], [b]) => a.localeCompare(b))),
     all: {
-      corpus: summarize(allLines),
+      corpus: {
+        ...withTailCounts(corpusSummary, tailLines),
+        attributedMotions: corpusSummary.motions,
+        noMotionShare: rate(rawDistributions.noMotionLines, rawDistributions.textLines),
+        duoShare: rate(rawDistributions.duoRows, rawDistributions.talkRows),
+        effectiveDuoShare: rate(rawDistributions.effectiveDuoRows, rawDistributions.talkRows),
+        distance2Share: rate(rawDistributions.distance2Rows, rawDistributions.talkRows),
+        distance3Share: rate(rawDistributions.distance3Rows, rawDistributions.talkRows),
+        distance4Share: rate(rawDistributions.distance4Rows, rawDistributions.talkRows),
+        lookLineShare: rate(totals.lookRows, totals.textLines),
+      },
       perEpisodeMean: aggregate(summaries),
+      rawDistributions,
+      tailCounts: Object.fromEntries(Object.entries(summarizeTailCounts(tailLines))
+        .filter(([, value]) => value !== 0)),
     },
   };
 };
