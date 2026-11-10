@@ -3,7 +3,7 @@
 // camera, motion, expression, gaze, listener reactions, BGM). The dialogue is final after pass 2: pass 3 references
 // line ids and mergeStagedScript restores the exact text, so a direction pass can never silently rewrite a line.
 import { motionStems, nearest } from "../../scripts/lib/story-author/script.js";
-import { dialogueBudgetFor, directionBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
+import { budgetCount, dialogueBudgetFor, directionBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
 import { dialoguePersonaPrompt } from "./personas.js";
 import { MAX_PROMPT_MODELS, expressionListFor, motionListFor, officialDenominatorNote, personaEntryFor, stagingRules, voiceStyleFor } from "./prompt.js";
 
@@ -452,9 +452,12 @@ export const countDialogueChars = (dialogue) =>
 // punctuation are untouched; only the explicit line break moves (and no segment may exceed the 22-character rule).
 const BREAK_PUNCTUATION = /[，。！？!?…；;、,]/g;
 export const balanceLineBreaks = (dialogue, { maxLineChars = 22 } = {}) => {
-  if (!dialogue || !Array.isArray(dialogue.lines)) return { dialogue, removed: 0, added: 0 };
-  const target = Math.round(dialogue.lines.length * OFFICIAL_TARGETS.twoLineShare);
+  if (!dialogue || !Array.isArray(dialogue.lines))
+    return { dialogue, removed: 0, added: 0, total: 0, rawTwoLine: 0, rawTwoLineShare: 0, changedShare: 0 };
+  const total = dialogue.lines.length;
+  const target = Math.round(total * OFFICIAL_TARGETS.twoLineShare);
   const twoLine = dialogue.lines.filter((line) => typeof line.text === "string" && line.text.includes("\n"));
+  const rawTwoLine = twoLine.length;
   const visible = (text) => [...String(text).replace(/\s/g, "")].length;
   let removed = 0;
   for (const line of [...twoLine].sort((a, b) => visible(a.text) - visible(b.text))) {
@@ -493,7 +496,11 @@ export const balanceLineBreaks = (dialogue, { maxLineChars = 22 } = {}) => {
       added++;
     }
   }
-  return { dialogue, removed, added };
+  return {
+    dialogue, removed, added, total, rawTwoLine,
+    rawTwoLineShare: total ? rawTwoLine / total : 0,
+    changedShare: total ? (removed + added) / total : 0,
+  };
 };
 
 // 台词太短（模型偶尔只写十几句）会让整场明显短于目标时长；这是针对性的补写提示词，
@@ -695,10 +702,11 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
 - 每个说话者开口前必须已经在台上；用 positions 让他进场。**两人同台必须 far-left / far-right**；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0）" : "同台最多 2 人，第 3 人必须等一人退场后再进场"}；不要用 center+right、center+left 或 left+right（会重叠）。
 - **镜头预算**：全场约 ${budget.focusChanges} 个 focus（含 scene/positions 上的；官方 Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句），其中 close 近景约 ${budget.closeUps} 次（距离 4 约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行），near 全景 0~1 次。close 停 1~2 句（偶尔 3 句），下一句用 middle + focus 5 回到二人/群像；不要连续两句 close，也不要停在同一个 close 上直到结尾。
   大部分 line beat 不要写 focus/camera/track，只有真的换机位时才写；同一机位保持 3~4 句，连续两句都写 focus 通常就是切太碎。推近（middle/far → close）是硬切，拉回（close → middle/far）会自动缓推，不需要写 duration。
+- **换机位上限**：带 focus/camera/track 的 line beat 不超过 ${Math.max(0, budget.focusChanges - 2)} 句（scene/positions 的 Focus 另计）；多写的会在合并时删除。不要把每句都写成新机位。
 - **慢推镜**：全场约 ${budget.zoomMin}~${budget.zoomMax} 次 zoom，写在情绪句/近景或结尾：推近 1.03~1.10，拉远 0.92~0.98，zoomDuration 3~5 秒。一个机位最多 1 次；不写就静止，不要每个镜头都推。
-- **视线预算**：全场约 ${budget.lookAt} 个 lookAt；双人戏每 3~4 句最多 1 个，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名或 1~9 的构图点；不要每句都看着对方。至少 2 句写独立 look/lookY（"look": -0.4, "lookY": 0.1, "lookDuration": 0.5，与 lookAt 二选一），用来表现角色把视线移开。
+- **视线预算**：全场约 ${budget.lookAt} 个 lookAt；双人戏每 3~4 句最多 1 个，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名或 1~9 的构图点；不要每句都看着对方。${budgetCount(2, budget.lookAt)} 句写独立 look/lookY（"look": -0.4, "lookY": 0.1, "lookDuration": 0.5，与 lookAt 二选一），用来表现角色把视线移开。
 - **表演预算**：全场至少 ${budget.motionMin} 个、目标 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；低于 ${budget.motionMin} 个视为不合格。约 ${noMotionTarget} 句可以完全没有 Motion（参考上限 ${budget.maxStatic} 句；超出预算时优先修剪最短句）；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。
-- **扩展运镜与声音（官方实测频率，不是可选装饰）**：写 2~${budget.pedestal} 个 pedestal（"pedestal": -0.2, "pedestalDuration": 1.5，轻微上下移）、2~${budget.panV2} 个 pan（"pan": -5 或 8, "panDuration": 2，只在换组/横移句）、${Math.max(1, budget.dof)} 个 dof（"dof": 0.5, "dofLayers": 2, "dofDuration": 1.5，情绪特写；角色 DoF 必须有台上目标）、至少 2 个独立 look（见视线预算）；Se 约 ${budget.se} 条（至少 2 条；se 只能写上面音效清单里的 cue；清单为 (none) 时不写 se/seStop），Track 约 ${budget.track} 次。可选时长字段：focusDuration、trackDuration、pedestalDuration、panDuration、panFocusSlide、dofDuration、dofLayers、lookY、lookDuration、seDuration、seDelay、seStop、motionFadeIn、motionWait；不写就给默认时长。trackDuration 只在写了 track 时有效，focusDuration 只在写了 focus/camera 时有效；角色 DoF 需要台上目标（say 默认说话者，action 用动作角色；camera/narrate 的 focus 指向具体角色或有人的位置，省略 focus 时编译器选当前镜头附近的台上角色），背景 DoF（dofLayers 0）不需要。
+- **扩展运镜与声音（官方实测频率，不是可选装饰）**：写 ${budgetCount(2, budget.pedestal)} 个 pedestal（"pedestal": -0.2, "pedestalDuration": 1.5，轻微上下移）、${budgetCount(2, budget.panV2)} 个 pan（"pan": -5 或 8, "panDuration": 2，只在换组/横移句）、${budgetCount(0, budget.dof)} 个 dof（"dof": 0.5, "dofLayers": 2, "dofDuration": 1.5，情绪特写；角色 DoF 必须有台上目标）、${budgetCount(2, budget.lookAt)} 个独立 look（见视线预算）；Se 约 ${budget.se} 条（se 只能写上面音效清单里的 cue；清单为 (none) 时不写 se/seStop），Track 约 ${budget.track} 次。可选时长字段：focusDuration、trackDuration、pedestalDuration、panDuration、panFocusSlide、dofDuration、dofLayers、lookY、lookDuration、seDuration、seDelay、seStop、motionFadeIn、motionWait；不写就给默认时长。trackDuration 只在写了 track 时有效，focusDuration 只在写了 focus/camera 时有效；角色 DoF 需要台上目标（say 默认说话者，action 用动作角色；camera/narrate 的 focus 指向具体角色或有人的位置，省略 focus 时编译器选当前镜头附近的台上角色），背景 DoF（dofLayers 0）不需要。
 - 听者反应写进 actions（at: 0），**每句最多 1 条**，cast 必须是台上的其他角色；不要给说话者本人写 actions，也不要一句叠两个听者。
 - focus 优先写构图点/位置，角色 focus 只给 close 近景和情绪最重的 1~2 句；close / very-close 必须 focus 到角色 id 或该角色的位置，不要用 focus 5。track 只在换组/群像横移时写，-4~4，双人通常 0~1 次。
 - 没有合适的动作/表情就省略字段，不要编清单之外的名字。
@@ -962,7 +970,8 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
         warnings.push({ code: "duplicateLine", message: `分镜重复引用了 ${lines[at].id}，保留第一次` });
         continue;
       }
-      direction[at] = pick(beat, lines[at].narrate ? NARRATE_DIRECTION_KEYS : DIRECTION_KEYS);
+      const chosen = pick(beat, lines[at].narrate ? NARRATE_DIRECTION_KEYS : DIRECTION_KEYS);
+      direction[at] = Object.keys(chosen).length ? chosen : null;
       if (lines[at].narrate) {
         const dropped = DIRECTION_KEYS.filter((k) => k in beat && !NARRATE_DIRECTION_KEYS.includes(k));
         if (dropped.length)
@@ -983,7 +992,8 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
   }
   const merged = [];
   for (let i = 0; i < lines.length; i++) {
-    if (!direction[i]) warnings.push({ code: "missingDirection", message: `${lines[i].id} 没有分镜，按无动作处理` });
+    if (!direction[i] || Object.keys(direction[i]).length === 0)
+      warnings.push({ code: "missingDirection", message: `${lines[i].id} 没有分镜，按无动作处理` });
     merged.push(...before[i]);
     const dir = direction[i] || {};
     merged.push(lines[i].say ? { say: lines[i].say, text: lines[i].text, ...dir }
@@ -996,6 +1006,7 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
   // stay intact.
   const actionModels = new Map((catalog.models || []).map((model) => [model.id, model]));
   const castModelId = new Map((plan.cast || []).map((member) => [member.id, member.model]));
+  const nameStats = { repaired: 0, dropped: 0 };
   const repairedNames = (beat, castId, path) => {
     if (!castId) return;
     const model = actionModels.get(castModelId.get(castId) || castId);
@@ -1008,10 +1019,12 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
           warnings.push({ code: "unknownMotion",
             message: `${path} 的动作 ${beat.motion} 不在 ${castId} 的动作表，已改为 ${suggestion}` });
           beat.motion = suggestion;
+          nameStats.repaired++;
         } else {
           warnings.push({ code: "unknownMotion",
             message: `${path} 的动作 ${beat.motion} 不在 ${castId} 的动作表，已省略该动作` });
           delete beat.motion;
+          nameStats.dropped++;
         }
       }
     }
@@ -1021,10 +1034,12 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
         warnings.push({ code: "unknownExpression",
           message: `${path} 的表情 ${beat.expression} 不在 ${castId} 的表情表，已改为 ${suggestion}` });
         beat.expression = suggestion;
+        nameStats.repaired++;
       } else {
         warnings.push({ code: "unknownExpression",
           message: `${path} 的表情 ${beat.expression} 不在 ${castId} 的表情表，已省略该表情` });
         delete beat.expression;
+        nameStats.dropped++;
       }
     }
   };
@@ -1049,6 +1064,7 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
     (beat.scene !== undefined || beat.positions !== undefined || hasCamera(beat))).length;
   const lineFocus = textBeats.filter(hasCamera);
   const allowedLineFocus = Math.max(0, cameraBudget.focusChanges - structuralFocus);
+  let focusPruned = 0;
   if (lineFocus.length > allowedLineFocus) {
     const keep = new Set(evenlySpaced(lineFocus, allowedLineFocus));
     let removed = 0;
@@ -1058,6 +1074,7 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
         delete beat[key];
       removed++;
     }
+    focusPruned = removed;
     warnings.push({ code: "focusBudget",
       message: `换机位 ${lineFocus.length + structuralFocus} 处，超过本场 Focus 预算 ${cameraBudget.focusChanges}；` +
         `已省略 ${removed} 处 line 镜头，保留的剪辑点均匀分布` });
@@ -1081,6 +1098,7 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
         gazeSlots.push({ beat, action, key: "actionLookAt" });
     }
   }
+  let gazePruned = 0;
   if (gazeSlots.length > cameraBudget.lookAt) {
     const keep = new Set();
     const offset = gazeSlots.find((slot) => slot.key === "look");
@@ -1100,6 +1118,7 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
       }
       removed++;
     }
+    gazePruned = removed;
     warnings.push({ code: "gazeBudget",
       message: `视线 ${gazeSlots.length} 处，超过本场预算 ${cameraBudget.lookAt}；已省略 ${removed} 处视线` });
   }
@@ -1170,8 +1189,18 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
   spreadPositions(merged, maxOnStage, warnings);
 
   const cast = Object.fromEntries(plan.cast.map((c) => [c.id, { model: c.model, name: c.name }]));
+  const rawFocus = structuralFocus + lineFocus.length;
+  const rawGaze = gazeSlots.length;
   return {
     warnings,
+    normalization: {
+      direction: {
+        lineCount: textBeats.length,
+        rawFocus, focusPruned, finalFocus: rawFocus - focusPruned,
+        rawGaze, gazePruned, finalGaze: rawGaze - gazePruned,
+      },
+      names: { ...nameStats },
+    },
     doc: {
       format: "ournotes.story-script/1",
       base: catalog.manifest,

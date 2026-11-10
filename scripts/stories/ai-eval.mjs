@@ -18,28 +18,13 @@ import { readSiteCatalog } from "../../host/tools/site-story.mjs";
 import { SiteFormatCatalog } from "../../host/story/siteFormat.js";
 import { aggregate } from "./story-metrics.mjs";
 import { auditCompiledStory, auditGeneratedScriptToMetrics } from "./compiled-command-audit.mjs";
+import { EVAL_SCENES, sceneList } from "./eval-scenes.mjs";
+import {
+  buildProvenance, catalogDigest, configFingerprint, evalSourceDigestInfo,
+} from "./eval-provenance.mjs";
+import { redactValue, redactingLogger } from "./redaction.mjs";
 
-// Exactly eight fixed two-character scenes. Keep this list versioned: a gate
-// compares runs across models, temperatures and prompt revisions, so changing a
-// logline is a new evaluation baseline, not a local tweak.
-export const EVAL_SCENES = Object.freeze([
-  { label: "rain-stop", logline: "雨后便利店的屋檐下，两名乐队成员等雨停；一人想立刻走，一人想再多待一会儿。",
-    title: "雨停之前" },
-  { label: "lost-ticket", logline: "车站检票口，一人发现车票不见了；另一人嘴上说不管，还是蹲下来一起找。",
-    title: "找不到的票" },
-  { label: "last-rehearsal", logline: "练习室熄灯前，两人为一句和声反复磨合；一人先失去耐心，另一人坚持再来一次。",
-    title: "最后一遍" },
-  { label: "shared-snack", logline: "深夜厨房只剩最后一份点心，两人推来推去，谁也不肯先吃。",
-    title: "最后一份" },
-  { label: "one-umbrella", logline: "放学时突然下起大雨，只有一把伞；两人挤在伞下，谁都没提要走快一点。",
-    title: "一把伞" },
-  { label: "before-stage", logline: "演出开始前十分钟，一人在后台紧张得说不出话；另一人用很笨的方式让她开口。",
-    title: "上场之前" },
-  { label: "missing-earring", logline: "更衣室里，一人发现耳环少了一只；另一人一边安慰一边翻遍每个角落。",
-    title: "少了一只" },
-  { label: "last-train", logline: "末班车进站前，两人在站台聊起明天；广播响了，谁也没有先动。",
-    title: "末班车" },
-]);
+export { EVAL_SCENES };
 
 export const parseArgs = (argv) => {
   const o = { run: "", prompts: "all", pipeline: "staged", temperature: 0.8, target: 2, runs: 1, help: false };
@@ -69,7 +54,7 @@ export const parseArgs = (argv) => {
 };
 
 export const selectScenes = (spec = "all") => {
-  const scenes = EVAL_SCENES.map((scene, index) => ({ ...scene, index: index + 1 }));
+  const scenes = sceneList();
   if (!spec || spec === "all") return scenes;
   const indexes = [...new Set(spec.split(",").map((part) => part.trim()).filter(Boolean).map(Number))];
   if (!indexes.length) throw new Error("--prompts must be all or a comma-separated list of scene numbers");
@@ -82,6 +67,12 @@ export const selectScenes = (spec = "all") => {
 const inside = (parent, child) => {
   const rel = path.relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+};
+
+export const assertLabOutsideRepository = (labRoot) => {
+  const resolved = path.resolve(labRoot);
+  if (inside(ROOT, resolved)) throw new Error("OURNOTES_AI_LAB must be outside the repository");
+  return resolved;
 };
 
 const writeJson = (file, value) => {
@@ -116,6 +107,39 @@ export const failureRecord = ({ scene, run, label, error, startedAt, partial = n
   };
   if (partial) record.partial = partial;
   return record;
+};
+
+const LINE_DIRECTION_KEYS = ["focus", "camera", "track", "zoom", "zoomDuration", "focusDuration",
+  "trackDuration", "pedestal", "pedestalDuration", "pan", "panDuration", "panFocusSlide",
+  "dof", "dofDuration", "dofLayers", "look", "lookY", "lookDuration", "lookAt",
+  "motion", "expression", "motionFadeIn", "motionWait", "se", "seDuration", "seDelay", "seStop"];
+const DIRECTION_COMMANDS = ["Focus", "Track", "Zoom", "Pedestal", "PanV2", "DoF", "Look", "LookTarget",
+  "Motion", "Expression", "Se"];
+
+// A line has direction when it carries a camera/acting/gaze/sound field, not
+// merely because a scene or positions beat set the inherited shot. This is what
+// separates a directed storyboard from a bare-line fallback.
+const hasLineDirectionValue = (value) => {
+  if (value === undefined || value === null || value === "" || value === false) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+};
+const hasLineDirection = (beat) => {
+  if (!beat || typeof beat !== "object") return false;
+  if (Array.isArray(beat.actions) && beat.actions.length) return true;
+  return LINE_DIRECTION_KEYS.some((key) => hasLineDirectionValue(beat[key]));
+};
+
+export const sceneDirectionStats = (script, episode) => {
+  const beats = Array.isArray(script?.beats) ? script.beats : [];
+  const lineBeats = beats.filter((beat) => beat && (beat.kind === "say" || beat.kind === "narrate" ||
+    "say" in beat || "narrate" in beat));
+  const commands = Array.isArray(episode?.commands) ? episode.commands : [];
+  return {
+    lineCount: lineBeats.length,
+    linesWithDirection: lineBeats.filter(hasLineDirection).length,
+    commandCount: commands.filter((row) => DIRECTION_COMMANDS.includes(row?.cmd)).length,
+  };
 };
 
 // The writer catalog (SiteFormatCatalog) and the compiler catalog (readSiteCatalog)
@@ -161,7 +185,7 @@ const compileDocument = ({ doc, compiler }) => {
 };
 
 export const evaluateScene = async ({ scene, run, label, llm, catalog, compiler, config, runDir, logger,
-                                      generate = generateScript }) => {
+                                      generate = generateScript, redact = (value) => value }) => {
   const started = Date.now();
   const request = { prompt: scene.logline, language: catalog.language, title: scene.title,
                     targetMinutes: Number(config.story.targetMinutes) };
@@ -186,10 +210,10 @@ export const evaluateScene = async ({ scene, run, label, llm, catalog, compiler,
   }
   const generationMs = generated.durationMs ?? (Date.now() - started);
   const storyFile = `${label}.story.json`;
-  if (generated.doc) writeJson(path.join(runDir, storyFile), generated.doc);
+  if (generated.doc) writeJson(path.join(runDir, storyFile), redact(generated.doc));
   // The last model answer is useful when a staged storyboard was repaired or
   // fell back; it is a model response, never the prompt or the API key.
-  if (generated.raw) fs.writeFileSync(path.join(runDir, `${label}.raw.txt`), generated.raw);
+  if (generated.raw) fs.writeFileSync(path.join(runDir, `${label}.raw.txt`), redact(generated.raw));
 
   const result = { label, scene: { index: scene.index, label: scene.label, logline: scene.logline },
                    run, error: null, generationMs, latencyMs: 0,
@@ -233,7 +257,66 @@ export const evaluateScene = async ({ scene, run, label, llm, catalog, compiler,
       code: "audit", details: audit.failures, partial: { ...result, compiled: { ...audit } },
     });
   }
+  const direction = sceneDirectionStats(script, compiled.episode);
+  result.direction = direction;
+  if (!direction.lineCount || !direction.linesWithDirection || !direction.commandCount) {
+    result.latencyMs = Date.now() - started;
+    throw Object.assign(new Error("the compiled scene has no line direction"), {
+      code: "noDirection", details: direction, partial: result,
+    });
+  }
   const metrics = auditGeneratedScriptToMetrics({ episode: compiled.episode }, script);
+  const count = metrics.summary.count;
+  const finalMetrics = {
+    twoLineShare: metrics.summary.perTextLine.twoLineShare,
+    focusPerLine: metrics.summary.focusPerLine,
+    lookAnyPerLine: metrics.summary.lookAnyPerLine,
+  };
+  let normalization = generated.normalization || null;
+  if (!normalization) {
+    const rawTwoLine = metrics.lines.filter((line) => String(line.body || "").includes("\n")).length;
+    normalization = {
+      pipeline: config.llm.pipeline,
+      lineBreaks: { total: count, rawTwoLine, removed: 0, added: 0,
+                    changedShare: 0, rawTwoLineShare: count ? rawTwoLine / count : 0 },
+      direction: { lineCount: count, rawFocus: metrics.summary.focus, focusPruned: 0,
+                   finalFocus: metrics.summary.focus, rawGaze: metrics.summary.lookAny, gazePruned: 0,
+                   finalGaze: metrics.summary.lookAny },
+      names: { repaired: 0, dropped: 0 },
+    };
+  }
+  const lineBreaks = normalization.lineBreaks || {};
+  const rawTwoLine = Math.min(count, Math.max(0, Number(lineBreaks.rawTwoLine) || 0));
+  const removed = Math.max(0, Number(lineBreaks.removed) || 0);
+  const added = Math.max(0, Number(lineBreaks.added) || 0);
+  normalization.lineBreaks = {
+    total: count, rawTwoLine, removed, added,
+    changedShare: count ? (removed + added) / count : 0,
+    rawTwoLineShare: count ? rawTwoLine / count : 0,
+  };
+  const rawFocus = Math.max(metrics.summary.focus,
+    Number(normalization.direction?.rawFocus) || 0);
+  const rawGaze = Math.max(metrics.summary.lookAny,
+    Number(normalization.direction?.rawGaze) || 0);
+  normalization.direction = {
+    lineCount: count,
+    rawFocus, focusPruned: rawFocus - metrics.summary.focus, finalFocus: metrics.summary.focus,
+    rawGaze, gazePruned: rawGaze - metrics.summary.lookAny, finalGaze: metrics.summary.lookAny,
+  };
+  normalization.names = {
+    repaired: Math.max(0, Number(normalization.names?.repaired) || 0),
+    dropped: Math.max(0, Number(normalization.names?.dropped) || 0),
+  };
+  normalization.pipeline = normalization.pipeline || config.llm.pipeline;
+  result.normalization = normalization;
+  result.metrics = {
+    raw: {
+      twoLineShare: normalization.lineBreaks.rawTwoLineShare,
+      focusPerLine: count ? normalization.direction.rawFocus / count : 0,
+      lookAnyPerLine: count ? normalization.direction.rawGaze / count : 0,
+    },
+    final: finalMetrics,
+  };
   result.summary = metrics.summary;
   result.compiled = {
     commandCount: audit.commandCount,
@@ -245,26 +328,6 @@ export const evaluateScene = async ({ scene, run, label, llm, catalog, compiler,
   result.latencyMs = Date.now() - started;
   return result;
 };
-
-const redactedConfig = ({ config, catalog, pipeline, temperature, targetMinutes }) => ({
-  configFile: config.configFile ? path.basename(config.configFile) : null,
-  siteFormat: config.paths.siteFormat ? path.basename(config.paths.siteFormat) : "",
-  base: catalog.manifest,
-  language: catalog.language,
-  pipeline,
-  temperature,
-  targetMinutes,
-  maxLines: config.story.maxLines,
-  maxOnStage: config.story.maxOnStage,
-  repairRounds: config.llm.repairRounds,
-  translateForTts: config.llm.translateForTts,
-  jsonMode: config.llm.jsonMode,
-  maxTokens: config.llm.maxTokens,
-  timeoutMs: config.llm.timeoutMs,
-  model: config.llm.model,
-  baseUrl: config.llm.baseUrl,
-  apiKey: config.secrets.llmApiKey ? "set" : "unset",
-});
 
 const usage = () => `Usage: npm run eval:stories -- --run <name> [--prompts all|1,2,...]
        [--pipeline staged|single] [--temperature 0..2] [--target minutes] [--runs 1..10]
@@ -291,6 +354,8 @@ export const main = async (argv = process.argv.slice(2)) => {
   config.llm.pipeline = args.pipeline;
   config.llm.temperature = args.temperature;
   config.llm.repairRounds = 2;
+  config.llm.retries = 2;
+  config.llm.directorPlan = false;
   config.llm.translateForTts = false;
   config.llm.jsonMode = "auto";
   config.llm.maxTokens = 16384;
@@ -303,18 +368,31 @@ export const main = async (argv = process.argv.slice(2)) => {
   // third person on stage.
   config.story.maxOnStage = 2;
 
+  const secrets = [config.secrets.llmApiKey, config.secrets.ttsApiKey, config.secrets.apiKey]
+    .filter((secret) => typeof secret === "string" && secret.length >= 4);
+  const logger = redactingLogger(console, secrets);
+  const redact = (value) => redactValue(value, secrets);
+
   const selected = selectScenes(args.prompts);
-  const labRoot = path.resolve(process.env.OURNOTES_AI_LAB || path.join(ROOT, "..", "ournotes-ai-lab"));
-  if (inside(ROOT, labRoot)) throw new Error("OURNOTES_AI_LAB must be outside the repository");
+  const labRoot = assertLabOutsideRepository(
+    process.env.OURNOTES_AI_LAB || path.join(ROOT, "..", "ournotes-ai-lab"),
+  );
   const runDir = path.join(labRoot, "runs", args.run);
   fs.mkdirSync(runDir, { recursive: true });
 
   const { catalog, compiler } = await catalogsFor({
     siteDir, language: config.story.language, personas: config.story.personas,
-    base: config.story.base, logger: console,
+    base: config.story.base, logger,
   });
+  const catalogHash = catalogDigest(catalog, compiler);
+  const fingerprint = configFingerprint({
+    config, catalog, catalogHash, pipeline: args.pipeline,
+    temperature: args.temperature, targetMinutes: args.target,
+  });
+  const source = evalSourceDigestInfo();
+  const generatedAt = new Date().toISOString();
   const llm = new LLMClient({ ...config.llm, apiKey: config.secrets.llmApiKey },
-    { logger: console, allowPrivate: config.security.allowPrivateServiceEndpoints });
+    { logger, allowPrivate: config.security.allowPrivateServiceEndpoints });
   if (!llm.available) throw new Error("the LLM client is not configured");
 
   const results = [], failures = [], allStories = {};
@@ -324,35 +402,40 @@ export const main = async (argv = process.argv.slice(2)) => {
     for (const scene of selected) {
       const label = args.runs > 1 ? `${scene.label}-run${repeat}` : scene.label;
       done++;
-      console.error(`[${done}/${total}] ${label} (${args.pipeline}, temperature ${args.temperature})`);
+      logger.error(`[${done}/${total}] ${label} (${args.pipeline}, temperature ${args.temperature})`);
       const sceneStarted = Date.now();
       try {
-        const result = await evaluateScene({
-          scene, run: repeat, label, llm, catalog, compiler, config, runDir, logger: console,
-        });
+        const result = redact(await evaluateScene({
+          scene, run: repeat, label, llm, catalog, compiler, config, runDir, logger, redact,
+        }));
         results.push(result);
         writeJson(path.join(runDir, `${label}.report.json`), result);
         if (fs.existsSync(path.join(runDir, result.script)))
-          allStories[label] = JSON.parse(fs.readFileSync(path.join(runDir, result.script), "utf8"));
+          allStories[label] = redact(JSON.parse(fs.readFileSync(path.join(runDir, result.script), "utf8")));
       } catch (error) {
-        const record = failureRecord({
+        const record = redact(failureRecord({
           scene, run: repeat, label, error, startedAt: sceneStarted,
           partial: error && typeof error === "object" ? error.partial || null : null,
-        });
+        }));
         failures.push(record);
         writeJson(path.join(runDir, `${label}.report.json`), record);
-        console.error(`  failed: ${record.error}`);
+        logger.error(`  failed: ${record.error}`);
       }
     }
   }
 
+  const provenance = buildProvenance({
+    configFingerprint: fingerprint, catalogHash, sourceDigest: source.digest,
+    runs: { name: args.run, runs: args.runs, selected: selected.map((scene) => scene.label) },
+  });
+  provenance.generatedAt = generatedAt;
   const report = {
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     run: args.run,
-    scenes: EVAL_SCENES.map((scene, index) => ({ index: index + 1, label: scene.label, logline: scene.logline })),
+    scenes: EVAL_SCENES.map((scene, index) => ({ index: index + 1, ...scene })),
     selected: selected.map((scene) => scene.label),
-    config: redactedConfig({ config, catalog, pipeline: args.pipeline,
-                             temperature: args.temperature, targetMinutes: args.target }),
+    config: fingerprint,
+    provenance,
     counts: { selected: selected.length, attempted: total, succeeded: results.length, failed: failures.length },
     results,
     aggregate: results.length ? aggregate(results.map((result) => result.summary)) : null,
@@ -360,7 +443,7 @@ export const main = async (argv = process.argv.slice(2)) => {
   };
   writeJson(path.join(runDir, "all-stories.json"), allStories);
   writeJson(path.join(runDir, "report.json"), report);
-  console.error(`${results.length}/${total} scenes succeeded; report: ${path.join(runDir, "report.json")}`);
+  logger.error(`${results.length}/${total} scenes succeeded; report: ${path.join(runDir, "report.json")}`);
   return results.length ? 0 : 1;
 };
 

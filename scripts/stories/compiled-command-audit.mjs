@@ -13,14 +13,25 @@ import { summarize } from "./story-metrics.mjs";
 
 const COMMANDS = new Set(ADV_COMMAND.filter(Boolean));
 
-// Ranges from docs/story-author.md and the approved harness design. Duration is
-// checked where the compiler emits it because the parser admits the same range.
+// Ranges from docs/story-author.md and the approved harness design. Duration and
+// look Parameter2 are optional: official Pedestal/PanV2 rows often omit Duration
+// (a cut), and Look's y offset defaults to 0. Parameter1 (and Focus's
+// CameraDistance, Track's offset) are required.
 export const COMMAND_PARAMETER_RANGES = Object.freeze({
-  Zoom: { Parameter1: [0.7, 2.5], Duration: [0.2, 20] },
-  Pedestal: { Parameter1: [-4, 5], Duration: [0, 20] },
-  PanV2: { Parameter1: [-30, 30], Duration: [0, 20] },
-  DoF: { Parameter1: [0, 1], Duration: [0.5, 10] },
-  Look: { Parameter1: [-1, 1], Parameter2: [-1, 1], Duration: [0.2, 10] },
+  Zoom: { required: ["Parameter1"], fields: { Parameter1: [0.7, 2.5], Duration: [0.2, 20] } },
+  Pedestal: { required: ["Parameter1"], fields: { Parameter1: [-4, 5], Duration: [0, 20] } },
+  PanV2: { required: ["Parameter1"], fields: {
+    Parameter1: [-30, 30], Duration: [0, 20], Parameter3: [0, 1],
+  } },
+  DoF: { required: ["Parameter1"], fields: { Parameter1: [0, 1], Duration: [0.5, 10] } },
+  Look: { required: ["Parameter1"], fields: {
+    Parameter1: [-1, 1], Parameter2: [-1, 1], Duration: [0.2, 10],
+  } },
+  Focus: { required: ["CameraDistance"], fields: {
+    CameraDistance: [1, 5], Duration: [0, 20], PositionType: [1, 9],
+  } },
+  Track: { required: ["Parameter1"], fields: { Parameter1: [-4, 4], Duration: [0, 20] } },
+  Se: { required: [], fields: { Duration: [0.5, 10] } },
 });
 
 const numeric = (value) => {
@@ -76,6 +87,10 @@ export const auditCompiledStory = ({ episode, story = null, script = null, requi
 
   for (let index = 0; index < rows.length; index++) {
     const row = rows[index];
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      failures.push({ code: "rowType", index, message: `row ${index} is not an object` });
+      continue;
+    }
     if (row.i !== index)
       failures.push({ code: "rowIndex", index, cmd: row.cmd, message: `row ${index} has i=${row.i}` });
     if (!COMMANDS.has(row.cmd)) {
@@ -95,50 +110,69 @@ export const auditCompiledStory = ({ episode, story = null, script = null, requi
                     message: `episode.commandCount is ${episode?.commandCount}, not ${commandCount}` });
 
   const parameters = emptyParameterStats();
+  const checkRange = (row, index, field, [min, max], required = false) => {
+    if (row[field] === undefined) {
+      if (required)
+        failures.push({ code: "parameterMissing", index, cmd: row.cmd,
+                        message: `${row.cmd} has no ${field}` });
+      return;
+    }
+    const value = numeric(row[field]);
+    if (value === null) {
+      failures.push({ code: "parameterType", index, cmd: row.cmd,
+                      message: `${row.cmd}.${field}=${JSON.stringify(row[field])} is not numeric` });
+      return;
+    }
+    if (value < min || value > max)
+      failures.push({ code: "parameterRange", index, cmd: row.cmd,
+                      message: `${row.cmd}.${field}=${value} is outside ${min}..${max}` });
+  };
   for (let index = 0; index < rows.length; index++) {
     const row = rows[index];
-    const ranges = COMMAND_PARAMETER_RANGES[row.cmd];
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
     if (row.cmd === "Focus") {
       parameters.Focus.count++;
+      checkRange(row, index, "CameraDistance", [1, 5], true);
+      checkRange(row, index, "Duration", [0, 20]);
+      checkRange(row, index, "PositionType", [1, 9]);
       const distance = numeric(row.CameraDistance);
       if (distance !== null) parameters.Focus.distances.push(distance);
       const duration = numeric(row.Duration);
       if (duration !== null) parameters.Focus.durations.push(duration);
     } else if (row.cmd === "Track") {
       parameters.Track.count++;
+      checkRange(row, index, "Parameter1", [-4, 4], true);
+      checkRange(row, index, "Duration", [0, 20]);
       const value = numeric(row.Parameter1);
-      if (value === null) failures.push({ code: "parameterMissing", index, cmd: row.cmd,
-                                          message: "Track has no numeric Parameter1" });
-      else parameters.Track.parameter1.push(String(row.Parameter1));
+      if (value !== null) parameters.Track.parameter1.push(String(row.Parameter1));
       const duration = numeric(row.Duration);
       if (duration !== null) parameters.Track.durations.push(duration);
     } else if (row.cmd === "Se") {
       parameters.Se.count++;
       if (row.Parameter1 === "Stop") parameters.Se.stops++;
       else if (row.SeID !== undefined) parameters.Se.soundIds.push(String(row.SeID));
+      checkRange(row, index, "Duration", [0.5, 10]);
       const duration = numeric(row.Duration);
       if (duration !== null) parameters.Se.durations.push(duration);
+    } else if (row.cmd === "Bgm") {
+      const stop = row.Parameter1 === "1" || row.Parameter1 === 1 || row.Parameter1 === "Stop";
+      if (row.BgmID === undefined && !stop)
+        failures.push({ code: "bgmId", index, cmd: row.cmd,
+                        message: "Bgm has no BgmID and is not a stop row" });
     }
-    if (!ranges) continue;
+    const spec = ["Focus", "Track", "Se"].includes(row.cmd)
+      ? null : COMMAND_PARAMETER_RANGES[row.cmd];
+    if (!spec) continue;
     parameters[row.cmd].count++;
-    for (const [field, [min, max]] of Object.entries(ranges)) {
-      if (row[field] === undefined) {
-        failures.push({ code: "parameterMissing", index, cmd: row.cmd,
-                        message: `${row.cmd} has no ${field}` });
-        continue;
-      }
-      const value = numeric(row[field]);
-      if (value === null) {
-        failures.push({ code: "parameterType", index, cmd: row.cmd,
-                        message: `${row.cmd}.${field}=${JSON.stringify(row[field])} is not numeric` });
-        continue;
-      }
-      if (value < min || value > max)
-        failures.push({ code: "parameterRange", index, cmd: row.cmd,
-                        message: `${row.cmd}.${field}=${value} is outside ${min}..${max}` });
+    for (const [field, range] of Object.entries(spec.fields)) {
+      checkRange(row, index, field, range, spec.required.includes(field));
+      if (row[field] === undefined) continue;
       if (field === "Parameter1") parameters[row.cmd].parameter1?.push(String(row[field]));
       else if (field === "Parameter2") parameters[row.cmd].parameter2?.push(String(row[field]));
-      else if (field === "Duration") parameters[row.cmd].durations.push(value);
+      else if (field === "Duration") {
+        const value = numeric(row[field]);
+        if (value !== null) parameters[row.cmd].durations.push(value);
+      }
     }
   }
   for (const stats of Object.values(parameters)) {
@@ -148,7 +182,7 @@ export const auditCompiledStory = ({ episode, story = null, script = null, requi
   }
 
   // Resource closure: Se/Bgm -> episode.sounds -> episode.cuesheets -> story.parts.sounds.
-  const closure = { ok: true, sounds: 0, cuesheets: 0, sheets: 0, missing: [] };
+  const closure = { ok: true, checked: false, sounds: 0, cuesheets: 0, sheets: 0, missing: [] };
   const soundIds = new Set(), sheetIds = new Set(), sheetNames = new Set();
   const inspectSound = (row, index, id, code) => {
     if (id === undefined || id === null || String(id).trim() === "") {
@@ -184,6 +218,7 @@ export const auditCompiledStory = ({ episode, story = null, script = null, requi
     sheetNames.add(name);
   };
   rows.forEach((row, index) => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return;
     if (row.cmd === "Se") {
       if (row.Parameter1 !== "Stop") inspectSound(row, index, row.SeID, "seResource");
     } else if (row.cmd === "Bgm" && row.BgmID !== undefined) {
@@ -193,10 +228,12 @@ export const auditCompiledStory = ({ episode, story = null, script = null, requi
   closure.sounds = soundIds.size;
   closure.cuesheets = sheetIds.size;
   closure.sheets = sheetNames.size;
+  closure.checked = Boolean(story?.parts?.sounds);
   closure.ok = closure.missing.length === 0;
 
   // HostActions timed looks are the 0.1.8 engine defect this harness avoids.
   rows.forEach((row, index) => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return;
     if (row.HostActions === undefined) return;
     if (!Array.isArray(row.HostActions)) {
       failures.push({ code: "hostActionsType", index, cmd: row.cmd, message: "HostActions is not an array" });
@@ -209,14 +246,15 @@ export const auditCompiledStory = ({ episode, story = null, script = null, requi
     });
   });
 
-  const expected = sortedUnique(rows.map((row) => row.cmd));
+  const objectRows = rows.filter((row) => row && typeof row === "object" && !Array.isArray(row));
+  const expected = sortedUnique(objectRows.map((row) => row.cmd));
   const requiresOk = checkManifestList(requires?.commands, expected, "requiresCommands", "requires.commands", failures);
   const storyOk = checkManifestList(story?.commands, expected, "storyCommands", "story.commands", failures);
 
   return {
     commands: expected,
     commandCount,
-    counts: sortedCounts(rows),
+    counts: sortedCounts(objectRows),
     parameters,
     failures,
     resourceClosure: closure,
@@ -310,6 +348,9 @@ const cli = async (argv) => {
   if (manifest && !Array.isArray(requires?.commands)) {
     throw new Error("--manifest must contain requires.commands; an audit cannot pass without checking " +
       "the required-command list");
+  }
+  if (manifest && !Array.isArray(manifestStoryCommands)) {
+    throw new Error("--manifest must contain story.commands as well as requires.commands");
   }
   if (!Array.isArray(requires?.commands) && !Array.isArray(story?.commands) && !manifestStoryCommands) {
     throw new Error("--manifest (with requires.commands) or --story (with commands) is required: " +

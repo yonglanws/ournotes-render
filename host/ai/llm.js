@@ -16,12 +16,14 @@ const endpoint = (baseUrl) => {
 };
 
 export class LLMError extends Error {
-  constructor(message, { status = null, retryable = false, body = "" } = {}) {
+  constructor(message, { status = null, retryable = false, body = "", usage = null, content = "" } = {}) {
     super(message);
     this.name = "LLMError";
     this.status = status;
     this.retryable = retryable;
     this.body = body;
+    this.usage = usage;
+    this.content = content;
   }
 }
 
@@ -100,7 +102,10 @@ export class LLMClient {
     let data;
     try { data = JSON.parse(text); } catch { throw new LLMError(`LLM returned non-JSON: ${text.slice(0, 200)}`, { retryable: true }); }
     if (data?.choices?.[0]?.finish_reason === "length")
-      throw new LLMError("LLM answer was truncated (finish_reason=length); raise llm.maxTokens", { retryable: false });
+      throw new LLMError("LLM answer was truncated (finish_reason=length); raise llm.maxTokens", {
+        retryable: false, usage: data.usage || null,
+        content: String(data?.choices?.[0]?.message?.content || "").slice(0, 20_000),
+      });
     const content = data?.choices?.[0]?.message?.content;
     if (typeof content !== "string" || !content.trim())
       throw new LLMError("LLM returned an empty answer", { retryable: true });

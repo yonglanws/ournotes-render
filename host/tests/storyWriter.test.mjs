@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { buildQuickCastMessages, buildStoryMessages } from "../ai/prompt.js";
 import { parseScript } from "../../scripts/lib/story-author/script.js";
 import { generateScript, prepareScript } from "../ai/storyWriter.js";
+import { LLMError } from "../ai/llm.js";
 import { directionBudgetFor } from "../ai/official-targets.js";
 import { buildDialogueMessages, balanceLineBreaks, buildStoryboardMessages, mergeStagedScript, normalizeDialogue, onStageProblems, spreadPositions } from "../ai/staged.js";
 import { quietLogger } from "./helpers.mjs";
@@ -280,6 +281,48 @@ test("the staged pipeline writes cast, dialogue, then storyboard", async () => {
   assert.deepEqual(out.plan.cast.map((c) => c.id), ["a", "b"]);
   assert.equal(out.dialogue.lines.length, 3);
   assert.equal(out.usage, null, "the fake returns no usage");
+});
+
+test("a truncated staged answer records the failed attempt usage before retrying", async () => {
+  let calls = 0;
+  const llm = { available: true,
+    async json() {
+      calls++;
+      if (calls === 1) return { content: JSON.stringify(CAST_DOC) };
+      if (calls === 2) return { content: JSON.stringify(DIALOGUE_DOC) };
+      if (calls === 3) throw new LLMError("truncated", {
+        usage: { completion_tokens: 7 }, content: '{"beats": [',
+      });
+      return { content: JSON.stringify(STORYBOARD_DOC) };
+    } };
+  const out = await stagedRun(llm);
+  assert.equal(calls, 4);
+  const failed = out.stages.find((stage) => stage.stage === "storyboard" && stage.ok === false);
+  assert.equal(failed.usage.completion_tokens, 7);
+  assert.equal(failed.attempts, 1);
+  assert.ok(out.stages.some((stage) => stage.stage === "storyboard-retry" && stage.ok));
+  assert.equal(out.usage.calls[0].completion_tokens, 7);
+});
+
+test("a generation failure preserves stages, usage and the partial answer", async () => {
+  let calls = 0;
+  const llm = { available: true,
+    async json() {
+      calls++;
+      if (calls === 1) return { content: JSON.stringify(CAST_DOC) };
+      if (calls === 2) return { content: JSON.stringify(DIALOGUE_DOC) };
+      throw new LLMError("HTTP 500: upstream failed", {
+        usage: { completion_tokens: 5 }, content: "partial answer",
+      });
+    } };
+  await assert.rejects(stagedRun(llm), (error) => {
+    assert.ok(error.partial, "the failure must carry partial diagnostics");
+    assert.equal(error.partial.usage.calls[0].completion_tokens, 5);
+    assert.equal(error.partial.raw, "partial answer");
+    assert.ok(error.partial.stages.some((stage) => stage.ok === false));
+    assert.ok(Array.isArray(error.partial.warnings));
+    return true;
+  });
 });
 
 test("a truncated staged answer is retried once before failing", async () => {
@@ -831,4 +874,25 @@ test("a storyboard that can never pass falls back to bare lines instead of faili
   assert.ok(out.warnings.some((w) => String(w.message ?? w).includes("无动作演出")));
   assert.ok(out.stages.every((s) => s.stage !== "storyboard-repair"), "no repair stage was recorded");
   assert.equal(out.stages.find((s) => s.stage === "storyboard").ok, false);
+});
+
+test("line beats with no direction fields count as missing direction", () => {
+  const dialogue = { title: "雨", lines: [
+    { id: "l1", say: "a", text: "第一句。" },
+    { id: "l2", say: "b", text: "第二句。" },
+  ] };
+  for (const storyboard of [
+    { beats: [] },
+    { beats: [{ line: "l1" }, { line: "l2" }] },
+    { beats: [{ scene: "stage_a", camera: "middle", positions: { a: "far-left", b: "far-right" } },
+              { line: "l1" }, { line: "l2" }] },
+  ]) {
+    const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG,
+                                      request: {}, config: STAGED_CONFIG });
+    const missing = merged.warnings.filter((warning) => warning.code === "missingDirection");
+    assert.equal(missing.length, 2, JSON.stringify(storyboard));
+    for (const line of merged.doc.beats.filter((beat) => "say" in beat)) {
+      assert.equal(Object.keys(line).filter((key) => key !== "say" && key !== "text").length, 0);
+    }
+  }
 });

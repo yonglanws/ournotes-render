@@ -13,6 +13,7 @@ import {
   checkScript, compileScript, musicChoices, parseScript, soundChoices, stageChoices,
 } from "../lib/story-author/script.js";
 import { auditCompiledStory, auditGeneratedScriptToMetrics } from "./compiled-command-audit.mjs";
+import { ADV_COMMAND } from "../../src/story/interfaces.js";
 
 const MODELS = { m_a: "Character/Live2D/001_adv/m_a/model/m_a", m_b: "Character/Live2D/002_adv/m_b/model/m_b" };
 const ACTIONS = {
@@ -129,6 +130,44 @@ test("the audit carries the official parameter values and durations", () => {
   assert.deepEqual(audit.parameters.Look.parameter2, ["0.2"]);
 });
 
+test("optional Duration and Look Parameter2 are legal, while Track and Focus ranges are checked", () => {
+  const compiled = officialScene();
+  const episode = { ...compiled.episode, commands: compiled.episode.commands.map((row) => ({ ...row })) };
+  const pedestal = episode.commands.find((row) => row.cmd === "Pedestal");
+  const look = episode.commands.find((row) => row.cmd === "Look");
+  delete pedestal.Duration;
+  delete look.Parameter2;
+  delete look.Duration;
+  assert.deepEqual(auditCompiledStory({ ...compiled, episode }).failures, []);
+
+  const track = episode.commands.find((row) => row.cmd === "Track");
+  track.Parameter1 = "9";
+  const focus = episode.commands.find((row) => row.cmd === "Focus" && row.CameraDistance !== undefined);
+  focus.CameraDistance = 9;
+  const failures = auditCompiledStory({ ...compiled, episode }).failures;
+  assert.ok(failures.some((failure) => failure.code === "parameterRange" && failure.cmd === "Track"));
+  assert.ok(failures.some((failure) => failure.code === "parameterRange" && failure.cmd === "Focus"));
+});
+
+test("a non-stop Bgm without BgmID and a non-object row are structured failures", () => {
+  const bgmIndex = ADV_COMMAND.indexOf("Bgm");
+  const bgm = {
+    commandCount: 1,
+    commands: [{ i: 0, cmd: "Bgm", raw: bgmIndex }],
+    sounds: {},
+    cuesheets: {},
+  };
+  assert.ok(auditCompiledStory({ episode: bgm }).failures.some((failure) => failure.code === "bgmId"));
+  const mixed = {
+    commandCount: 2,
+    commands: [{ i: 0, cmd: "Talk", raw: ADV_COMMAND.indexOf("Talk") }, null],
+    sounds: {},
+    cuesheets: {},
+  };
+  const failures = auditCompiledStory({ episode: mixed }).failures;
+  assert.ok(failures.some((failure) => failure.code === "rowType"));
+});
+
 test("every Se sound closes through sounds, cue sheets and story parts", () => {
   const compiled = officialScene();
   const audit = auditCompiledStory(compiled);
@@ -214,14 +253,20 @@ test("the audit CLI refuses to pass without a required-command list", () => {
   const cli = fileURLToPath(new URL("./compiled-command-audit.mjs", import.meta.url));
   const episodeFile = path.join(dir, "episode.json");
   const manifestFile = path.join(dir, "manifest.json");
+  const partialManifestFile = path.join(dir, "partial-manifest.json");
   const storyFile = path.join(dir, "story.json");
   writeFileSync(episodeFile, JSON.stringify(compiled.episode));
-  writeFileSync(manifestFile, JSON.stringify({ requires: compiled.requires }));
+  writeFileSync(manifestFile, JSON.stringify({ requires: compiled.requires, story: { commands: compiled.requires.commands } }));
+  writeFileSync(partialManifestFile, JSON.stringify({ requires: compiled.requires }));
   writeFileSync(storyFile, JSON.stringify(compiled.story));
   try {
     const missing = spawnSync(process.execPath, [cli, "--episode", episodeFile], { encoding: "utf8" });
     assert.notEqual(missing.status, 0, "an unchecked command list must not exit 0");
     assert.match(`${missing.stdout}${missing.stderr}`, /--manifest|required-command/);
+    const partial = spawnSync(process.execPath,
+      [cli, "--episode", episodeFile, "--manifest", partialManifestFile], { encoding: "utf8" });
+    assert.notEqual(partial.status, 0, "a manifest without story.commands must not pass");
+    assert.match(`${partial.stdout}${partial.stderr}`, /story\.commands/);
     for (const args of [["--story", storyFile], ["--story", storyFile, "--manifest", manifestFile]]) {
       const run = spawnSync(process.execPath, [cli, "--episode", episodeFile, ...args], { encoding: "utf8" });
       assert.equal(run.status, 0, run.stderr);

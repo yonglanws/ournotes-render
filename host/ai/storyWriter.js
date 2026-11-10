@@ -18,11 +18,12 @@ import {
 } from "./staged.js";
 
 export class StoryWriterError extends Error {
-  constructor(message, { details = null, cause = null } = {}) {
+  constructor(message, { details = null, cause = null, partial = null } = {}) {
     super(message);
     this.name = "StoryWriterError";
     this.code = "story_generation";
     this.details = details;
+    this.partial = partial;
     if (cause) this.cause = cause;
   }
 }
@@ -381,16 +382,38 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
     try {
       answer = await llm.json(messages, { signal, label });
     } catch (e) {
-      if (signal?.aborted || !isTruncatedAnswer(e)) throw e;
+      if (signal?.aborted) throw signal.reason || e;
+      if (!isTruncatedAnswer(e)) {
+        recordFailure(label, e, 1);
+        throw e;
+      }
+      recordFailure(label, e, 1);
       stageWarnings.push(`${label} 回答被截断，已重试一次`);
       logger.warn?.(`${label}: answer truncated; retrying once`);
       usedLabel = `${label}-retry`;
-      answer = await llm.json(messages, { signal, label: usedLabel });
+      try {
+        answer = await llm.json(messages, { signal, label: usedLabel });
+      } catch (retryError) {
+        if (signal?.aborted) throw signal.reason || retryError;
+        recordFailure(usedLabel, retryError, 2);
+        throw retryError;
+      }
     }
     if (answer.usage) usages.push({ stage: usedLabel, ...answer.usage });
     stages.push({ stage: usedLabel, model: answer.model ?? null, latencyMs: Date.now() - startedAt,
                   usage: answer.usage ?? null, ok: true });
     return answer;
+  };
+  const recordFailure = (label, error, attempts) => {
+    const usage = error?.usage || null;
+    stages.push({ stage: label, ok: false, attempts, note: error?.message || String(error),
+                  usage });
+    if (usage) usages.push({ stage: label, ...usage });
+    error.partial = {
+      stages: [...stages], usage: combineUsage(usages), warnings: [...stageWarnings],
+      raw: error?.content || null,
+    };
+    return error;
   };
   const markStageFailed = (note, stage) => {
     const last = stage ? [...stages].reverse().find((entry) => entry.stage === stage) : stages[stages.length - 1];
@@ -398,7 +421,7 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
   };
   const failed = (label, e) => {
     if (signal?.aborted) throw signal.reason || e;
-    throw new StoryWriterError(`AI ${label}失败：${e.message}`, { cause: e });
+    throw new StoryWriterError(`AI ${label}失败：${e.message}`, { cause: e, partial: e?.partial || null });
   };
 
   onProgress("casting", 0.02, "AI 选角");
@@ -491,6 +514,11 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
     }
   }
   const breakBalance = balanceLineBreaks(dialogue);
+  const lineBreakStats = {
+    total: breakBalance.total, rawTwoLine: breakBalance.rawTwoLine, removed: breakBalance.removed,
+    added: breakBalance.added, changedShare: breakBalance.changedShare,
+    rawTwoLineShare: breakBalance.rawTwoLineShare,
+  };
   if (breakBalance.removed || breakBalance.added)
     stageWarnings.push(`台词换行已按官方两行比例调整（合并 ${breakBalance.removed} 条，拆分 ${breakBalance.added} 条）`);
 
@@ -532,6 +560,11 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
           return {
             script: parsed.script, doc, warnings: [...stageWarnings, ...mergeWarnings, ...warnings], raw: answer.content,
             usage: combineUsage(usages), plan, dialogue, stages,
+            normalization: {
+              pipeline: "staged", lineBreaks: lineBreakStats,
+              direction: merged.normalization?.direction || null,
+              names: merged.normalization?.names || { repaired: 0, dropped: 0 },
+            },
           };
         }
       }
@@ -577,11 +610,21 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
       return {
         script: parsed.script, doc: bareDoc, warnings: [...stageWarnings, ...bare.warnings], raw: answer.content,
         usage: combineUsage(usages), plan, dialogue, stages,
+        normalization: {
+          pipeline: "staged", lineBreaks: lineBreakStats,
+          direction: bare.normalization?.direction || null,
+          names: bare.normalization?.names || { repaired: 0, dropped: 0 },
+        },
       };
     }
   } catch { /* the fallback failed too; report the storyboard problems below */ }
 
-  throw new StoryWriterError("AI 分镜经过自动修复后仍有错误", { details: lastProblems, plan, dialogue });
+  throw new StoryWriterError("AI 分镜经过自动修复后仍有错误", {
+    details: lastProblems, plan, dialogue,
+    partial: {
+      stages, usage: combineUsage(usages), warnings: [...stageWarnings], raw: answer?.content || null,
+    },
+  });
 };
 
 export const generateScript = async (args) => {

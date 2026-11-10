@@ -30,6 +30,9 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm test
       - run: npm run test:host
+      # Skips the corpus/report-dependent tests with explicit reasons; the
+      # provenance and gate-unit tests still run.
+      - run: npm run test:stories
       - run: npm run lint
 
   plugin:

@@ -405,6 +405,7 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
 ```sh
 npm test                     # 引擎/剧情/Live2D/导演脚本单元测试
 npm run test:host            # 队列/AI/TTS/混音/API/浏览器冒烟
+npm run test:stories         # 官方语料/固定场景 AI 质量门；缺语料或报告时逐项 skip
 OURNOTES_SKIP_BROWSER=1 npm run test:host   # 没有 Chrome 的机器
 ```
 
@@ -484,11 +485,21 @@ npm run eval:stories -- --run phase1 --pipeline staged --temperature 0.8
 
 ```text
 runs/<run>/<label>.story.json     该场最终脚本（ournotes.story-script/1）
-runs/<run>/<label>.report.json    该场 latency/usage/warnings/summary/compiled counts；失败场记录 error
+runs/<run>/<label>.report.json    该场 latency/usage/warnings/summary/compiled counts、raw/final 指标与归一化统计；失败场记录 error
 runs/<run>/<label>.raw.txt        最后一次模型回复（分镜修复或降级时用于诊断，不含提示词和密钥）
 runs/<run>/all-stories.json       label -> 脚本
-runs/<run>/report.json            generatedAt、脱敏配置、逐场结果、仅成功场的 aggregate、failures
+runs/<run>/report.json            generatedAt、provenance、脱敏配置、逐场结果、仅成功场的 aggregate、failures
 ```
+
+`report.json` 的 provenance 绑定固定场景列表、评测源码、配置和站点底本：
+
+- `sceneList.digest` / `labels`：共享的 8 个固定场景；结果必须覆盖全部 8 个 base label（`--runs` 会重复，
+  但重复次数必须等于 runs，不能少场景）。
+- `source.digest` / `gitHead`：影响生成与编译的源码文件摘要（含 `host/ai`、story-author、评测脚本）和当前 HEAD。
+- `config.digest`：pipeline、temperature、targetMinutes、maxLines、maxOnStage、repairRounds、retries、directorPlan、
+  systemPrompt 摘要、角色卡身份摘要、模型/baseUrl/密钥是否存在、catalog/scene 摘要；报告只存摘要，不存提示词或密钥。
+- `catalog.digest`：站点底本的舞台/音乐/SE/角色动作与表情清单。
+- `generatedAt`：报告时间；质量门默认拒绝超过 72 小时或未来的报告。
 
 质量门读取一次命名 run 的报告；报告未设置或不存在时按明确原因 skip，不当作通过：
 
@@ -496,11 +507,17 @@ runs/<run>/report.json            generatedAt、脱敏配置、逐场结果、�
 OURNOTES_EVAL_REPORT=/path/to/ournotes-ai-lab/runs/phase1/report.json npm run test:stories
 ```
 
-门禁检查每场 `summary.count >= 28`、`charsTotal >= 400`、`warnings` 与 `compiled.commands` 存在；聚合区间为
+门禁检查固定 scene 列表与 runs 覆盖、provenance 摘要/新鲜度、`targetMinutes: 2`、`maxLines: 36` 等固定基线，
+每场 `summary.count >= 28`、`charsTotal >= 400`、`warnings` 与 `compiled.commands` 存在，并交叉检查
+`compiled.commandCount`/`commands`/`counts` 与 `summary.count == Talk count`。聚合区间为
 `charsMean 12..19`、`twoLineShare 0.25..0.50`、`shortShare 0.12..0.30`、`soloRunShare 0.58..0.82`、
 `focusPerLine 0.30..0.50`、`motionsPerLine 1.0..1.5`、`lookAnyPerLine 0.20..0.42`、`zoomPerLine 0.03..0.16`、
 `pedestalPerLine 0.04..0.15`、`panV2PerLine 0.05..0.18`、`sePerLine 0.04..0.16`，并要求 `Zoom` / `Pedestal` /
-`PanV2` / `DoF` / `Look` / `Se` 至少各编译出一条。聚合只统计成功场；不要为了通过而放宽区间。
+`PanV2` / `DoF` / `Look` / `Se` 至少各编译出一条。
+
+为避免宿主后处理“做完全部工作”，每场还报告 raw 模型指标与归一化统计，并限制 `lineBreakChangedShare <= 0.45`、
+`focusPruneShare <= 0.55`、`gazePruneShare <= 0.40`、`nameChangedShare <= 0.20`；raw `twoLineShare`/`focusPerLine`/
+`lookAnyPerLine` 也必须在宽松的模型区间内。聚合只统计成功场；不要为了通过而放宽区间。
 
 已编译 episode 的命令审计可以单独运行（检查 `i`/`raw`/`commandCount`、注册命令、参数区间、SE 资源闭合、
 `HostActions` 里的 `LookTargetPosition` 和 required-command 清单，失败时退出码为 1）：
@@ -510,9 +527,10 @@ npm run audit:stories -- --episode output/phase1/episode.json \
   --site resources/site --base stories/10438.json --manifest output/phase1/stories/99001.json
 ```
 
-必须提供 `--manifest`（含 `requires.commands`）或含 `commands` 的 `--story`；`--manifest` 的
-`requires.commands` 与 `story.commands` 都会检查。缺少 required-command 清单时审计直接报错退出，不会在未检查
-命令清单的情况下打印 `ok: true`。
+必须提供 `--manifest`（含 `requires.commands` 与 `story.commands`）或含 `commands` 的 `--story`；
+`--manifest` 的两份命令清单都会检查。缺少 required-command 清单时审计直接报错退出，不会在未检查命令清单的
+情况下打印 `ok: true`。Pedestal/PanV2 的 `Duration` 和 Look 的 `Parameter2` 可省略（硬切/默认 0）；Focus 的
+`CameraDistance` 为 1~5、Track 为 -4~4，非停止的 Bgm 行必须有 `BgmID`。
 
 ## 已知限制
 

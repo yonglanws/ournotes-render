@@ -227,3 +227,27 @@ test("no official target is NaN and every numeric field is finite", () => {
     }
   }
 });
+
+test("short-scene prompts never print an inverted range or an unreachable look/Se minimum", () => {
+  for (const lines of [9, 20, 36]) {
+    const dialogue = { lines: Array.from({ length: lines }, (_, i) =>
+      ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `第${i + 1}句台词的内容。` })) };
+    const [, storyboard] = buildStoryboardMessages({ plan: PLAN, dialogue, catalog: CATALOG, request: {}, config: CONFIG });
+    const [, single] = buildStoryMessages({ catalog: CATALOG, request: { prompt: "放学后" }, config: CONFIG });
+    const text = `${storyboard.content}\n${single.content}`;
+    const ranges = [...text.matchAll(/(?<![\d.])(\d+)~(\d+)(?![\d.])/g)]
+      .map((match) => [Number(match[1]), Number(match[2])]);
+    assert.ok(ranges.every(([low, high]) => low <= high), `${lines}: inverted range ${JSON.stringify(ranges)}`);
+    assert.doesNotMatch(text, /Se 约 1 条（至少 2 条/, `${lines}: unreachable Se minimum`);
+    assert.doesNotMatch(text, /双人戏每 2~3 句/, `${lines}: stale lookAt interval`);
+    assert.match(text, /双人戏每 3~4 句/, `${lines}: shared lookAt interval`);
+  }
+  const nine = { lines: Array.from({ length: 9 }, (_, i) =>
+    ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `第${i + 1}句。` })) };
+  const [, user] = buildStoryboardMessages({ plan: PLAN, dialogue: nine, catalog: CATALOG, request: {}, config: CONFIG });
+  assert.match(user.content, /写 1 个 pedestal/);
+  assert.match(user.content, /1 个 pan/);
+  assert.match(user.content, /0 个 dof/);
+  assert.match(user.content, /2 个独立 look/);
+  assert.match(user.content, /Se 约 1 条/);
+});

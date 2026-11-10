@@ -61,6 +61,13 @@ export const dialogueBudgetFor = (minutes = 2) => {
 // (focusPerTextLine 0.446, distance4TextLineShare 0.2288) instead of the
 // all-Talk-row rates (focusPerTalkRow 0.397, distance4Share 0.2038). The
 // prompt states both denominators.
+// One range formatter for prompts: a small-scene floor never prints "2~1".
+export const budgetCount = (minimum, maximum) => {
+  const cap = Math.max(0, Math.round(Number(maximum) || 0));
+  const floor = Math.max(0, Math.min(Math.round(Number(minimum) || 0), cap));
+  return floor === cap ? String(cap) : `${floor}~${cap}`;
+};
+
 export const directionBudgetFor = (lineCount) => {
   const requested = Number(lineCount);
   const lines = Number.isFinite(requested) && requested > 0 ? Math.max(1, Math.floor(requested)) : 1;
