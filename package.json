@@ -25,6 +25,8 @@
     "check": "node host/tools/check.mjs",
     "tts:check": "node host/tools/tts-check.mjs",
     "test": "node --test tests/unit/*.test.mjs",
+    "test:stories": "node --test scripts/stories/*.test.mjs",
+    "baseline:stories": "node scripts/stories/official-baseline.mjs",
     "test:host": "node --test \"host/tests/**/*.test.mjs\"",
     "host:fetch-story": "node host/tools/fetch-story.mjs",
     "host:render-story": "node host/tools/render-story.mjs",

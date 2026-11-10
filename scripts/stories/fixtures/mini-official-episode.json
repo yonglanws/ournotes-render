@@ -1,0 +1,55 @@
+{
+  "advId": "mini-official-episode",
+  "asset": "mini-official-episode",
+  "commandCount": 15,
+  "commands": [
+    { "i": 0, "cmd": "Bgm", "raw": 1, "Parameter1": "bgm_01" },
+    { "i": 1, "cmd": "Stage", "raw": 25, "Parameter1": "stage_01" },
+    { "i": 2, "cmd": "Focus", "raw": 7, "CameraDistance": 2, "PositionType": 2, "Duration": 1.5 },
+    { "i": 3, "cmd": "Motion", "raw": 21, "Parameter1": "mtn_01" },
+    { "i": 4, "cmd": "Look", "raw": 12, "Parameter1": "0.2" },
+    { "i": 5, "cmd": "Se", "raw": 31, "Parameter1": "se_01" },
+    {
+      "i": 6,
+      "cmd": "Talk",
+      "raw": 2,
+      "TargetName": "anon",
+      "AdvTextID": "mini-1",
+      "VoiceIDs": [900001],
+      "lines": { "zh-Hans": "今天的天气真好呀" }
+    },
+    { "i": 7, "cmd": "Zoom", "raw": 9, "Parameter1": "1.2", "Duration": 1.5 },
+    { "i": 8, "cmd": "Pedestal", "raw": 10, "Parameter1": "-0.2", "Duration": 1.5 },
+    { "i": 9, "cmd": "PanV2", "raw": 11, "Parameter1": "-5", "Duration": 1.5 },
+    { "i": 10, "cmd": "DoF", "raw": 13, "Parameter1": "0.5", "Duration": 1.5 },
+    { "i": 11, "cmd": "Motion", "raw": 21, "Parameter1": "mtn_02" },
+    { "i": 12, "cmd": "LookTarget", "raw": 14, "Parameter1": "tomori" },
+    {
+      "i": 13,
+      "cmd": "Talk",
+      "raw": 2,
+      "TargetName": "anon",
+      "AdvTextID": "mini-blank-1",
+      "VoiceIDs": [],
+      "lines": { "zh-Hans": "" }
+    },
+    {
+      "i": 14,
+      "cmd": "Talk",
+      "raw": 2,
+      "TargetName": "tomori",
+      "AdvTextID": "mini-2",
+      "VoiceIDs": [900002],
+      "lines": { "zh-Hans": "真的吗？\n我们走吧！" }
+    }
+  ],
+  "text": {
+    "mini-1": { "zh-Hans": "今天的天气真好呀" },
+    "mini-2": { "zh-Hans": "真的吗？\n我们走吧！" }
+  },
+  "sounds": {},
+  "cuesheets": {},
+  "videos": {},
+  "resources": [],
+  "title": { "zh-Hans": "迷你官方剧本" }
+}
