@@ -910,8 +910,9 @@ export const checkScript = (script, site) => {
       if (!cast.has(b.speaker)) { errors.push(unknown(`${b.path}/say`, "unknownCast", "cast member", b.speaker, cast.keys())); continue; }
       used.add(b.speaker);
       if (!on.has(b.speaker)) {
-        if (b.motion || b.expression)
-          errors.push({ path: b.path, code: "offStage", message: `${b.speaker} is not on stage: a motion or an expression needs the speaker on stage` });
+        if (b.motion || b.expression || b.look !== undefined)
+          errors.push({ path: b.path, code: "offStage",
+                        message: `${b.speaker} is not on stage: a motion, an expression or a look needs the speaker on stage` });
         else warnings.push({ path: `${b.path}/say`, code: "speakerOffStage", message: `${b.speaker} speaks from off stage` });
       }
       checkAction(b.speaker, b.motion, b.expression, b.path);
@@ -1036,9 +1037,8 @@ export const compileScript = (script, site, language) => {
       hasFocusRow = true;
     }
     if (b.track !== undefined) {
-      const trackMove = b.trackDuration !== undefined ? b.trackDuration
-        : b.cameraDuration !== undefined ? b.cameraDuration
-          : hasFocusRow ? move : 0;
+      // A Track follows the Focus row's move; cameraDuration is only the fallback when the beat has no Focus row.
+      const trackMove = b.trackDuration ?? (hasFocusRow ? move : b.cameraDuration ?? 0);
       row("Track", { Parameter1: String(b.track), ...(trackMove ? { Duration: trackMove } : {}), IsNoWait: 1 });
     }
   };

@@ -270,7 +270,7 @@ These fields compile to their own official ADV rows after the Focus/Track rows o
 |---|---|---|---|
 | `cameraDuration` | camera | Duration of `Focus`/`Track`/`Pedestal`/`PanV2`/`DoF` | 0..20; `duration` is its alias |
 | `focusDuration` | say, narrate, camera, scene, positions | `Focus` `Duration` | 0..20; 0/absent = hard cut |
-| `trackDuration` | say, narrate, camera, scene, positions | `Track` `Duration` | 0..20; own > `cameraDuration` > Focus duration |
+| `trackDuration` | say, narrate, camera, scene, positions | `Track` `Duration` | 0..20; own > the beat's Focus duration; `cameraDuration` only when the beat has no Focus row |
 | `pedestal` / `pedestalDuration` | say, narrate, camera | `Pedestal` | `-4..5`; duration 0..20, default 1.5 |
 | `pan` / `panDuration` / `panFocusSlide` | say, narrate, camera | `PanV2` | angle `-30..30`; duration 0..20, default 1.5; slide 0..1 (`Parameter3`) |
 | `dof` / `dofDuration` / `dofLayers` | say, narrate, camera | `DoF` | intensity 0..1; duration 0.5..10, default 1.5; layers 0 (background), 2 (characters) or absent |
@@ -281,7 +281,8 @@ These fields compile to their own official ADV rows after the Focus/Track rows o
 | `motionFadeIn` / `motionWait` | say, action, positions | `Motion` | fade `-1..2` (default -1); wait boolean |
 
 A field's own duration wins over `cameraDuration`, which wins over the compiler's automatic duration (or the table's
-default). `look` and `lookAt` cannot be used on the same beat: `look` is a direction, `lookAt` an official
+default). A Track is the exception: it follows the Focus row's duration, and `cameraDuration` is only its fallback
+when the beat has no Focus row. `look` and `lookAt` cannot be used on the same beat: `look` is a direction, `lookAt` an official
 `LookTarget`. `panFocusSlide` needs `pan`, `dofLayers` needs `dof`, `pedestalDuration` needs `pedestal`, and
 `seDuration`/`seDelay` need `se`. A `se` that is not one of the base story's SE cues (error `unknownSe`) is refused;
 the cue list is what `site-story.mjs --list` prints as `sounds` and what the AI prompt shows as 可用音效.

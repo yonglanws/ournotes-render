@@ -419,39 +419,82 @@ test("a slow zoom compiles to a Zoom row, with the beat's duration or 1.5 s", ()
   assert.deepEqual(bad.map((e) => e.code), ["range", "empty"]);
 });
 
-test("official camera, gaze, motion and SE fields compile to their ADV rows", () => {
+test("a Track follows the Focus duration; cameraDuration is the no-Focus fallback", () => {
   const c = compiled(script([
-    { scene: "garden", camera: "middle", focus: 5, track: 0.2, focusDuration: 1.5, trackDuration: 2,
-      positions: { a: "left", b: "right" }, se: "sound_se_adv_door_knock", seDelay: 0.2 },
-    { say: "a", text: "One.", zoom: 1.2, pedestal: -0.2, pan: -5, panDuration: 2, panFocusSlide: 0.5,
-      dof: 0.5, dofDuration: 1.2, dofLayers: 2, look: 0.3, lookY: -0.3, lookDuration: 0.4,
-      motion: "mtn_smile01", motionFadeIn: 0.5, motionWait: true,
-      se: "sound_se_adv_door_knock", seDuration: 0.7 },
-    { action: "b", expression: "exp_idle01", seStop: true },
+    { scene: "garden", camera: "middle", focus: 5, positions: { a: "left", b: "right" } },
+    { camera: "middle", focus: 5, cameraDuration: 3, focusDuration: 1, track: 0.5 },
+    { say: "a", text: "Two.", track: 0.7, trackDuration: 2.5 },
+    { say: "b", text: "Three.", track: 0.2 },
   ]));
+  const rows = strip(c.episode.commands);
+  assert.equal(rows.filter((r) => r.cmd === "Focus").length, 2, "the scene and the first camera beat");
+  assert.equal(rows.filter((r) => r.cmd === "Track").length, 3);
+  assert.deepEqual(rows.filter((r) => r.cmd === "Focus" || r.cmd === "Track").slice(1), [
+    { cmd: "Focus", PositionType: 5, CameraDistance: 2, Duration: 1, IsNoWait: 1 },
+    { cmd: "Track", Parameter1: "0.5", Duration: 1, IsNoWait: 1 },
+    { cmd: "Track", Parameter1: "0.7", Duration: 2.5, IsNoWait: 1 },
+    { cmd: "Track", Parameter1: "0.2", IsNoWait: 1 },
+  ]);
+});
+
+test("a look needs its speaker on stage", () => {
+  const { errors } = checked(script([
+    { scene: "garden", positions: { b: "right" } },
+    { say: "a", text: "Off.", look: 0.2 },
+  ]));
+  assert.deepEqual(codes(errors), [["/beats/1", "offStage"]]);
+});
+
+test("official camera rows compile in deterministic order with their durations", () => {
+  const c = compiled(script([
+    { scene: "garden", camera: "middle", focus: 5, positions: { a: "left", b: "right" } },
+    { camera: "middle", focus: 5, cameraDuration: 3, focusDuration: 1, track: 0.5, pedestal: -0.2,
+      pan: -5, panFocusSlide: 0.5, dof: 0.5, dofLayers: 2, zoom: 1.2,
+      se: "sound_se_adv_door_knock", seDuration: 0.7 },
+    { say: "a", text: "One.", look: 0.3, lookY: -0.3, lookDuration: 0.4 },
+  ]));
+  assert.deepEqual(strip(c.episode.commands).slice(2), [
+    { cmd: "Stage", TargetAssetName: "st/garden" },
+    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_L" },
+    { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 5, CameraDistance: 2 },
+    // one Focus then one Track: the explicit Focus duration wins over cameraDuration for both
+    { cmd: "Focus", PositionType: 5, CameraDistance: 2, Duration: 1, IsNoWait: 1 },
+    { cmd: "Track", Parameter1: "0.5", Duration: 1, IsNoWait: 1 },
+    // cameraDuration is the fallback for the rows that have no duration of their own
+    { cmd: "Pedestal", Parameter1: "-0.2", Duration: 3, IsNoWait: 1 },
+    { cmd: "PanV2", Parameter1: "-5", Duration: 3, IsNoWait: 1, Parameter3: "0.5" },
+    { cmd: "DoF", Parameter1: "0.5", Duration: 3, IsNoWait: 1, CanvasLayers: [2] },
+    { cmd: "Zoom", Parameter1: "1.2", Duration: 3, IsNoWait: 1 },
+    { cmd: "Se", SeID: 12, Duration: 0.7 },
+    // look is a say field: it follows the camera rows of the beat before it
+    { cmd: "Look", TargetName: "a", Parameter1: "0.3", Parameter2: "-0.3", Duration: 0.4, IsNoWait: 1 },
+    { cmd: "Talk", AdvTextID: "custom_line_2", TargetName: "a", TargetTextIDs: ["custom_name_a"],
+      TargetTextColors: ["#FFFFFF"] },
+  ]);
   const rows = c.episode.commands;
-  assert.ok(rows.some((r) => r.cmd === "Focus" && r.Duration === 1.5), "focusDuration");
-  assert.ok(rows.some((r) => r.cmd === "Track" && r.Duration === 2), "trackDuration");
-  assert.ok(rows.some((r) => r.cmd === "Zoom" && r.Parameter1 === "1.2" && r.Duration === 1.5));
-  assert.ok(rows.some((r) => r.cmd === "Pedestal" && r.Parameter1 === "-0.2" && r.Duration === 1.5));
-  assert.ok(rows.some((r) => r.cmd === "PanV2" && r.Parameter1 === "-5" && r.Duration === 2 &&
-                                r.Parameter3 === "0.5"));
-  assert.ok(rows.some((r) => r.cmd === "DoF" && r.Parameter1 === "0.5" && r.Duration === 1.2 &&
-                                Array.isArray(r.CanvasLayers) && r.CanvasLayers[0] === 2));
-  assert.ok(rows.some((r) => r.cmd === "Look" && r.TargetName === "a" && r.Parameter1 === "0.3" &&
-                                r.Parameter2 === "-0.3" && r.Duration === 0.4));
-  const motion = rows.find((r) => r.cmd === "Motion" && r.TargetName === "a");
-  assert.equal(motion?.MotionFadeIn, 0.5);
-  assert.equal(motion?.MotionWait, true);
-  const se = rows.find((r) => r.cmd === "Se" && r.SeID && r.Duration === 0.7);
-  assert.equal(se?.SeID, 12);
-  assert.equal(se?.Duration, 0.7);
+  const se = rows.find((r) => r.cmd === "Se");
+  assert.equal(se.SeID, 12);
   assert.ok(c.episode.sounds[se.SeID]);
   assert.ok(c.episode.cuesheets[c.episode.sounds[se.SeID]._soundCueSheetID]);
   assert.ok(c.story.parts.sounds[c.episode.cuesheets[c.episode.sounds[se.SeID]._soundCueSheetID]._cueSheetName]);
-  assert.ok(rows.some((r) => r.cmd === "Se" && r.Parameter1 === "Stop" && r.SeID === undefined));
   assert.equal(c.episode.commandCount, rows.length);
   assert.ok(rows.every((r, i) => r.i === i && Number.isInteger(r.raw) && r.raw >= 0));
+});
+
+test("motion fade/wait and a SE stop reach their rows", () => {
+  const c = compiled(script([
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    { say: "a", text: "One.", motion: "mtn_smile01", motionFadeIn: 0.5, motionWait: true },
+    { action: "b", expression: "exp_idle01", motionFadeIn: 0.75, seStop: true },
+  ]));
+  assert.deepEqual(strip(c.episode.commands).slice(-4), [
+    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: 0.5, MotionWait: true },
+    { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"],
+      TargetTextColors: ["#FFFFFF"] },
+    { cmd: "Se", Parameter1: "Stop" },
+    { cmd: "Expression", TargetName: "b", ExpressionName: "exp_idle01", MotionFadeIn: 0.75 },
+  ]);
 });
 
 test("track, focus points and pre-line reactions compile to the game's continuous staging", () => {
