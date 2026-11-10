@@ -3,12 +3,15 @@ const sum = (lines, k) => lines.reduce((a, b) => a + (b[k] || 0), 0);
 const rate = (n, d) => (d ? n / d : 0);
 
 export const percentile = (values, q) => {
+  if (!Number.isFinite(q) || q < 0 || q > 1) throw new RangeError("q must be a finite number in [0, 1]");
   if (!values.length) return 0;
   const xs = [...values].sort((a, b) => a - b), pos = (xs.length - 1) * q;
   const lo = Math.floor(pos), hi = Math.ceil(pos);
   return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo);
 };
 
+// One documented metric shape for official and generated summaries:
+// perTextLine uses real dialogue lines; perTalkRow uses all Talk rows.
 export const summarize = (lines) => {
   const chars = lines.map((l) => l.chars), segments = lines.flatMap((l) => l.segmentChars || []);
   const runs = [];
@@ -26,12 +29,26 @@ export const summarize = (lines) => {
   return {
     count: lines.length, charsMean: mean(chars), charsMedian: percentile(chars, 0.5),
     charsP90: percentile(chars, 0.9), segmentCharsMean: mean(segments),
-    twoLineShare: rate(lines.filter((l) => l.renderedLines === 2).length, lines.length),
-    threeLineShare: rate(lines.filter((l) => l.renderedLines >= 3).length, lines.length),
-    shortShare: rate(lines.filter((l) => l.chars >= 2 && l.chars <= 6).length, lines.length),
-    ellipsisShare: rate(lines.filter((l) => /[…‥⋯]|\.\.\./.test(l.body)).length, lines.length),
-    questionShare: rate(lines.filter((l) => /[?？]/.test(l.body)).length, lines.length),
-    exclaimShare: rate(lines.filter((l) => /[!！]/.test(l.body)).length, lines.length),
+    perTextLine: {
+      twoLineShare: rate(lines.filter((l) => l.renderedLines === 2).length, lines.length),
+      threeLineShare: rate(lines.filter((l) => l.renderedLines >= 3).length, lines.length),
+      shortShare: rate(lines.filter((l) => l.chars >= 2 && l.chars <= 6).length, lines.length),
+      ellipsisShare: rate(lines.filter((l) => /[…‥⋯]|\.\.\./.test(l.body)).length, lines.length),
+      questionShare: rate(lines.filter((l) => /[?？]/.test(l.body)).length, lines.length),
+      exclaimShare: rate(lines.filter((l) => /[!！]/.test(l.body)).length, lines.length),
+      noMotionShare: rate(lines.filter((l) => !l.motions).length, lines.length),
+      distance2Share: rate(lines.filter((l) => l.distance === 2).length, lines.length),
+      distance3Share: rate(lines.filter((l) => l.distance === 3).length, lines.length),
+      distance4Share: rate(lines.filter((l) => l.distance === 4).length, lines.length),
+      duoShare: rate(lines.filter((l) => l.onStage === 2).length, lines.length),
+    },
+    perTalkRow: {
+      noMotionShare: rate(lines.filter((l) => !l.motions).length, lines.length),
+      distance2Share: rate(lines.filter((l) => l.distance === 2).length, lines.length),
+      distance3Share: rate(lines.filter((l) => l.distance === 3).length, lines.length),
+      distance4Share: rate(lines.filter((l) => l.distance === 4).length, lines.length),
+      duoShare: rate(lines.filter((l) => l.onStage === 2).length, lines.length),
+    },
     speakerRunCount: runLengths.length,
     speakerRunMean: mean(runLengths), soloRunShare: rate(runLengths.filter((n) => n === 1).length, runLengths.length),
     motions: sum(lines, "motions"), expressions: sum(lines, "expressions"),
@@ -40,17 +57,31 @@ export const summarize = (lines) => {
     pedestal: sum(lines, "pedestal"), panV2: sum(lines, "panV2"), dof: sum(lines, "dof"),
     se: sum(lines, "se"), bgm: sum(lines, "bgm"), stage: sum(lines, "stage"),
     ins: sum(lines, "ins"), outs: sum(lines, "outs"),
-    noMotionShare: rate(lines.filter((l) => !l.motions).length, lines.length),
-    distance2Share: rate(lines.filter((l) => l.distance === 2).length, lines.length),
-    distance3Share: rate(lines.filter((l) => l.distance === 3).length, lines.length),
-    distance4Share: rate(lines.filter((l) => l.distance === 4).length, lines.length),
-    duoShare: rate(lines.filter((l) => l.onStage === 2).length, lines.length),
   };
 };
 
+// Combine per-text-line normalized lines with raw Talk-row distributions in
+// one documented shape. Generated summaries can call the same function with
+// their own raw histogram counts.
+export const withCorpusRateDenominators = (summary, raw = {}, totals = {}) => ({
+  ...summary,
+  perTextLine: {
+    ...summary.perTextLine,
+    noMotionShare: rate(raw.noMotionLines, raw.textLines),
+    lookLineShare: rate(totals.lookRows, totals.textLines),
+  },
+  perTalkRow: {
+    ...summary.perTalkRow,
+    duoShare: rate(raw.duoRows, raw.talkRows),
+    effectiveDuoShare: rate(raw.effectiveDuoRows, raw.talkRows),
+    distance2Share: rate(raw.distance2Rows, raw.talkRows),
+    distance3Share: rate(raw.distance3Rows, raw.talkRows),
+    distance4Share: rate(raw.distance4Rows, raw.talkRows),
+  },
+});
+
 // Count-only tail records supply command totals for events that follow the
-// final text Talk or carry IgnoreData. They are not dialogue lines: text,
-// speaker-run and camera/position share denominators remain the real lines.
+// final text Talk. They are not dialogue lines.
 export const summarizeTailCounts = (records) => {
   const tail = records.filter((l) => l.tail);
   return {
@@ -70,12 +101,14 @@ export const withTailCounts = (summary, records) => {
 };
 
 export const aggregate = (summaries) => {
-  const keys = Object.keys(summaries[0] || {}), out = {};
-  for (const k of keys) out[k] = mean(summaries.map((s) => s[k] || 0));
+  const keys = new Set(summaries.flatMap((s) => Object.keys(s || {})));
+  const out = {};
+  for (const k of keys) out[k] = mean(summaries.map((s) => s?.[k] || 0));
   return out;
 };
 
 export const windowsOf = (lines, size = 40) => {
+  if (!Number.isInteger(size) || size <= 0) throw new RangeError("size must be a positive integer");
   const out = [];
   for (let i = 0; i + size <= lines.length; i += size) out.push(lines.slice(i, i + size));
   return out;

@@ -1,14 +1,31 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
-import { discoverOfficialCorpus, episodeToLines, rawCommandDistributions, readEpisodeAsset, tailAttribution } from "./official-corpus.mjs";
-import { aggregate, percentile, summarize, summarizeTailCounts, windowsOf, withTailCounts } from "./story-metrics.mjs";
-import { BASELINE_EXPECTATIONS } from "./official-baseline.mjs";
+import {
+  discoverOfficialCorpus, episodeText, episodeToLines, rawCommandDistributions,
+  readEpisodeAsset, tailAttribution,
+} from "./official-corpus.mjs";
+import {
+  aggregate, percentile, summarize, summarizeTailCounts, windowsOf, withTailCounts,
+} from "./story-metrics.mjs";
+import {
+  BASELINE_TARGETS, buildBaseline, compareBaselineToReport, corpusConfigFromEnv, corpusEvidence,
+} from "./official-baseline.mjs";
 
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/mini-official-episode.json", import.meta.url)));
+
+const tempSite = () => {
+  const temp = mkdtempSync(path.join(tmpdir(), "official-corpus-"));
+  const siteRoot = path.join(temp, "site");
+  const assetsRoot = path.join(siteRoot, "assets");
+  const stories = path.join(siteRoot, "stories");
+  const sampleRoot = path.join(temp, "sample");
+  for (const dir of [assetsRoot, stories, sampleRoot]) mkdirSync(dir, { recursive: true });
+  return { temp, siteRoot, assetsRoot, stories, sampleRoot };
+};
 
 test("official adapter separates text Talk rows from blank Talk rows", () => {
   const result = episodeToLines(fixture, { id: "fixture", language: "zh-Hans" });
@@ -29,6 +46,8 @@ test("metrics attribute pending camera and acting events to the next text Talk",
   assert.equal(totals.panV2, 1);
   assert.equal(totals.dof, 1);
   assert.equal(totals.se, 1);
+  assert.equal(totals.perTextLine.noMotionShare, 0);
+  assert.equal(totals.perTextLine.duoShare, 0);
 });
 
 test("ignored events count for the next line while trailing events stay separate", () => {
@@ -63,7 +82,7 @@ test("slot transforms without TargetName do not create phantom on-stage characte
   const { lines } = episodeToLines(episode, { id: "slots", language: "zh-Hans" });
   assert.equal(lines.length, 1);
   assert.equal(lines[0].onStage, 2);
-  assert.equal(summarize(lines).duoShare, 1);
+  assert.equal(summarize(lines).perTextLine.duoShare, 1);
 });
 
 test("speaker runs reset at episode boundaries", () => {
@@ -74,35 +93,118 @@ test("speaker runs reset at episode boundaries", () => {
   const totals = summarize(lines);
   assert.equal(totals.speakerRunMean, 1);
   assert.equal(totals.soloRunShare, 1);
+  assert.equal(totals.perTextLine.shortShare, 0);
+});
+
+test("shared language resolver is used by adapters, tails and raw distributions", () => {
+  const episode = {
+    text: { j1: { japanese: "日本語" } }, sounds: {}, cuesheets: {}, videos: {}, resources: [],
+    commands: [
+      { i: 0, cmd: "Talk", raw: 2, AdvTextID: "j1", lines: { japanese: "日本語" } },
+      { i: 1, cmd: "Se", raw: 31 },
+    ],
+  };
+  assert.equal(episodeText(episode, episode.commands[0], "ja"), "日本語");
+  assert.equal(episodeToLines(episode, { id: "ja", language: "ja" }).lines[0].body, "日本語");
+  assert.equal(rawCommandDistributions(episode, { language: "ja" }).textLines, 1);
+  assert.equal(tailAttribution(episode, { id: "ja", language: "ja" }).se, 1);
+  const built = buildBaseline({
+    siteRoot: "D:/unused-site", sampleRoot: "D:/unused-sample",
+    assetsRoot: "D:/unused-assets", language: "ja", corpus: [{
+      id: "10438",
+      episode,
+      provenance: { file: "fixture:ja.json", sha256: "x".repeat(64), bytes: Buffer.from("{}") },
+    }],
+  });
+  assert.equal(built.totals.textLines, 1);
+  assert.equal(built.episodes[0].textLines, 1);
 });
 
 test("corpus discovery rejects parent traversal outside provided roots", () => {
-  const temp = mkdtempSync(path.join(tmpdir(), "official-corpus-"));
+  const { temp, siteRoot, assetsRoot, stories, sampleRoot } = tempSite();
   try {
-    const siteRoot = path.join(temp, "site");
-    const assetsRoot = path.join(siteRoot, "assets");
-    const stories = path.join(siteRoot, "stories");
-    const sampleRoot = path.join(temp, "sample");
-    for (const dir of [assetsRoot, stories, sampleRoot]) mkdirSync(dir, { recursive: true });
     writeFileSync(path.join(siteRoot, "secret.json"), JSON.stringify({ commands: [] }));
     writeFileSync(path.join(stories, "10438.json"), JSON.stringify({
       files: { "episode.json": { asset: "assets/../secret.json" } },
     }));
+    assert.deepEqual(discoverOfficialCorpus({ siteRoot, sampleRoot, assetsRoot }), []);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("malformed site manifests produce structured failures without aborting discovery", () => {
+  const { temp, siteRoot, assetsRoot, stories, sampleRoot } = tempSite();
+  try {
+    writeFileSync(path.join(assetsRoot, "ep.gz"), zlib.gzipSync(JSON.stringify({ commands: [] })));
+    writeFileSync(path.join(stories, "10438.json"), "{not-json");
+    writeFileSync(path.join(stories, "10450.json"), JSON.stringify({
+      files: { "episode.json": { asset: "assets/ep.gz" } },
+    }));
     const found = discoverOfficialCorpus({ siteRoot, sampleRoot, assetsRoot });
-    assert.deepEqual(found, []);
+    assert.deepEqual(found.map((e) => e.id), ["10450"]);
+    assert.equal(found.failures.length, 1);
+    assert.equal(found.failures[0].id, "10438");
+    assert.equal(found.failures[0].kind, "manifest");
+    assert.match(found.failures[0].error, /JSON|Unexpected|Expected/i);
+    const built = buildBaseline({ siteRoot, sampleRoot, assetsRoot });
+    assert.ok(built.failures.some((f) => f.id === "10438" && f.kind === "manifest"));
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("discovery rejects symlinked assets and direct sample paths outside real roots", () => {
+  const { temp, siteRoot, assetsRoot, stories, sampleRoot } = tempSite();
+  try {
+    const outside = path.join(temp, "outside.json");
+    writeFileSync(outside, JSON.stringify({ commands: [] }));
+    writeFileSync(path.join(assetsRoot, "ep.json"), zlib.gzipSync(JSON.stringify({ commands: [] })));
+    const linked = path.join(assetsRoot, "linked.json");
+    symlinkSync(outside, linked, "file");
+    writeFileSync(path.join(stories, "10438.json"), JSON.stringify({
+      files: { "episode.json": { asset: "assets/linked.json" } },
+    }));
+    const directDir = path.join(sampleRoot, "10450");
+    mkdirSync(directDir, { recursive: true });
+    const outsideSample = path.join(sampleRoot, "10450", "episode.json");
+    rmSync(outsideSample, { force: true });
+    symlinkSync(outside, outsideSample, "file");
+    const found = discoverOfficialCorpus({ siteRoot, sampleRoot, assetsRoot });
+    assert.deepEqual([...found].map((e) => e.id), []);
+    assert.equal(found.failures.some((f) => f.kind === "symlink"), true);
+    assert.equal(lstatSync(linked).isSymbolicLink(), true);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("discovery rejects symlinked allowed roots", () => {
+  const temp = mkdtempSync(path.join(tmpdir(), "official-corpus-"));
+  try {
+    const real = path.join(temp, "real-site");
+    const stories = path.join(real, "stories");
+    const assetsRoot = path.join(real, "assets");
+    const sampleRoot = path.join(temp, "sample");
+    for (const dir of [stories, assetsRoot, sampleRoot]) mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(assetsRoot, "ep.json"), JSON.stringify({ commands: [] }));
+    writeFileSync(path.join(stories, "10438.json"), JSON.stringify({
+      files: { "episode.json": { asset: "assets/ep.json" } },
+    }));
+    const link = path.join(temp, "link-site");
+    symlinkSync(real, link, process.platform === "win32" ? "junction" : "dir");
+    const found = discoverOfficialCorpus({
+      siteRoot: link, assetsRoot: path.join(link, "assets"), sampleRoot,
+    });
+    assert.deepEqual([...found], []);
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
 });
 
 test("corpus discovery accepts string manifests, compressed assets and real language keys", () => {
-  const temp = mkdtempSync(path.join(tmpdir(), "official-corpus-"));
+  const { temp, siteRoot, assetsRoot, stories, sampleRoot } = tempSite();
   try {
-    const siteRoot = path.join(temp, "site");
-    const assetsRoot = path.join(siteRoot, "assets");
-    const stories = path.join(siteRoot, "stories");
-    const sampleRoot = path.join(temp, "sample");
-    for (const dir of [assetsRoot, stories, sampleRoot]) mkdirSync(dir, { recursive: true });
     const episode = { commands: [{ i: 0, cmd: "Talk", raw: 2, AdvTextID: "t1",
       lines: { simplifiedChinese: "真实剧本" } }] };
     writeFileSync(path.join(assetsRoot, "ep.gz"), zlib.gzipSync(JSON.stringify(episode)));
@@ -114,7 +216,7 @@ test("corpus discovery accepts string manifests, compressed assets and real lang
       files: { "episode.json": "assets/ep.br" },
     }));
     const found = discoverOfficialCorpus({ siteRoot, sampleRoot, assetsRoot });
-    assert.deepEqual(found.map((e) => e.id), ["10438", "10450"]);
+    assert.deepEqual([...found].map((e) => e.id), ["10438", "10450"]);
     for (const { id, file } of found) {
       const lines = episodeToLines(readEpisodeAsset(file), { id, language: "zh-Hans" }).lines;
       assert.equal(lines.length, 1);
@@ -125,75 +227,82 @@ test("corpus discovery accepts string manifests, compressed assets and real lang
   }
 });
 
-test("shared metrics expose percentiles, aggregation and full windows", () => {
+test("shared metrics expose percentiles, aggregation and guarded full windows", () => {
   assert.equal(percentile([1, 2, 3, 4], 0.5), 2.5);
   assert.equal(percentile([], 0.9), 0);
   assert.deepEqual(aggregate([{ count: 2 }, { count: 4 }]), { count: 3 });
   assert.deepEqual(windowsOf([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4]]);
-});
-
-const lab = process.env.OURNOTES_AI_LAB;
-const report = lab ? `${lab}/official-baseline.json` : "";
-const corpusSkip = !report || !existsSync(report)
-  ? "set OURNOTES_AI_LAB to a directory containing official-baseline.json" : false;
-test("30-episode corpus recomputes the checked official totals", { skip: corpusSkip }, () => {
-  const data = JSON.parse(readFileSync(report, "utf8"));
-  assert.deepEqual(data.failures, []);
-  assert.equal(data.episodes.length, 30);
-  assert.equal(data.totals.talkRows, 1300);
-  assert.equal(data.totals.textLines, 1158);
-  assert.equal(data.totals.blankTalkRows, 142);
-  assert.equal(data.totals.focus, 516);
-  assert.equal(data.totals.motion, 1508);
-  assert.equal(data.totals.zoom, 152);
-  assert.equal(data.totals.pedestal, 122);
-  assert.equal(data.totals.panV2, 167);
-  assert.equal(data.totals.se, 147);
-  for (const [key, expected] of Object.entries(BASELINE_EXPECTATIONS)) {
-    assert.equal(data.totals[key], expected, `totals.${key}`);
+  for (const size of [0, -1, NaN, 1.5, Infinity]) {
+    assert.throws(() => windowsOf([1, 2], size), RangeError, `size ${size}`);
   }
 });
 
+const lab = process.env.OURNOTES_AI_LAB;
+const report = lab ? path.join(lab, "official-baseline.json") : "";
+const config = corpusConfigFromEnv(process.env);
+const realCorpus = corpusEvidence(config);
+const corpusSkip = !realCorpus
+  ? "set OURNOTES_OFFICIAL_SITE, OURNOTES_OFFICIAL_ASSETS and OURNOTES_OFFICIAL_SAMPLE to the real corpus" : false;
+const reportSkip = corpusSkip || !report || !existsSync(report)
+  ? "real corpus or external official-baseline.json is unavailable" : false;
+
+test("external report comparison rejects stale or fabricated evidence", { skip: corpusSkip }, () => {
+  const recomputed = buildBaseline(config);
+  const stale = JSON.parse(JSON.stringify(recomputed));
+  stale.provenance.digest = "0".repeat(64);
+  stale.totals.talkRows = 999;
+  const mismatches = compareBaselineToReport(recomputed, stale);
+  assert.match(mismatches.join(" | "), /provenance\.digest mismatch/);
+  assert.match(mismatches.join(" | "), /report totals\.talkRows mismatch/);
+});
+
+test("30-episode corpus recomputes the checked official totals", { skip: corpusSkip }, () => {
+  const recomputed = buildBaseline(config);
+  assert.deepEqual(recomputed.failures, []);
+  assert.equal(recomputed.episodes.length, BASELINE_TARGETS.totals.episodes);
+  assert.deepEqual([...recomputed.corpusIds].sort(), [...BASELINE_TARGETS.corpusIds].sort());
+  for (const [key, expected] of Object.entries(BASELINE_TARGETS.totals)) {
+    assert.equal(recomputed.totals[key], expected, `totals.${key}`);
+  }
+  for (const episode of recomputed.episodes) {
+    assert.match(episode.file, /\.json(?:\.gz|\.br)?$/);
+    assert.match(episode.sha256, /^[a-f0-9]{64}$/);
+    assert.equal(typeof episode.provenance.bytes, "number");
+    assert.equal(episode.provenance.sha256, episode.sha256);
+  }
+  assert.match(recomputed.provenance.digest, /^[a-f0-9]{64}$/);
+  assert.equal(recomputed.schema, "official-baseline/2");
+  assert.equal(recomputed.version, 2);
+});
+
 test("30-episode corpus reproduces the official distribution metrics", { skip: corpusSkip }, () => {
+  const recomputed = buildBaseline(config);
+  const all = recomputed.all.corpus;
+  for (const [key, expected] of Object.entries(BASELINE_TARGETS.distributions)) {
+    const actual = typeof expected === "number" && !Number.isInteger(expected)
+      ? Number(all[key].toFixed(4)) : all[key];
+    assert.equal(actual, expected, `all.corpus.${key}`);
+  }
+  for (const [key, expected] of Object.entries(BASELINE_TARGETS.tailCounts)) {
+    assert.equal(recomputed.all.tailCounts[key] || 0, expected, `all.tailCounts.${key}`);
+  }
+  assert.equal(recomputed.all.rawDistributions.talkRows, BASELINE_TARGETS.rawDistributions.talkRows);
+  assert.equal(recomputed.all.rawDistributions.textLines, BASELINE_TARGETS.rawDistributions.textLines);
+  assert.equal(recomputed.all.rawDistributions.noMotionLines, BASELINE_TARGETS.rawDistributions.noMotionLines);
+});
+
+test("external baseline report is bound to freshly recomputed corpus evidence", { skip: reportSkip }, () => {
   const data = JSON.parse(readFileSync(report, "utf8"));
-  const all = data.all.corpus;
-  assert.equal(all.count, 1158);
-  assert.equal(Number(all.charsMean.toFixed(3)), 15.541);
-  assert.equal(all.charsMedian, 14);
-  assert.equal(all.charsP90, 30);
-  assert.equal(Number(all.segmentCharsMean.toFixed(3)), 11.116);
-  assert.equal(Number(all.twoLineShare.toFixed(4)), 0.3826);
-  assert.equal(Number(all.threeLineShare.toFixed(4)), 0.0078);
-  assert.equal(Number(all.shortShare.toFixed(4)), 0.2168);
-  assert.equal(Number(all.ellipsisShare.toFixed(4)), 0.4637);
-  assert.equal(Number(all.questionShare.toFixed(4)), 0.2582);
-  assert.equal(Number(all.exclaimShare.toFixed(4)), 0.2142);
-  assert.equal(all.attributedMotions, 1502);
-  assert.equal(all.motions, 1508);
-  assert.equal(all.lookAny, 362);
-  assert.equal(all.se, 147);
-  assert.equal(all.bgm, 71);
-  assert.equal(all.stage, 57);
-  assert.equal(all.focus, 516);
-  assert.equal(all.zoom, 152);
-  assert.equal(all.pedestal, 122);
-  assert.equal(all.panV2, 167);
-  assert.equal(all.track, 95);
-  assert.equal(all.dof, 24);
-  assert.equal(data.all.tailCounts.motions, 6);
-  assert.equal(data.all.tailCounts.lookAny || 0, 0);
-  assert.equal(data.all.tailCounts.focus, 5);
-  assert.equal(data.all.tailCounts.se, 5);
-  assert.equal(data.all.tailCounts.bgm, 11);
-  assert.equal(data.all.tailCounts.stage, 1);
-  assert.equal(Number(all.noMotionShare.toFixed(4)), 0.0596);
-  assert.equal(Number(all.distance2Share.toFixed(4)), 0.3892);
-  assert.equal(Number(all.distance3Share.toFixed(4)), 0.3608);
-  assert.equal(Number(all.distance4Share.toFixed(4)), 0.2038);
-  assert.equal(Number(all.duoShare.toFixed(4)), 0.7623);
-  assert.equal(Number(all.effectiveDuoShare.toFixed(4)), 0.7654);
-  assert.equal(Number(all.lookLineShare.toFixed(4)), 0.3126);
-  assert.equal(all.speakerRunCount, 832);
-  assert.equal(Number(all.speakerRunMean.toFixed(3)), 1.392);
-  assert.equal(Number(all.soloRunShare.toFixed(4)), 0.7284);
+  const recomputed = buildBaseline(config);
+  assert.deepEqual(compareBaselineToReport(recomputed, data), []);
+  assert.equal(data.schema, "official-baseline/2");
+  assert.equal(data.version, 2);
+  assert.equal(data.provenance.digest, recomputed.provenance.digest);
+  assert.deepEqual(data.corpusIds, recomputed.corpusIds);
+  assert.deepEqual(data.failures, []);
+  assert.equal(data.episodes.length, BASELINE_TARGETS.totals.episodes);
+  assert.equal(data.all.corpus.count, BASELINE_TARGETS.distributions.count);
+  for (const [key, expected] of Object.entries(BASELINE_TARGETS.totals)) {
+    assert.equal(data.totals[key], expected, `report totals.${key}`);
+  }
 });

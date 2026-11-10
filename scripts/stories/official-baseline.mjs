@@ -2,10 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { discoverOfficialCorpus, episodeToLines, rawCommandDistributions, readEpisodeAsset, tailAttribution } from "./official-corpus.mjs";
-import { aggregate, summarize, summarizeTailCounts, withTailCounts } from "./story-metrics.mjs";
+import {
+  discoverOfficialCorpus, episodeText, episodeToLines, OFFICIAL_IDS,
+  rawCommandDistributions, decodeEpisodeAsset, tailAttribution,
+} from "./official-corpus.mjs";
+import {
+  aggregate, summarize, summarizeTailCounts, withCorpusRateDenominators, withTailCounts,
+} from "./story-metrics.mjs";
 
-export const BASELINE_EXPECTATIONS = Object.freeze({
+const CHECKED_TOTALS = Object.freeze({
   episodes: 30,
   commands: 5623,
   talkRows: 1300,
@@ -22,6 +27,65 @@ export const BASELINE_EXPECTATIONS = Object.freeze({
   se: 147,
 });
 
+const CHECKED_DISTRIBUTIONS = Object.freeze({
+  count: 1158,
+  charsMean: 15.5415,
+  charsMedian: 14,
+  charsP90: 30,
+  segmentCharsMean: 11.1161,
+  perTextLineTwoLineShare: 0.3826,
+  perTextLineThreeLineShare: 0.0078,
+  perTextLineShortShare: 0.2168,
+  perTextLineEllipsisShare: 0.4637,
+  perTextLineQuestionShare: 0.2582,
+  perTextLineExclaimShare: 0.2142,
+  perTextLineNoMotionShare: 0.0596,
+  perTextLineLookLineShare: 0.3126,
+  perTalkRowDistance2Share: 0.3892,
+  perTalkRowDistance3Share: 0.3608,
+  perTalkRowDistance4Share: 0.2038,
+  perTalkRowDuoShare: 0.7623,
+  perTalkRowEffectiveDuoShare: 0.7654,
+  attributedMotions: 1502,
+  motions: 1508,
+  lookAny: 362,
+  se: 147,
+  bgm: 71,
+  stage: 57,
+  focus: 516,
+  zoom: 152,
+  pedestal: 122,
+  panV2: 167,
+  track: 95,
+  dof: 24,
+  speakerRunCount: 832,
+  speakerRunMean: 1.3918,
+  soloRunShare: 0.7284,
+});
+
+
+const CHECKED_TAIL_COUNTS = Object.freeze({
+  motions: 6, focus: 5, track: 1, zoom: 3, pedestal: 4,
+  dof: 2, se: 5, bgm: 11, stage: 1, outs: 4,
+});
+
+const CHECKED_RAW_DISTRIBUTIONS = Object.freeze({
+  talkRows: 1300, textLines: 1158, noMotionLines: 69,
+});
+
+export const BASELINE_TARGETS = Object.freeze({
+  totals: CHECKED_TOTALS,
+  distributions: CHECKED_DISTRIBUTIONS,
+  tailCounts: CHECKED_TAIL_COUNTS,
+  rawDistributions: CHECKED_RAW_DISTRIBUTIONS,
+  corpusIds: OFFICIAL_IDS,
+});
+
+// Backward-compatible alias for the earlier Task 1 public export.
+export const BASELINE_EXPECTATIONS = CHECKED_TOTALS;
+export const BASELINE_SCHEMA = "official-baseline/2";
+export const BASELINE_VERSION = 2;
+
 const CHECKED_COMMANDS = Object.freeze({
   focus: ["Focus"], motion: ["Motion"], lookRows: ["Look", "LookTarget"],
   zoom: ["Zoom"], pedestal: ["Pedestal"], track: ["Track"], dof: ["DoF"],
@@ -30,9 +94,48 @@ const CHECKED_COMMANDS = Object.freeze({
 });
 
 const resolveRoot = (value, fallback) => path.resolve(value || fallback);
-const rate = (n, d) => (d ? n / d : 0);
-
 const hasObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
+const sortByCodePoint = (entries) => entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
+export const corpusConfigFromEnv = (env = process.env) => ({
+  siteRoot: resolveRoot(env.OURNOTES_OFFICIAL_SITE, ""),
+  sampleRoot: resolveRoot(env.OURNOTES_OFFICIAL_SAMPLE, ""),
+  assetsRoot: resolveRoot(env.OURNOTES_OFFICIAL_ASSETS, ""),
+  language: env.OURNOTES_OFFICIAL_LANGUAGE || "zh-Hans",
+});
+
+export const corpusEvidence = ({ siteRoot, sampleRoot, assetsRoot }) => {
+  if (!siteRoot || !sampleRoot || !assetsRoot ||
+      !fs.existsSync(path.join(siteRoot, "stories")) ||
+      !fs.existsSync(sampleRoot) || !fs.existsSync(assetsRoot)) return false;
+  const corpus = discoverOfficialCorpus({ siteRoot, sampleRoot, assetsRoot });
+  return corpus.length === BASELINE_TARGETS.totals.episodes && !corpus.failures.length;
+};
+
+export const compareBaselineToReport = (recomputed, report) => {
+  const failures = [];
+  for (const key of ["schema", "version"]) {
+    if (recomputed[key] !== report?.[key]) failures.push(`${key} mismatch`);
+  }
+  if (recomputed.provenance?.digest !== report?.provenance?.digest) {
+    failures.push("provenance.digest mismatch: report is stale or fabricated");
+  }
+  if (JSON.stringify(recomputed.corpusIds) !== JSON.stringify(report?.corpusIds)) {
+    failures.push("corpusIds mismatch");
+  }
+  if (JSON.stringify(recomputed.episodes?.map((e) => [e.id, e.file, e.sha256])) !==
+      JSON.stringify(report?.episodes?.map((e) => [e.id, e.file, e.sha256]))) {
+    failures.push("per-episode hashes/provenance mismatch");
+  }
+  if (JSON.stringify(recomputed.failures) !== JSON.stringify(report?.failures)) {
+    failures.push("failures mismatch");
+  }
+  for (const [key, expected] of Object.entries(BASELINE_TARGETS.totals)) {
+    if (report?.totals?.[key] !== expected) failures.push(`report totals.${key} mismatch`);
+  }
+  return failures;
+};
 
 const validateEpisode = (episode) => {
   const failures = [];
@@ -55,17 +158,27 @@ const histogram = (commands) => {
     const cmd = typeof c?.cmd === "string" ? c.cmd : "<invalid>";
     out[cmd] = (out[cmd] || 0) + 1;
   }
-  return Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)));
+  return Object.fromEntries(sortByCodePoint(Object.entries(out)));
 };
 
-const textOf = (episode, row) =>
-  row.lines?.["zh-Hans"] || row.lines?.simplifiedChinese ||
-  episode.text?.[String(row.AdvTextID)]?.["zh-Hans"] ||
-  episode.text?.[String(row.AdvTextID)]?.simplifiedChinese || "";
+const provenanceDigest = (report) => sha256(JSON.stringify({
+  schema: report.schema,
+  version: report.version,
+  language: report.language,
+  corpusIds: report.corpusIds,
+  generatedFrom: report.generatedFrom,
+  episodes: report.episodes.map((e) => [e.id, e.file, e.sha256]),
+  totals: report.totals,
+  commandHistogram: report.commandHistogram,
+  failures: report.failures,
+}));
 
-export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh-Hans" }) => {
-  const corpus = discoverOfficialCorpus({ siteRoot, sampleRoot, assetsRoot });
-  const failures = [];
+export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh-Hans", corpus }) => {
+  const discovery = corpus
+    ? { length: corpus.length, failures: [], entries: corpus }
+    : discoverOfficialCorpus({ siteRoot, sampleRoot, assetsRoot });
+  const entries = corpus || discovery;
+  const failures = [...(discovery.failures || [])];
   const episodes = [], summaries = [], allLines = [], tailLines = [];
   const rawDistributions = { talkRows: 0, textLines: 0, duoRows: 0, effectiveDuoRows: 0,
     noMotionLines: 0, distance2Rows: 0, distance3Rows: 0, distance4Rows: 0 };
@@ -77,105 +190,118 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
   };
   const commandHistogram = {};
 
-  for (const { id, file } of corpus) {
+  for (const entry of entries) {
+    const { id } = entry;
+    const file = entry.file || entry.provenance?.file || "";
     const record = { id, file: path.basename(file), commands: 0, talkRows: 0, textLines: 0, blankTalkRows: 0 };
     try {
-      const bytes = fs.readFileSync(file);
-      const episode = readEpisodeAsset(file);
+      const bytes = entry.provenance?.bytes !== undefined
+        ? entry.provenance.bytes : fs.readFileSync(file);
+      const episode = entry.episode || decodeEpisodeAsset(file, bytes);
       const validation = validateEpisode(episode);
       if (validation.length) {
         failures.push({ id, file: record.file, errors: validation });
-      } else {
-        const commands = episode.commands;
-        const hist = histogram(commands);
-        const textLines = commands.filter((c) =>
-          c.cmd === "Talk" && textOf(episode, c)).length;
-        const adapted = episodeToLines(episode, { id, language });
-        if (adapted.talkRows !== (hist.Talk || 0) || adapted.lines.length !== textLines) {
-          failures.push({ id, file: record.file,
-            errors: [`Talk count mismatch: raw ${hist.Talk || 0}, adapted ${adapted.talkRows}, ` +
-              `raw text ${textLines}, adapted text ${adapted.lines.length}`] });
-          continue;
-        }
-        const summary = summarize(adapted.lines);
-        const tail = tailAttribution(episode, { id, language });
-        const raw = rawCommandDistributions(episode, { language });
-        for (const key of Object.keys(rawDistributions)) rawDistributions[key] += raw[key];
-        record.sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
-        record.commands = commands.length;
-        record.commandCount = episode.commandCount;
-        record.commandHistogram = hist;
-        record.talkRows = adapted.talkRows;
-        record.textLines = adapted.lines.length;
-        record.blankTalkRows = adapted.talkRows - adapted.lines.length;
-        record.rawTextTalkRows = textLines;
-        record.summary = summary;
-        record.tailAttribution = tail;
-        episodes.push(record);
-        summaries.push(summary);
-        allLines.push(...adapted.lines);
-        tailLines.push(tail);
-        totals.episodes++;
-        totals.commands += commands.length;
-        totals.talkRows += adapted.talkRows;
-        totals.rawTalkRows += hist.Talk || 0;
-        totals.textLines += adapted.lines.length;
-        totals.blankTalkRows += record.blankTalkRows;
-        for (const [key, commands] of Object.entries(CHECKED_COMMANDS)) {
-          for (const cmd of commands) totals[key] += hist[cmd] || 0;
-        }
-        for (const [cmd, count] of Object.entries(hist)) {
-          commandHistogram[cmd] = (commandHistogram[cmd] || 0) + count;
-        }
+        continue;
+      }
+      const commands = episode.commands;
+      const hist = histogram(commands);
+      const textLines = commands.filter((c) =>
+        c.cmd === "Talk" && episodeText(episode, c, language)).length;
+      const adapted = episodeToLines(episode, { id, language });
+      if (adapted.talkRows !== (hist.Talk || 0) || adapted.lines.length !== textLines) {
+        failures.push({ id, file: record.file,
+          errors: [`Talk count mismatch: raw ${hist.Talk || 0}, adapted ${adapted.talkRows}, ` +
+            `raw text ${textLines}, adapted text ${adapted.lines.length}`] });
+        continue;
+      }
+      const summary = summarize(adapted.lines);
+      const tail = tailAttribution(episode, { id, language });
+      const raw = rawCommandDistributions(episode, { language });
+      for (const key of Object.keys(rawDistributions)) rawDistributions[key] += raw[key];
+      record.sha256 = entry.provenance?.sha256 || sha256(bytes);
+      record.provenance = entry.provenance || {
+        file: record.file, sha256: record.sha256, bytes: bytes.length,
+      };
+      record.commands = commands.length;
+      record.commandCount = episode.commandCount;
+      record.commandHistogram = hist;
+      record.talkRows = adapted.talkRows;
+      record.textLines = adapted.lines.length;
+      record.blankTalkRows = adapted.talkRows - adapted.lines.length;
+      record.rawTextTalkRows = textLines;
+      record.summary = summary;
+      record.tailAttribution = tail;
+      episodes.push(record);
+      summaries.push(summary);
+      allLines.push(...adapted.lines);
+      tailLines.push(tail);
+      totals.episodes++;
+      totals.commands += commands.length;
+      totals.talkRows += adapted.talkRows;
+      totals.rawTalkRows += hist.Talk || 0;
+      totals.textLines += adapted.lines.length;
+      totals.blankTalkRows += record.blankTalkRows;
+      for (const [key, commands] of Object.entries(CHECKED_COMMANDS)) {
+        for (const cmd of commands) totals[key] += hist[cmd] || 0;
+      }
+      for (const [cmd, count] of Object.entries(hist)) {
+        commandHistogram[cmd] = (commandHistogram[cmd] || 0) + count;
       }
     } catch (error) {
       failures.push({ id, file: record.file, error: error instanceof Error ? error.message : String(error) });
     }
   }
 
-  if (corpus.length < BASELINE_EXPECTATIONS.episodes) {
+  if (entries.length < BASELINE_TARGETS.totals.episodes) {
     failures.push({
-      error: `expected ${BASELINE_EXPECTATIONS.episodes} episode IDs, found ${corpus.length}`,
-      found: corpus.map((e) => e.id),
+      error: `expected ${BASELINE_TARGETS.totals.episodes} episode IDs, found ${entries.length}`,
+      found: [...entries].map((e) => e.id),
     });
   }
 
-  for (const [key, expected] of Object.entries(BASELINE_EXPECTATIONS)) {
+  for (const [key, expected] of Object.entries(BASELINE_TARGETS.totals)) {
     if (totals[key] !== expected) {
       failures.push({ error: `total ${key}: expected ${expected}, got ${totals[key]}` });
     }
   }
 
   const corpusSummary = summarize(allLines);
-  return {
+  const report = {
+    schema: BASELINE_SCHEMA,
+    version: BASELINE_VERSION,
     generatedAt: new Date().toISOString(),
-    corpusIds: corpus.map((e) => e.id),
-    expectations: BASELINE_EXPECTATIONS,
+    language,
+    corpusIds: [...entries].map((e) => e.id),
+    expectations: BASELINE_TARGETS,
     generatedFrom: {
-      siteRoot: path.basename(siteRoot),
-      sampleRoot: path.basename(sampleRoot),
-      assetsRoot: path.basename(assetsRoot),
+      siteRoot: path.basename(siteRoot || ""),
+      sampleRoot: path.basename(sampleRoot || ""),
+      assetsRoot: path.basename(assetsRoot || ""),
     },
     episodes,
     failures,
     totals: {
       ...totals,
-      commandHistogram: Object.fromEntries(
-        Object.entries(commandHistogram).sort(([a], [b]) => a.localeCompare(b))),
+      commandHistogram: Object.fromEntries(sortByCodePoint(Object.entries(commandHistogram))),
     },
-    commandHistogram: Object.fromEntries(
-      Object.entries(commandHistogram).sort(([a], [b]) => a.localeCompare(b))),
+    commandHistogram: Object.fromEntries(sortByCodePoint(Object.entries(commandHistogram))),
     all: {
       corpus: {
-        ...withTailCounts(corpusSummary, tailLines),
+        ...Object.fromEntries(Object.entries(corpusSummary.perTextLine)
+          .map(([k, v]) => [`perTextLine${k[0].toUpperCase()}${k.slice(1)}`, v])),
+        ...Object.fromEntries(Object.entries(withCorpusRateDenominators(corpusSummary,
+          rawDistributions, totals).perTalkRow)
+          .map(([k, v]) => [`perTalkRow${k[0].toUpperCase()}${k.slice(1)}`, v])),
+        ...withTailCounts(withCorpusRateDenominators(corpusSummary, rawDistributions, totals), tailLines),
         attributedMotions: corpusSummary.motions,
-        noMotionShare: rate(rawDistributions.noMotionLines, rawDistributions.textLines),
-        duoShare: rate(rawDistributions.duoRows, rawDistributions.talkRows),
-        effectiveDuoShare: rate(rawDistributions.effectiveDuoRows, rawDistributions.talkRows),
-        distance2Share: rate(rawDistributions.distance2Rows, rawDistributions.talkRows),
-        distance3Share: rate(rawDistributions.distance3Rows, rawDistributions.talkRows),
-        distance4Share: rate(rawDistributions.distance4Rows, rawDistributions.talkRows),
-        lookLineShare: rate(totals.lookRows, totals.textLines),
+        // Flat aliases are retained for downstream traceability, with explicit names.
+        perTextLineNoMotionShare: rateOrZero(rawDistributions.noMotionLines, rawDistributions.textLines),
+        perTextLineLookLineShare: rateOrZero(totals.lookRows, totals.textLines),
+        perTalkRowDistance2Share: rateOrZero(rawDistributions.distance2Rows, rawDistributions.talkRows),
+        perTalkRowDistance3Share: rateOrZero(rawDistributions.distance3Rows, rawDistributions.talkRows),
+        perTalkRowDistance4Share: rateOrZero(rawDistributions.distance4Rows, rawDistributions.talkRows),
+        perTalkRowDuoShare: rateOrZero(rawDistributions.duoRows, rawDistributions.talkRows),
+        perTalkRowEffectiveDuoShare: rateOrZero(rawDistributions.effectiveDuoRows, rawDistributions.talkRows),
       },
       perEpisodeMean: aggregate(summaries),
       rawDistributions,
@@ -183,7 +309,16 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
         .filter(([, value]) => value !== 0)),
     },
   };
+  report.provenance = {
+    digest: provenanceDigest(report),
+    episodeCount: episodes.length,
+    language,
+    bytes: report.episodes.reduce((n, e) => n + (e.provenance.bytes || 0), 0),
+  };
+  return report;
 };
+
+const rateOrZero = (n, d) => (d ? n / d : 0);
 
 const normalizeExecutable = (p) => path.resolve(p).toLowerCase().replaceAll("\\", "/");
 const isCli = process.argv[1] &&
@@ -194,9 +329,7 @@ if (isCli) {
   const siteRoot = resolveRoot(process.env.OURNOTES_OFFICIAL_SITE, path.join(workspace, "resources/site"));
   const assetsRoot = resolveRoot(process.env.OURNOTES_OFFICIAL_ASSETS, path.join(siteRoot, "assets"));
   const sampleRoot = resolveRoot(process.env.OURNOTES_OFFICIAL_SAMPLE, path.join(workspace, "output/_official-sample"));
-  const lab = process.env.OURNOTES_AI_LAB
-    ? path.resolve(process.env.OURNOTES_AI_LAB)
-    : "";
+  const lab = process.env.OURNOTES_AI_LAB ? path.resolve(process.env.OURNOTES_AI_LAB) : "";
   if (!lab) throw new Error("OURNOTES_AI_LAB is required");
   const report = buildBaseline({ siteRoot, sampleRoot, assetsRoot });
   fs.mkdirSync(lab, { recursive: true });
@@ -204,7 +337,7 @@ if (isCli) {
   fs.writeFileSync(out, JSON.stringify(report, null, 2) + "\n");
   console.log(`Wrote ${out}: ${report.episodes.length} episodes, ` +
     `${report.totals.commands} commands, ${report.failures.length} failures`);
-  if (report.failures.length || report.episodes.length < BASELINE_EXPECTATIONS.episodes) {
+  if (report.failures.length || report.episodes.length < BASELINE_TARGETS.totals.episodes) {
     for (const failure of report.failures) console.error(JSON.stringify(failure));
     process.exitCode = 1;
   }
