@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildQuickCastMessages, buildStoryMessages } from "../ai/prompt.js";
 import { generateScript, prepareScript } from "../ai/storyWriter.js";
+import { directionBudgetFor } from "../ai/official-targets.js";
 import { buildDialogueMessages, mergeStagedScript, normalizeDialogue, onStageProblems, spreadPositions } from "../ai/staged.js";
 import { quietLogger } from "./helpers.mjs";
 
@@ -42,13 +43,15 @@ test("a clean supplied script passes and is normalized", () => {
   assert.equal(r.warnings.length, 0);
 });
 
-test("maxLines below two is rejected instead of becoming a two-line story", async () => {
+test("maxLines below two or non-integer is rejected instead of becoming a story", async () => {
   let calls = 0;
   const llm = { available: true, async json() { calls++; return { content: JSON.stringify(script()) }; } };
-  await assert.rejects(
-    () => generateScript({ llm, catalog: CATALOG, request: { prompt: "放学后", maxLines: 1 },
-      config: CONFIG, logger: quietLogger() }),
-    /maxLines must be at least 2/);
+  for (const maxLines of [1, 2.5]) {
+    await assert.rejects(
+      () => generateScript({ llm, catalog: CATALOG, request: { prompt: "放学后", maxLines },
+        config: CONFIG, logger: quietLogger() }),
+      /maxLines must be an integer of at least 2/);
+  }
   assert.equal(calls, 0, "the LLM is not called");
 });
 
@@ -531,6 +534,13 @@ const PLAN2 = { title: "雨", logline: "", event: "等雨停", setting: { stage:
   cast: [{ id: "a", model: "m_a", name: "灯", group: "", role: "" },
          { id: "b", model: "m_b", name: "爽世", group: "", role: "" }], outline: [] };
 
+test("normalizeDialogue rejects a non-integer maxLines", () => {
+  assert.throws(() => normalizeDialogue({
+    raw: { lines: [{ say: "a", text: "一。" }, { say: "b", text: "二。" }] },
+    plan: PLAN2, request: { maxLines: 2.5 }, config: STAGED_CONFIG,
+  }), /maxLines must be an integer of at least 2/);
+});
+
 test("the dialogue pass accepts turns and flattens them into line ids", () => {
   const dialogue = normalizeDialogue({
     raw: { title: "雨", turns: [
@@ -593,7 +603,7 @@ test("a dialogue that is too short for the configured minutes is expanded", asyn
   assert.match(calls[3], /l48/, "the storyboard is written for the expanded dialogue");
 });
 
-test("over-directed lines are pruned to the motion budget and report performanceBudget", () => {
+test("over-directed lines are pruned to the compiled motion budget and report performanceBudget", () => {
   const dialogue = { title: "雨", lines: Array.from({ length: 10 }, (_, i) =>
     ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `第${i + 1}句台词的内容。` })) };
   const storyboard = { beats: [
@@ -603,12 +613,31 @@ test("over-directed lines are pruned to the motion budget and report performance
   ] };
   const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
   const says = merged.doc.beats.filter((b) => "say" in b);
-  const PERFORMANCE = (b) => (b.motion ? 1 : 0) + (b.expression ? 1 : 0) +
-    (b.actions || []).reduce((n, a) => n + (a.motion ? 1 : 0) + (a.expression ? 1 : 0), 0);
-  const still = says.filter((b) => PERFORMANCE(b) === 0).length;
-  assert.equal(still, 1, "ten lines budget maxStatic at one");
+  // One compiled performance row per speaker (motion or expression) and one
+  // per listener action (motion or expression); fields are not double-counted.
+  const PERFORMANCE = (b) => ((b.motion || b.expression) ? 1 : 0) +
+    (b.actions || []).filter((a) => a.motion || a.expression).length;
+  const total = says.reduce((n, b) => n + PERFORMANCE(b), 0);
+  assert.ok(total <= directionBudgetFor(10).motionMax,
+    `pruned total ${total} <= ${directionBudgetFor(10).motionMax}`);
+  assert.ok(says.filter((b) => PERFORMANCE(b) === 0).length >= 1, "at least one line is fully static");
   assert.ok(merged.warnings.some((w) => w.code === "performanceBudget"));
   assert.ok(!merged.warnings.some((w) => w.code === "staticLineBudget"));
+});
+
+test("prompt-compliant acting is not over-pruned", () => {
+  const dialogue = { title: "雨", lines: Array.from({ length: 10 }, (_, i) =>
+    ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `第${i + 1}句台词的内容。` })) };
+  const storyboard = { beats: [
+    { scene: "stage_a", camera: "middle", positions: { a: "far-left", b: "far-right" } },
+    ...dialogue.lines.map((l, i) => ({ line: l.id, ...(i < 9 ? { motion: "mtn_smile01" } : {}),
+      ...(i < 2 ? { actions: [{ at: 0, cast: l.say === "a" ? "b" : "a", motion: "mtn_nod01" }] } : {}) })),
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
+  const says = merged.doc.beats.filter((b) => "say" in b);
+  assert.equal(says.filter((b) => b.motion).length, 9, "all nine speaker motions stay");
+  assert.equal(says.reduce((n, b) => n + (b.actions || []).length, 0), 2, "both listener actions stay");
+  assert.ok(!merged.warnings.some((w) => w.code === "performanceBudget"), "no prune warning");
 });
 
 test("a storyboard that can never pass falls back to bare lines instead of failing the job", async () => {

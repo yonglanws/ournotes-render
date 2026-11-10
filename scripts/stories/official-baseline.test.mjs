@@ -284,13 +284,12 @@ test("OFFICIAL_TARGETS is a frozen flat adapter derived from one checked source"
     "lookAnyPerTextLine", "zoomPerTextLine", "pedestalPerTextLine",
     "trackPerTextLine", "dofPerTextLine", "panV2PerTextLine", "sePerTextLine",
     "bgmPerEpisode", "noMotionShare", "lookLineShare", "distance2Share",
-    "distance3Share", "distance4Share", "duoShare", "effectiveDuoShare",
+    "distance3Share", "distance4Share", "distance4TextLineShare", "duoShare", "effectiveDuoShare",
     "closeRunOneOrTwoShare", "twoMotionShare", "standaloneExpressionPerEpisode",
     "textLinesPerEpisodeMean", "textLinesPerEpisodeMin", "textLinesPerEpisodeMax",
     "commandsPerEpisodeMean", "linesPerMinute", "charsPerMinute",
     "focusDurationDefault", "zoomDurationDefault", "motionFadeInDefault",
-    "zoomDefault", "staticLineBudget", "closeUps", "motionBudget",
-    "focusChanges", "lookAtBudget",
+    "zoomDefault",
   ];
   assert.deepEqual(Object.keys(OFFICIAL_TARGETS).sort(), [...expectedKeys].sort());
   assert.equal(OFFICIAL_TARGETS.lineCharsMean, BASELINE_TARGETS.distributions.charsMean);
@@ -310,7 +309,9 @@ test("OFFICIAL_TARGETS is a frozen flat adapter derived from one checked source"
   assert.equal(OFFICIAL_TARGETS.effectiveDuoShare,
     BASELINE_TARGETS.distributions.perTalkRowEffectiveDuoShare);
   assert.equal(OFFICIAL_TARGETS.effectiveDuoShare, 0.7654);
-  assert.equal(OFFICIAL_TARGETS.closeUps, 10);
+  assert.equal(OFFICIAL_TARGETS.distance4TextLineShare, 0.2288);
+  assert.equal(OFFICIAL_TARGETS.distance4TextLineShare,
+    BASELINE_TARGETS.distributions.distance4TextLineShare);
   assert.equal(OFFICIAL_TARGETS.closeRunOneOrTwoShare, 0.7785);
   assert.equal(OFFICIAL_TARGETS.twoMotionShare, 0.4473);
   assert.equal(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 0.0667);
@@ -320,7 +321,6 @@ test("OFFICIAL_TARGETS is a frozen flat adapter derived from one checked source"
   assert.equal(OFFICIAL_TARGETS.standaloneExpressionPerEpisode,
     BASELINE_TARGETS.distributions.standaloneExpressionPerEpisode);
   const exactBudgets = {
-    staticLineBudget: 47, motionBudget: 61, focusChanges: 19, lookAtBudget: 15,
     linesPerMinute: 18, charsPerMinute: 240,
     focusDurationDefault: 1.5, zoomDurationDefault: 1.5,
     motionFadeInDefault: -1, zoomDefault: 1.2,
@@ -328,8 +328,9 @@ test("OFFICIAL_TARGETS is a frozen flat adapter derived from one checked source"
   for (const [key, expected] of Object.entries(exactBudgets)) {
     assert.equal(OFFICIAL_TARGETS[key], expected, `OFFICIAL_TARGETS.${key}`);
   }
-  assert.equal(OFFICIAL_TARGETS.closeUps,
-    Math.max(1, Math.round(47 * BASELINE_TARGETS.distributions.perTalkRowDistance4Share)));
+  for (const legacy of ["staticLineBudget", "closeUps", "motionBudget", "focusChanges", "lookAtBudget"]) {
+    assert.equal(legacy in OFFICIAL_TARGETS, false, `${legacy} must not be a fixed 47-line target`);
+  }
   for (const value of Object.values(OFFICIAL_TARGETS)) {
     assert.equal(typeof value, "number");
     assert.ok(Number.isFinite(value));

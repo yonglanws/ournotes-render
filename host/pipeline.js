@@ -29,10 +29,10 @@ const maxLinesOf = (request, fallback) => {
   const raw = request.maxLines ?? fallback;
   if (raw == null) return undefined;
   const value = Number(raw);
-  if (!Number.isFinite(value) || value < 2) {
-    throw new PipelineError("maxLines must be at least 2", { status: 400, code: "bad_request" });
+  if (!Number.isInteger(value) || value < 2) {
+    throw new PipelineError("maxLines must be an integer of at least 2", { status: 400, code: "bad_request" });
   }
-  return Math.min(300, Math.round(value));
+  return Math.min(300, value);
 };
 
 export class Pipeline {

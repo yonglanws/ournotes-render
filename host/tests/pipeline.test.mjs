@@ -129,7 +129,7 @@ test("a prompt without a configured LLM is refused with 503", async () => {
     (e) => e.status === 503 && e.code === "llm_missing");
 });
 
-test("maxLines below two is rejected before generation", async () => {
+test("maxLines below two or non-integer is rejected before generation", async () => {
   const output = tmpDir();
   let calls = 0;
   const llm = { available: true, async json() { calls++; return { content: JSON.stringify(SCRIPT) }; } };
@@ -139,11 +139,36 @@ test("maxLines below two is rejected before generation", async () => {
   });
   const badCap = (e) => e.status === 400 && e.code === "bad_request" &&
     /maxLines/.test(e.message) && /at least 2/.test(e.message);
-  await assert.rejects(() => pipeline.generateScriptOnly({ prompt: "写一场对话", maxLines: 1 }), badCap);
-  await assert.rejects(
-    () => pipeline.run({ prompt: "写一场对话", maxLines: 1 }, { signal: null, jobId: "bad-max", progress: () => {} }),
-    badCap);
+  for (const maxLines of [1, 2.5]) {
+    await assert.rejects(() => pipeline.generateScriptOnly({ prompt: "写一场对话", maxLines }), badCap);
+    await assert.rejects(
+      () => pipeline.run({ prompt: "写一场对话", maxLines }, { signal: null, jobId: "bad-max", progress: () => {} }),
+      badCap);
+  }
   assert.equal(calls, 0, "neither path reaches the LLM");
+});
+
+test("an AI job persists diagnostics without changing the public result fields", async () => {
+  const output = tmpDir();
+  const doc = { ...SCRIPT, beats: [...SCRIPT.beats, { say: "a", text: "今天也练习吧。" }] };
+  const llm = { available: true, async json() { return { content: JSON.stringify(doc) }; } };
+  const renderer = {
+    async render() {
+      const file = path.join(output, "task-ai.mp4");
+      fs.writeFileSync(file, "video");
+      return { output: file, report: { frames: 90, seconds: 1 }, duration: 3, audio: null, pageErrors: [] };
+    },
+  };
+  const pipeline = new Pipeline({ config: configFor(output), catalog: stubCatalog(), llm, tts: null,
+                                  renderer, logger: quietLogger() });
+  const result = await pipeline.run({ prompt: "写一场对话" }, { signal: null, jobId: "task-ai", progress: () => {} });
+  assert.equal(result.success, true);
+  assert.deepEqual(result.diagnostics, { stages: null, plan: null, dialogue: null, usage: null });
+  assert.equal(result.story.title, "T");
+  const saved = JSON.parse(fs.readFileSync(result.storyPath, "utf8"));
+  assert.deepEqual(saved.diagnostics, result.diagnostics);
+  assert.equal(saved.script.title, "T");
+  assert.equal(saved.tts.voiced, 0);
 });
 
 test("the AI stage can return a script without rendering", async () => {

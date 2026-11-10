@@ -44,6 +44,10 @@ const CHECKED_DISTRIBUTIONS = Object.freeze({
   perTalkRowDistance2Share: 0.3892,
   perTalkRowDistance3Share: 0.3608,
   perTalkRowDistance4Share: 0.2038,
+  // Raw distance-4 Talk rows over text-bearing lines: 265/1158. Generated
+  // scripts have no blank Talk rows, so this is the close-up rate the budget
+  // uses (the all-Talk-row rate above stays the official comparison figure).
+  distance4TextLineShare: 0.2288,
   perTalkRowDuoShare: 0.7623,
   perTalkRowEffectiveDuoShare: 0.7654,
   attributedMotions: 1502,
@@ -93,7 +97,6 @@ export const BASELINE_TARGETS = Object.freeze({
 });
 
 const rateOf = (n, d) => n / d;
-const budget = (value, lines) => Math.max(1, Math.round(value * lines));
 const CHECKED_LINE_MIN = 32;
 const CHECKED_LINE_MAX = 47;
 const CHECKED_LINES_PER_MINUTE = 18;
@@ -137,6 +140,7 @@ export const OFFICIAL_TARGETS = Object.freeze({
   distance2Share: CHECKED_DISTRIBUTIONS.perTalkRowDistance2Share,
   distance3Share: CHECKED_DISTRIBUTIONS.perTalkRowDistance3Share,
   distance4Share: CHECKED_DISTRIBUTIONS.perTalkRowDistance4Share,
+  distance4TextLineShare: CHECKED_DISTRIBUTIONS.distance4TextLineShare,
   duoShare: CHECKED_DISTRIBUTIONS.perTalkRowDuoShare,
   effectiveDuoShare: CHECKED_DISTRIBUTIONS.perTalkRowEffectiveDuoShare,
   textLinesPerEpisodeMean: rateOf(CHECKED_TOTALS.textLines, CHECKED_TOTALS.episodes),
@@ -149,11 +153,6 @@ export const OFFICIAL_TARGETS = Object.freeze({
   zoomDurationDefault: CHECKED_ZOOM_DURATION_DEFAULT,
   motionFadeInDefault: CHECKED_MOTION_FADE_IN_DEFAULT,
   zoomDefault: CHECKED_ZOOM_DEFAULT,
-  staticLineBudget: CHECKED_LINE_MAX,
-  closeUps: budget(CHECKED_DISTRIBUTIONS.perTalkRowDistance4Share, CHECKED_LINE_MAX),
-  motionBudget: budget(rateOf(CHECKED_TOTALS.motion, CHECKED_TOTALS.textLines), CHECKED_LINE_MAX),
-  focusChanges: budget(rateOf(CHECKED_TOTALS.focus, CHECKED_TOTALS.talkRows), CHECKED_LINE_MAX),
-  lookAtBudget: budget(rateOf(CHECKED_TOTALS.lookRows, CHECKED_TOTALS.textLines), CHECKED_LINE_MAX),
 });
 
 // Backward-compatible alias for the earlier Task 1 public export.
@@ -395,6 +394,7 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
         perTalkRowDistance2Share: rateOrZero(rawDistributions.distance2Rows, rawDistributions.talkRows),
         perTalkRowDistance3Share: rateOrZero(rawDistributions.distance3Rows, rawDistributions.talkRows),
         perTalkRowDistance4Share: rateOrZero(rawDistributions.distance4Rows, rawDistributions.talkRows),
+        distance4TextLineShare: rateOrZero(rawDistributions.distance4Rows, totals.textLines),
         perTalkRowDuoShare: rateOrZero(rawDistributions.duoRows, rawDistributions.talkRows),
         perTalkRowEffectiveDuoShare: rateOrZero(rawDistributions.effectiveDuoRows, rawDistributions.talkRows),
         // Directly recomputable from the checked command totals above.

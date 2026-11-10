@@ -108,12 +108,14 @@ test("invalid numbers and collections are clamped", () => {
   assert.equal(cfg.server.cors, false);
 });
 
-test("story.maxLines below two is reported instead of being promoted to two", () => {
-  const file = path.join(tmpDir(), "config.yaml");
-  fs.writeFileSync(file, "story: { maxLines: 1 }");
-  const cfg = loadConfig({ file });
-  const issue = cfg.issues.errors.find((e) => e.path === "story.maxLines");
-  assert.ok(issue, "story.maxLines is reported as a config error");
-  assert.match(issue.message, /at least 2/);
-  assert.equal(cfg.story.maxLines, 1, "the invalid value is not silently promoted");
+test("story.maxLines below two or non-integer is reported instead of being adjusted", () => {
+  for (const value of [1, 2.5]) {
+    const file = path.join(tmpDir(), "config.yaml");
+    fs.writeFileSync(file, `story: { maxLines: ${value} }`);
+    const cfg = loadConfig({ file });
+    const issue = cfg.issues.errors.find((e) => e.path === "story.maxLines");
+    assert.ok(issue, `story.maxLines ${value} is reported as a config error`);
+    assert.match(issue.message, /at least 2/);
+    assert.equal(cfg.story.maxLines, value, "the invalid value is not silently adjusted");
+  }
 });

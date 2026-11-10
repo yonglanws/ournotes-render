@@ -255,9 +255,9 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   cfg.queue.outputMaxAgeHours = Math.max(0, num(cfg.queue.outputMaxAgeHours, 24));
   cfg.story.targetMinutes = Math.max(0.5, num(cfg.story.targetMinutes, 3));
   cfg.story.maxModels = Math.max(1, Math.round(num(cfg.story.maxModels, 24)));
-  const maxLines = Math.round(num(cfg.story.maxLines, 120));
-  if (maxLines < 2) {
-    errors.push({ path: "story.maxLines", message: "must be at least 2; a one-line story cannot be staged" });
+  const maxLines = num(cfg.story.maxLines, 120);
+  if (!Number.isInteger(maxLines) || maxLines < 2) {
+    errors.push({ path: "story.maxLines", message: "must be an integer of at least 2; a one-line story cannot be staged" });
     cfg.story.maxLines = maxLines;
   } else {
     cfg.story.maxLines = Math.min(300, maxLines);

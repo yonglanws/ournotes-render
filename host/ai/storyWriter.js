@@ -568,9 +568,9 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
 export const generateScript = async (args) => {
   if (!args.llm.available) throw new StoryWriterError("LLM is not configured (llm.enabled and llm.model)");
   const maxLines = Number(args.request?.maxLines ?? args.config?.story?.maxLines ?? 120);
-  if (!Number.isFinite(maxLines) || maxLines < 2) {
-    throw new StoryWriterError("maxLines must be at least 2", {
-      details: [{ path: "/maxLines", code: "range", message: "maxLines must be at least 2" }],
+  if (!Number.isInteger(maxLines) || maxLines < 2) {
+    throw new StoryWriterError("maxLines must be an integer of at least 2", {
+      details: [{ path: "/maxLines", code: "range", message: "maxLines must be an integer of at least 2" }],
     });
   }
   const startedAt = Date.now();
