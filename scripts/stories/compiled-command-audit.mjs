@@ -305,11 +305,23 @@ const cli = async (argv) => {
   }
   const manifest = o.manifest ? readJson(o.manifest) : null;
   const requires = manifest?.requires || manifest || null;
-  if (!Array.isArray(requires?.commands) && !Array.isArray(story?.commands)) {
+  const manifestStory = manifest && typeof manifest.story === "object" ? manifest.story : null;
+  const manifestStoryCommands = Array.isArray(manifestStory?.commands) ? manifestStory.commands : null;
+  if (manifest && !Array.isArray(requires?.commands)) {
+    throw new Error("--manifest must contain requires.commands; an audit cannot pass without checking " +
+      "the required-command list");
+  }
+  if (!Array.isArray(requires?.commands) && !Array.isArray(story?.commands) && !manifestStoryCommands) {
     throw new Error("--manifest (with requires.commands) or --story (with commands) is required: " +
       "an audit cannot pass without checking the required-command list");
   }
-  const audit = auditCompiledStory({ episode, story, requires });
+  // A site manifest carries its command list in story.commands as well as
+  // requires.commands. Merge it with the --story/site parts so both lists are
+  // checked, not just requires.commands.
+  const auditStory = manifestStoryCommands
+    ? { ...(story || {}), ...manifestStory, commands: manifestStoryCommands }
+    : story;
+  const audit = auditCompiledStory({ episode, story: auditStory, requires });
   console.log(JSON.stringify({ ok: audit.failures.length === 0, ...audit }, null, 2));
   return audit.failures.length ? 1 : 0;
 };

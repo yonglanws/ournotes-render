@@ -232,3 +232,43 @@ test("the audit CLI refuses to pass without a required-command list", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("the audit CLI checks manifest.story.commands when only --manifest is supplied", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "command-audit-manifest-"));
+  const cli = fileURLToPath(new URL("./compiled-command-audit.mjs", import.meta.url));
+  const episodeFile = path.join(dir, "episode.json");
+  const manifestFile = path.join(dir, "manifest.json");
+  const episode = {
+    commandCount: 1,
+    commands: [{ i: 0, cmd: "Talk", raw: 2, AdvTextID: "line_1" }],
+    text: { line_1: { "zh-Hans": "一句台词。" } },
+    sounds: {},
+    cuesheets: {},
+  };
+  writeFileSync(episodeFile, JSON.stringify(episode));
+  try {
+    writeFileSync(manifestFile, JSON.stringify({
+      requires: { commands: ["Talk"] },
+      story: { commands: ["Wrong"] },
+    }));
+    const wrong = spawnSync(process.execPath, [cli, "--episode", episodeFile, "--manifest", manifestFile],
+      { encoding: "utf8" });
+    assert.notEqual(wrong.status, 0, "a wrong manifest.story.commands must fail the audit");
+    const parsed = JSON.parse(wrong.stdout);
+    assert.equal(parsed.ok, false);
+    assert.ok(parsed.failures.some((failure) => failure.code === "storyCommands"));
+    assert.equal(parsed.manifestCommands.story, false);
+
+    writeFileSync(manifestFile, JSON.stringify({
+      requires: { commands: ["Talk"] },
+      story: { commands: ["Talk"] },
+    }));
+    const correct = spawnSync(process.execPath, [cli, "--episode", episodeFile, "--manifest", manifestFile],
+      { encoding: "utf8" });
+    assert.equal(correct.status, 0, correct.stderr);
+    assert.equal(JSON.parse(correct.stdout).ok, true);
+    assert.equal(JSON.parse(correct.stdout).manifestCommands.ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
