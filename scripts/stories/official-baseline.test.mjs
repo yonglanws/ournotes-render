@@ -259,6 +259,7 @@ test("OFFICIAL_TARGETS is a frozen flat adapter derived from one checked source"
     "trackPerTextLine", "dofPerTextLine", "panV2PerTextLine", "sePerTextLine",
     "bgmPerEpisode", "noMotionShare", "lookLineShare", "distance2Share",
     "distance3Share", "distance4Share", "duoShare", "effectiveDuoShare",
+    "closeRunOneOrTwoShare", "twoMotionShare", "standaloneExpressionPerEpisode",
     "textLinesPerEpisodeMean", "textLinesPerEpisodeMin", "textLinesPerEpisodeMax",
     "commandsPerEpisodeMean", "linesPerMinute", "charsPerMinute",
     "focusDurationDefault", "zoomDurationDefault", "motionFadeInDefault",
@@ -284,6 +285,14 @@ test("OFFICIAL_TARGETS is a frozen flat adapter derived from one checked source"
     BASELINE_TARGETS.distributions.perTalkRowEffectiveDuoShare);
   assert.equal(OFFICIAL_TARGETS.effectiveDuoShare, 0.7654);
   assert.equal(OFFICIAL_TARGETS.closeUps, 10);
+  assert.equal(OFFICIAL_TARGETS.closeRunOneOrTwoShare, 0.7785);
+  assert.equal(OFFICIAL_TARGETS.twoMotionShare, 0.4473);
+  assert.equal(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 0.0667);
+  assert.equal(OFFICIAL_TARGETS.closeRunOneOrTwoShare,
+    BASELINE_TARGETS.distributions.closeRunOneOrTwoShare);
+  assert.equal(OFFICIAL_TARGETS.twoMotionShare, BASELINE_TARGETS.distributions.twoMotionShare);
+  assert.equal(OFFICIAL_TARGETS.standaloneExpressionPerEpisode,
+    BASELINE_TARGETS.distributions.standaloneExpressionPerEpisode);
   const exactBudgets = {
     staticLineBudget: 47, motionBudget: 61, focusChanges: 19, lookAtBudget: 15,
     linesPerMinute: 18, charsPerMinute: 240,
@@ -387,11 +396,25 @@ test("30-episode corpus recomputes the checked official totals", { skip: corpusS
 test("30-episode corpus reproduces the official distribution metrics", { skip: corpusSkip }, () => {
   const recomputed = buildBaseline(config);
   const all = recomputed.all.corpus;
+  // These two are direct checked audit constants (see CHECKED_DISTRIBUTIONS):
+  // the line adapter has no canonical close-run/two-motion boundary definition.
+  // Their frozen values are asserted above; every other distribution is
+  // recomputed from the corpus here.
+  const checkedConstants = new Set(["closeRunOneOrTwoShare", "twoMotionShare"]);
   for (const [key, expected] of Object.entries(BASELINE_TARGETS.distributions)) {
+    if (checkedConstants.has(key)) continue;
     const actual = typeof expected === "number" && !Number.isInteger(expected)
       ? Number(all[key].toFixed(4)) : all[key];
     assert.equal(actual, expected, `all.corpus.${key}`);
   }
+  for (const key of checkedConstants) {
+    assert.equal(typeof BASELINE_TARGETS.distributions[key], "number");
+    assert.ok(Number.isFinite(BASELINE_TARGETS.distributions[key]));
+  }
+  assert.equal(Number(all.standaloneExpressionPerEpisode.toFixed(4)),
+    BASELINE_TARGETS.distributions.standaloneExpressionPerEpisode);
+  assert.equal(Number((recomputed.totals.expression / recomputed.totals.episodes).toFixed(4)),
+    BASELINE_TARGETS.distributions.standaloneExpressionPerEpisode);
   for (const [key, expected] of Object.entries(BASELINE_TARGETS.tailCounts)) {
     assert.equal(recomputed.all.tailCounts[key] || 0, expected, `all.tailCounts.${key}`);
   }

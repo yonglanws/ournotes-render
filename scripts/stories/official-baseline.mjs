@@ -61,6 +61,14 @@ const CHECKED_DISTRIBUTIONS = Object.freeze({
   speakerRunCount: 832,
   speakerRunMean: 1.3918,
   soloRunShare: 0.7284,
+  // Direct checked audit measurements. Unlike the line aggregations above,
+  // these three are cited constants from the reviewed 30-episode audit: the
+  // current line adapter has no canonical boundary definition for close-up
+  // runs or the two-motion/two-action line share, so they are deliberately
+  // not synthesized here from unrelated rates.
+  closeRunOneOrTwoShare: 0.7785,
+  twoMotionShare: 0.4473,
+  standaloneExpressionPerEpisode: 0.0667,
 });
 
 
@@ -119,6 +127,9 @@ export const OFFICIAL_TARGETS = Object.freeze({
   sePerTextLine: Number(rateOf(CHECKED_TOTALS.se, CHECKED_TOTALS.textLines).toFixed(3)),
   bgmPerEpisode: Number(rateOf(CHECKED_DISTRIBUTIONS.bgm, CHECKED_TOTALS.episodes).toFixed(3)),
   noMotionShare: CHECKED_DISTRIBUTIONS.perTextLineNoMotionShare,
+  closeRunOneOrTwoShare: CHECKED_DISTRIBUTIONS.closeRunOneOrTwoShare,
+  twoMotionShare: CHECKED_DISTRIBUTIONS.twoMotionShare,
+  standaloneExpressionPerEpisode: CHECKED_DISTRIBUTIONS.standaloneExpressionPerEpisode,
   lookLineShare: CHECKED_DISTRIBUTIONS.perTextLineLookLineShare,
   distance2Share: CHECKED_DISTRIBUTIONS.perTalkRowDistance2Share,
   distance3Share: CHECKED_DISTRIBUTIONS.perTalkRowDistance3Share,
@@ -377,6 +388,8 @@ export const buildBaseline = ({ siteRoot, sampleRoot, assetsRoot, language = "zh
         perTalkRowDistance4Share: rateOrZero(rawDistributions.distance4Rows, rawDistributions.talkRows),
         perTalkRowDuoShare: rateOrZero(rawDistributions.duoRows, rawDistributions.talkRows),
         perTalkRowEffectiveDuoShare: rateOrZero(rawDistributions.effectiveDuoRows, rawDistributions.talkRows),
+        // Directly recomputable from the checked command totals above.
+        standaloneExpressionPerEpisode: rateOrZero(totals.expression, totals.episodes),
       },
       perEpisodeMean: aggregate(summaries),
       rawDistributions,

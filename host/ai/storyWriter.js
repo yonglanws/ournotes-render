@@ -8,6 +8,7 @@
 //             focused repair and a fallback, and the result carries per-stage diagnostics (stages/warnings/usage).
 import { applyFixes, checkScript, parseScript, SCRIPT_FORMAT } from "../../scripts/lib/story-author/script.js";
 import { extractJson } from "./json.js";
+import { dialogueBudgetFor } from "./official-targets.js";
 import { buildPlanMessages, buildQuickCastMessages, buildStoryMessages, MAX_PROMPT_MODELS } from "./prompt.js";
 import {
   buildCastMessages, buildDialogueLengthPrompt, buildDialogueMessages, buildDialogueRepairMessages,
@@ -27,6 +28,21 @@ export class StoryWriterError extends Error {
 
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const lower = (s) => String(s || "").trim().toLowerCase();
+
+// Extended official camera/sound fields: AI output plumbing only. The parser,
+// checker and compiler learn these in a separate task; normalize() still
+// preserves them so a staged answer is not silently stripped.
+const EXTRA_BEAT_FIELDS = ["focusDuration", "trackDuration", "pedestal", "pedestalDuration",
+  "pan", "panDuration", "panFocusSlide", "dof", "dofDuration", "dofLayers",
+  "look", "lookY", "lookDuration", "se", "seDuration", "seDelay", "seStop",
+  "motionFadeIn", "motionWait"];
+const EXTRA_NUMERIC_FIELDS = new Set(["focusDuration", "trackDuration", "pedestal", "pedestalDuration",
+  "pan", "panDuration", "panFocusSlide", "dof", "dofDuration", "dofLayers",
+  "look", "lookY", "lookDuration", "seDuration", "seDelay", "motionFadeIn"]);
+const EXTRA_BOOLEAN_FIELDS = new Set(["seStop", "motionWait"]);
+const asBoolean = (v) => (typeof v === "boolean" ? v
+  : typeof v === "string" ? v.trim().toLowerCase() === "true"
+    : typeof v === "number" ? v !== 0 : v);
 
 // The staged repair loop asks for a fresh storyboard, so a failure keeps the finished dialogue. This hint does the
 // same job for the single pipeline without resending the whole prompt template.
@@ -124,6 +140,11 @@ const normalize = (raw, { catalog, request, config }) => {
           fixed[key] = p;
         }
         b.positions = fixed;
+      }
+      for (const key of EXTRA_BEAT_FIELDS) {
+        if (!(key in b)) continue;
+        if (EXTRA_NUMERIC_FIELDS.has(key)) b[key] = asNumber(b[key]);
+        else if (EXTRA_BOOLEAN_FIELDS.has(key)) b[key] = asBoolean(b[key]);
       }
     }
   }
@@ -405,17 +426,18 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
   logger.info?.(`staged: ${plan.cast.length} cast, ${dialogue.lines.length} dialogue lines`);
 
   // ---- 台词长度闸 ------------------------------------------------------------------------------------------
-  // 台词太短（模型偶尔只写十几句或总字数不够）会让整场明显短于目标时长。测试与调试用的极短
-  // targetMinutes 不启用；只有配置/请求里真的给了时长才闸。补写最多两次，每次都保留原事件与人物关系。
+  // 句数和总字数共用一个官方预算（dialogueBudgetFor）；两者都达到下限才算合格。
+  // 测试与调试用的极短 targetMinutes 不启用；补写最多两次，每次都保留原事件与人物关系。
   const targetMinutes = Number(request.targetMinutes ?? config.story?.targetMinutes ?? 0);
   const enforceDialogueLength = targetMinutes >= 0.5;
-  const minDialogueLines = Math.max(2, Math.round(targetMinutes * 10));
-  // 官方每句 7~17 字；下限按 ~110 字/分钟给，避免把正常场次误判成过短。
-  const minDialogueChars = Math.max(10, Math.round(targetMinutes * 110));
-  const actualDialogueChars = countDialogueChars(dialogue);
-  if (enforceDialogueLength &&
-      (dialogue.lines.length < minDialogueLines || actualDialogueChars < minDialogueChars)) {
-    const requiredLines = Math.max(minDialogueLines, Math.ceil(minDialogueChars / 12));
+  const budget = dialogueBudgetFor(targetMinutes);
+  const maxLinesConfig = Number(request.maxLines ?? config.story?.maxLines ?? 120);
+  const minDialogueLines = Math.max(2, Math.min(budget.minLines, maxLinesConfig));
+  const minDialogueChars = Math.max(10, budget.chars);
+  const requiredLines = Math.max(minDialogueLines, Math.min(budget.lines, maxLinesConfig));
+  const dialogueIsShort = () => dialogue.lines.length < minDialogueLines ||
+    countDialogueChars(dialogue) < minDialogueChars;
+  if (enforceDialogueLength && dialogueIsShort()) {
     const expandDialogue = async (label) => {
       const current = dialogue;
       const currentLines = current.lines.length;
@@ -432,23 +454,19 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
       return false;
     };
     markStageFailed(
-      `台词太短（${dialogue.lines.length} 句 / ${actualDialogueChars} 字，至少需要 ${requiredLines} 句 / ${minDialogueChars} 字）`);
+      `台词太短（${dialogue.lines.length} 句 / ${countDialogueChars(dialogue)} 字，` +
+      `至少需要 ${minDialogueLines} 句 / ${minDialogueChars} 字）`);
     stageWarnings.push(
-      `台词只有 ${dialogue.lines.length} 句 / ${actualDialogueChars} 字，已请求补写（至少 ${requiredLines} 句 / ${minDialogueChars} 字）`);
-    try {
-      await expandDialogue("dialogue-expand");
-    } catch (e) {
-      if (signal?.aborted) throw signal.reason || e;
-      stageWarnings.push(`台词补写失败：${e.message}`);
-    }
-    // 第一次补写仍明显偏短（不到目标的 3/4）时再补一次，避免成片只有两分多钟。
-    if (countDialogueChars(dialogue) < Math.round(minDialogueChars * 0.75)) {
-      stageWarnings.push("补写后仍然偏短，已再补写一次");
+      `台词只有 ${dialogue.lines.length} 句 / ${countDialogueChars(dialogue)} 字，已请求补写` +
+      `（至少 ${minDialogueLines} 句 / ${minDialogueChars} 字，目标 ${requiredLines} 句）`);
+    for (let attempt = 0; attempt < 2 && dialogueIsShort(); attempt++) {
+      if (attempt > 0) stageWarnings.push("补写后仍然偏短，已再补写一次");
       try {
-        await expandDialogue("dialogue-expand-2");
+        const improved = await expandDialogue(attempt === 0 ? "dialogue-expand" : "dialogue-expand-2");
+        if (!improved) break;
       } catch (e) {
         if (signal?.aborted) throw signal.reason || e;
-        stageWarnings.push(`台词二次补写失败：${e.message}`);
+        stageWarnings.push(attempt === 0 ? `台词补写失败：${e.message}` : `台词二次补写失败：${e.message}`);
       }
     }
   }

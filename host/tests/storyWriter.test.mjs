@@ -99,7 +99,18 @@ test("the prompt teaches official-like camera, acting and transitions", () => {
   assert.match(system.content, /zoom 1\.03~1\.10/);
   assert.match(user.content, /"camera": "close"/);
   assert.match(user.content, /"zoom": 1\.06/);
-  assert.match(user.content, /20~35%/);
+  assert.match(user.content, /30 部官方样本/);
+  assert.match(user.content, /整条台词常见 1~30 字/);
+  assert.match(user.content, /约 38% 两行/);
+  assert.match(user.content, /Focus 约 0\.40\/句/);
+  assert.doesNotMatch(user.content, /8 部官方剧情实测/);
+  assert.match(user.content, /Pedestal/);
+  assert.match(user.content, /PanV2/);
+  assert.match(user.content, /DoF/);
+  assert.match(user.content, /Look/);
+  assert.match(user.content, /Se/);
+  assert.match(user.content, /focusDuration/);
+  assert.match(user.content, /motionFadeIn/);
   assert.match(user.content, /独立 Expression/);
   assert.match(user.content, /10610/);
   for (const field of ["focus", "actions", "fade", "pause", "lookAt", "camera", "track"]) assert.match(user.content, new RegExp(field));
@@ -376,6 +387,27 @@ test("over-directed lines keep one listener reaction and one standalone expressi
   assert.ok(out.warnings.some((w) => w.code === "standaloneExpression"));
 });
 
+test("extended camera and sound fields survive the staged merge", () => {
+  const dialogue = { title: "雨", lines: [
+    { id: "l1", say: "a", text: "第一句。" },
+    { id: "l2", say: "b", text: "第二句。" },
+  ] };
+  const extra = {
+    focusDuration: 1.5, trackDuration: 2, pedestal: -0.2, pedestalDuration: 1.5,
+    pan: 12, panDuration: 2.5, panFocusSlide: 0.5, dof: 0.4, dofDuration: 1.5, dofLayers: 2,
+    look: -0.4, lookY: 0.1, lookDuration: 0.5, se: "se_cue", seDuration: 2, seDelay: 0.2,
+    seStop: false, motionFadeIn: -1, motionWait: false,
+  };
+  const storyboard = { beats: [
+    { scene: "stage_a", camera: "middle", positions: { a: "far-left", b: "far-right" } },
+    { line: "l1", motion: "mtn_smile01", ...extra },
+    { line: "l2" },
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
+  const first = merged.doc.beats.find((b) => b.text === "第一句。");
+  for (const [key, value] of Object.entries(extra)) assert.equal(first[key], value, key);
+});
+
 test("a speaker the storyboard left off stage is sent back for a repair", async () => {
   const calls = [];
   const llm = {
@@ -527,8 +559,8 @@ test("a dialogue that is too short for the configured minutes is expanded", asyn
   const longTurns = {
     title: "雨",
     turns: [
-      { speaker: "a", lines: Array.from({ length: 16 }, (_, i) => `第${i + 1}句：今天也一起练习吧，雨停之前先练完这一段。`) },
-      { speaker: "b", lines: Array.from({ length: 16 }, (_, i) => `第${i + 17}句：好，那我先把谱子翻到那一页。`) },
+      { speaker: "a", lines: Array.from({ length: 24 }, (_, i) => `第${i + 1}句：今天也一起练习吧，雨停之前先练完这一段。`) },
+      { speaker: "b", lines: Array.from({ length: 24 }, (_, i) => `第${i + 25}句：好，那我先把谱子翻到那一页。`) },
     ],
   };
   const calls = [];
@@ -545,23 +577,28 @@ test("a dialogue that is too short for the configured minutes is expanded", asyn
     config: { ...STAGED_CONFIG, story: { ...STAGED_CONFIG.story, targetMinutes: 3 } }, logger: quietLogger(),
   });
   assert.equal(calls.length, 4, "one expansion call between dialogue and storyboard");
-  assert.match(calls[2], /少于要求的 30 句/);
-  assert.equal(out.dialogue.lines.length, 32);
-  assert.match(calls[3], /l32/, "the storyboard is written for the expanded dialogue");
+  assert.match(calls[2], /少于要求的 54 句/);
+  assert.match(calls[2], /720 字/);
+  assert.equal(out.dialogue.lines.length, 48);
+  assert.match(calls[3], /l48/, "the storyboard is written for the expanded dialogue");
 });
 
-test("a storyboard that directs every line keeps the official share of still lines", () => {
+test("over-directed lines are pruned to the motion budget and report performanceBudget", () => {
   const dialogue = { title: "雨", lines: Array.from({ length: 10 }, (_, i) =>
     ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `第${i + 1}句台词的内容。` })) };
   const storyboard = { beats: [
     { scene: "stage_a", camera: "middle", positions: { a: "far-left", b: "far-right" } },
-    ...dialogue.lines.map((l) => ({ line: l.id, motion: "mtn_smile01" })),
+    ...dialogue.lines.map((l) => ({ line: l.id, motion: "mtn_smile01", expression: "exp_smile01",
+      actions: [{ at: 0, cast: l.say === "a" ? "b" : "a", motion: "mtn_nod01", expression: "exp_idle01" }] })),
   ] };
   const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
   const says = merged.doc.beats.filter((b) => "say" in b);
-  const still = says.filter((b) => !b.motion && !b.expression).length;
-  assert.equal(still, 1, "one line in ten loses its motion");
-  assert.ok(merged.warnings.some((w) => w.code === "staticLineBudget"));
+  const PERFORMANCE = (b) => (b.motion ? 1 : 0) + (b.expression ? 1 : 0) +
+    (b.actions || []).reduce((n, a) => n + (a.motion ? 1 : 0) + (a.expression ? 1 : 0), 0);
+  const still = says.filter((b) => PERFORMANCE(b) === 0).length;
+  assert.equal(still, 1, "ten lines budget maxStatic at one");
+  assert.ok(merged.warnings.some((w) => w.code === "performanceBudget"));
+  assert.ok(!merged.warnings.some((w) => w.code === "staticLineBudget"));
 });
 
 test("a storyboard that can never pass falls back to bare lines instead of failing the job", async () => {

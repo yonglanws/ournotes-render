@@ -52,7 +52,8 @@ export class Pipeline {
     if (!req.prompt) throw new PipelineError("prompt is required", { status: 400, code: "bad_request" });
     const out = await generateScript({ llm: this.llm, catalog, request: req, config: this.config, logger: this.logger,
       signal });
-    return { ok: true, script: out.doc, warnings: out.warnings || [], usage: out.usage || null };
+    return { ok: true, script: out.doc, warnings: out.warnings || [], usage: out.usage || null,
+      stages: out.stages ?? null, plan: out.plan ?? null, dialogue: out.dialogue ?? null };
   }
 
   async run(request, { signal, jobId, progress }) {
@@ -78,7 +79,7 @@ export class Pipeline {
 
     const siteCatalog = await this.catalog.catalog({ manifest: req.base });
     progress("writing", 0.03, req.script ? "校验剧本" : "AI 编写剧本");
-    let script, warnings = [], doc = null;
+    let script, warnings = [], doc = null, diagnostics = null;
     if (req.script) {
       // a caller may cast any model of the site, not only the models preloaded for the AI prompt: load the actions of
       // the cast models it names so the checker validates their motion/expression names too
@@ -109,6 +110,13 @@ export class Pipeline {
       script = out.script;
       doc = out.doc;
       warnings = out.warnings || [];
+      // Staged/single AI diagnostics for run-to-run comparison; additive only.
+      diagnostics = {
+        stages: out.stages ?? null,
+        plan: out.plan ?? null,
+        dialogue: out.dialogue ?? null,
+        usage: out.usage ?? null,
+      };
     }
 
     // TTS: the backend's own stage. A missing voice or a failed line leaves that line silent unless tts.required.
@@ -158,6 +166,7 @@ export class Pipeline {
       // the raw script document, so the file can be sent back to /api/v1/render unchanged
       format: script.format, script: doc, warnings,
       tts: ttsResult,
+      ...(diagnostics ? { diagnostics } : {}),
     }, null, 2));
     const stat = fs.statSync(render.output);
     return {
@@ -173,6 +182,7 @@ export class Pipeline {
       warnings,
       timings: { totalMs: Date.now() - t0, renderMs: Math.round((render.report.seconds || 0) * 1000) },
       story: { title: script.title, language: composed.language, lines: lines.length, cast: doc.cast },
+      ...(diagnostics ? { diagnostics } : {}),
     };
   }
 }
