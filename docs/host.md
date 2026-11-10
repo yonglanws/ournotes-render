@@ -470,13 +470,14 @@ npm run eval:stories -- --run phase1 --pipeline staged --temperature 0.8
 
 - `--run <name>`：报告目录名，必填，只允许字母、数字、`.`、`_`、`-`。
 - `--prompts all|1,2,...`：选择固定场景（1 起始）；`--runs N` 将每个选中场景重复 N 次，标签追加 `-runN`。
-- `--pipeline staged|single`、`--temperature`、`--target`：覆盖本次运行；固定覆盖 `targetMinutes`、`maxLines: 36`、
-  `repairRounds: 2`、`translateForTts: false`、`jsonMode: "auto"`、`maxTokens: 16384`、`timeoutMs: 180000`、`maxOnStage: 2`。
+- `--pipeline staged|single`、`--temperature`、`--target`：覆盖本次运行。`targetMinutes` 默认 2 分钟、`--target` 可改；
+  `maxLines` 取操作者配置并最多 36 行（2 分钟基线）。固定的还有 `repairRounds: 2`、`translateForTts: false`、
+  `jsonMode: "auto"`、`maxTokens: 16384`、`timeoutMs: 180000`、`maxOnStage: 2`。
   `llm.model`、`llm.baseUrl` 和 `llm.apiKeyEnv` 仍来自操作者配置；密钥只从环境变量读取，不写入报告。
 - `OURNOTES_SITE_FORMAT` 可以是绝对路径，因此可以在 worktree 里读取主仓库的 `resources/site`，但评估不会写入站点。
 - 单场超时、JSON 失败、编译失败或命令审计失败只记录该场，继续其余场景；回答被 `finish_reason=length` 截断时
-  同一请求先重试一次。分镜经修复仍不可用、退回「默认走位 + 无动作演出」时按失败场记录（该场没有可验收的演出）。
-  成功场数与失败列表分开写入。
+  由 `StoryWriter` 内部对同一请求重试一次，评估器每场只调用一次 `StoryWriter`。分镜经修复仍不可用、退回
+  「默认走位 + 无动作演出」时按失败场记录（该场没有可验收的演出）。成功场数与失败列表分开写入。
 
 报告目录：
 
@@ -500,13 +501,16 @@ OURNOTES_EVAL_REPORT=/path/to/ournotes-ai-lab/runs/phase1/report.json npm run te
 `pedestalPerLine 0.04..0.15`、`panV2PerLine 0.05..0.18`、`sePerLine 0.04..0.16`，并要求 `Zoom` / `Pedestal` /
 `PanV2` / `DoF` / `Look` / `Se` 至少各编译出一条。聚合只统计成功场；不要为了通过而放宽区间。
 
-已编译 episode 的命令审计可以单独运行（检查 `i`/`raw`/`commandCount`、注册命令、参数区间、SE 资源闭合和
-`HostActions` 里的 `LookTargetPosition`，失败时退出码为 1）：
+已编译 episode 的命令审计可以单独运行（检查 `i`/`raw`/`commandCount`、注册命令、参数区间、SE 资源闭合、
+`HostActions` 里的 `LookTargetPosition` 和 required-command 清单，失败时退出码为 1）：
 
 ```sh
 npm run audit:stories -- --episode output/phase1/episode.json \
   --site resources/site --base stories/10438.json --manifest output/phase1/stories/99001.json
 ```
+
+必须提供 `--manifest`（含 `requires.commands`）或含 `commands` 的 `--story`；缺少 required-command 清单时
+审计直接报错退出，不会在未检查命令清单的情况下打印 `ok: true`。
 
 ## 已知限制
 

@@ -100,6 +100,24 @@ const errorRecord = (error) => ({
   details: error && typeof error === "object" && "details" in error ? error.details : null,
 });
 
+// One failure shape for every scene, including a generation failure that has no
+// compiled result: elapsed time, warnings already produced, and the raw/partial
+// answer reference when the writer got that far.
+export const failureRecord = ({ scene, run, label, error, startedAt, partial = null }) => {
+  const record = {
+    label,
+    scene: { index: scene.index, label: scene.label, logline: scene.logline },
+    run,
+    latencyMs: partial?.latencyMs ?? (Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : null),
+    warnings: partial?.warnings || [],
+    raw: partial?.raw ?? null,
+    stages: partial?.stages ?? null,
+    ...errorRecord(error),
+  };
+  if (partial) record.partial = partial;
+  return record;
+};
+
 // The writer catalog (SiteFormatCatalog) and the compiler catalog (readSiteCatalog)
 // both come from the same base story manifest and language.
 const catalogsFor = async ({ siteDir, language, personas, base, logger }) => {
@@ -142,25 +160,29 @@ const compileDocument = ({ doc, compiler }) => {
   return { compiled, script: parsed.script, warnings: [...parsed.warnings, ...checked.warnings] };
 };
 
-const isTruncated = (error) => {
-  const text = `${error?.message || ""} ${error?.cause?.message || ""}`;
-  return /truncated|finish_reason=length/i.test(text);
-};
-
-export const evaluateScene = async ({ scene, run, label, llm, catalog, compiler, config, runDir, logger }) => {
+export const evaluateScene = async ({ scene, run, label, llm, catalog, compiler, config, runDir, logger,
+                                      generate = generateScript }) => {
   const started = Date.now();
   const request = { prompt: scene.logline, language: catalog.language, title: scene.title,
                     targetMinutes: Number(config.story.targetMinutes) };
-  const generate = () => generateScript({ llm, catalog, request, config, logger });
+  // Exactly one StoryWriter invocation per scene. StoryWriter owns its own
+  // truncation retry (staged "ask" and its repair rounds); a second call here
+  // would generate a second script for the same scene and double the budget.
+  // Warnings emitted before a failure are kept for the failure record.
+  const capturedWarnings = [];
+  const captureLogger = Object.create(logger || null);
+  captureLogger.warn = (message) => {
+    capturedWarnings.push(message);
+    logger?.warn?.(message);
+  };
   let generated;
   try {
-    generated = await generate();
+    generated = await generate({ llm, catalog, request, config, logger: captureLogger });
   } catch (error) {
-    // A truncated answer is a stochastic model failure, not a bad scene: retry
-    // the same fixed request once before recording the scene as failed.
-    if (!isTruncated(error)) throw error;
-    logger.warn?.(`${label}: truncated answer; retrying the scene once`);
-    generated = await generate();
+    if (error && typeof error === "object" && !error.partial) {
+      error.partial = { latencyMs: Date.now() - started, warnings: capturedWarnings, raw: null, stages: null };
+    }
+    throw error;
   }
   const generationMs = generated.durationMs ?? (Date.now() - started);
   const storyFile = `${label}.story.json`;
@@ -303,6 +325,7 @@ export const main = async (argv = process.argv.slice(2)) => {
       const label = args.runs > 1 ? `${scene.label}-run${repeat}` : scene.label;
       done++;
       console.error(`[${done}/${total}] ${label} (${args.pipeline}, temperature ${args.temperature})`);
+      const sceneStarted = Date.now();
       try {
         const result = await evaluateScene({
           scene, run: repeat, label, llm, catalog, compiler, config, runDir, logger: console,
@@ -312,11 +335,10 @@ export const main = async (argv = process.argv.slice(2)) => {
         if (fs.existsSync(path.join(runDir, result.script)))
           allStories[label] = JSON.parse(fs.readFileSync(path.join(runDir, result.script), "utf8"));
       } catch (error) {
-        const record = {
-          label, scene: { index: scene.index, label: scene.label, logline: scene.logline },
-          run: repeat, latencyMs: error?.partial?.latencyMs ?? null, ...errorRecord(error),
-        };
-        if (error && typeof error === "object" && error.partial) record.partial = error.partial;
+        const record = failureRecord({
+          scene, run: repeat, label, error, startedAt: sceneStarted,
+          partial: error && typeof error === "object" ? error.partial || null : null,
+        });
         failures.push(record);
         writeJson(path.join(runDir, `${label}.report.json`), record);
         console.error(`  failed: ${record.error}`);

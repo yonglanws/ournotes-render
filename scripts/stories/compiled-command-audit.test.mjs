@@ -3,7 +3,12 @@
 // the checked official ranges, every sound resolves to a cue sheet and a story
 // part, and the manifest's required-command lists match the episode.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   checkScript, compileScript, musicChoices, parseScript, soundChoices, stageChoices,
 } from "../lib/story-author/script.js";
@@ -141,6 +146,17 @@ test("every Se sound closes through sounds, cue sheets and story parts", () => {
   assert.equal(audit.resourceClosure.sounds, 1);
 });
 
+test("a Se row without a sound id fails resource closure", () => {
+  const compiled = officialScene();
+  const episode = { ...compiled.episode, commands: compiled.episode.commands.map((row) => ({ ...row })) };
+  const se = episode.commands.find((row) => row.cmd === "Se" && row.SeID !== undefined);
+  delete se.SeID;
+  const audit = auditCompiledStory({ ...compiled, episode });
+  assert.ok(audit.failures.some((failure) => failure.code === "soundId"));
+  assert.equal(audit.resourceClosure.ok, false);
+  assert.ok(audit.resourceClosure.missing.some((entry) => entry.reason === "soundId"));
+});
+
 test("the manifest command lists match the episode and a mismatch is a failure", () => {
   const compiled = officialScene();
   const audit = auditCompiledStory(compiled);
@@ -190,4 +206,29 @@ test("compiled rows become the same text-line records the official metrics use",
   assert.equal(metrics.summary.se, 2);
   assert.equal(metrics.summary.lookAny, 1);
   assert.equal(metrics.lines[0].renderedLines, 1);
+});
+
+test("the audit CLI refuses to pass without a required-command list", () => {
+  const compiled = officialScene();
+  const dir = mkdtempSync(path.join(tmpdir(), "command-audit-cli-"));
+  const cli = fileURLToPath(new URL("./compiled-command-audit.mjs", import.meta.url));
+  const episodeFile = path.join(dir, "episode.json");
+  const manifestFile = path.join(dir, "manifest.json");
+  const storyFile = path.join(dir, "story.json");
+  writeFileSync(episodeFile, JSON.stringify(compiled.episode));
+  writeFileSync(manifestFile, JSON.stringify({ requires: compiled.requires }));
+  writeFileSync(storyFile, JSON.stringify(compiled.story));
+  try {
+    const missing = spawnSync(process.execPath, [cli, "--episode", episodeFile], { encoding: "utf8" });
+    assert.notEqual(missing.status, 0, "an unchecked command list must not exit 0");
+    assert.match(`${missing.stdout}${missing.stderr}`, /--manifest|required-command/);
+    for (const args of [["--story", storyFile], ["--story", storyFile, "--manifest", manifestFile]]) {
+      const run = spawnSync(process.execPath, [cli, "--episode", episodeFile, ...args], { encoding: "utf8" });
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(JSON.parse(run.stdout).ok, true);
+      assert.equal(JSON.parse(run.stdout).manifestCommands.ok, true);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

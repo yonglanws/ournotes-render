@@ -16,6 +16,30 @@ const loadReport = () => JSON.parse(readFileSync(reportPath, "utf8"));
 const BETWEEN = (value, min, max) => value >= min && value <= max;
 const show = (value, digits = 3) => (typeof value === "number" ? value.toFixed(digits) : String(value));
 
+// The gate reads the report's named aggregate fields, not a ratio recomputed
+// from raw counts: a missing or stale field must fail instead of silently
+// falling back to another denominator.
+const AGGREGATE_RANGES = [
+  ["charsMean", (a) => a.charsMean, 12, 19],
+  ["twoLineShare", (a) => a.perTextLine?.twoLineShare, 0.25, 0.50],
+  ["shortShare", (a) => a.perTextLine?.shortShare, 0.12, 0.30],
+  ["soloRunShare", (a) => a.soloRunShare, 0.58, 0.82],
+  ["focusPerLine", (a) => a.focusPerLine, 0.30, 0.50],
+  ["motionsPerLine", (a) => a.motionsPerLine, 1.0, 1.5],
+  ["lookAnyPerLine", (a) => a.lookAnyPerLine, 0.20, 0.42],
+  ["zoomPerLine", (a) => a.zoomPerLine, 0.03, 0.16],
+  ["pedestalPerLine", (a) => a.pedestalPerLine, 0.04, 0.15],
+  ["panV2PerLine", (a) => a.panV2PerLine, 0.05, 0.18],
+  ["sePerLine", (a) => a.sePerLine, 0.04, 0.16],
+];
+
+const rangeFailures = (aggregateValues) => AGGREGATE_RANGES.flatMap(([name, valueOf, min, max]) => {
+  const value = valueOf(aggregateValues || {});
+  if (typeof value !== "number" || !Number.isFinite(value)) return [`${name} is not a finite number`];
+  if (!BETWEEN(value, min, max)) return [`${name} ${show(value)} is outside ${min}..${max}`];
+  return [];
+});
+
 test("the evaluation report has at least six complete successful scenes", { skip }, () => {
   const report = loadReport();
   assert.ok(Array.isArray(report.results), "report.results must be an array");
@@ -33,29 +57,30 @@ test("the evaluation report has at least six complete successful scenes", { skip
   }
 });
 
-test("the aggregate generation distributions stay inside the official ranges", { skip }, () => {
+test("the named aggregate generation distributions stay inside the official ranges", { skip }, () => {
   const report = loadReport();
-  const results = report.results;
-  const agg = aggregate(results.map((result) => result.summary));
-  const perLine = (key) => (agg.count ? agg[key] / agg.count : 0);
-  const checks = [
-    ["charsMean", agg.charsMean, 12, 19],
-    ["twoLineShare", agg.perTextLine?.twoLineShare, 0.25, 0.50],
-    ["shortShare", agg.perTextLine?.shortShare, 0.12, 0.30],
-    ["soloRunShare", agg.soloRunShare, 0.58, 0.82],
-    ["focusPerLine", perLine("focus"), 0.30, 0.50],
-    ["motionsPerLine", perLine("motions"), 1.0, 1.5],
-    ["lookAnyPerLine", perLine("lookAny"), 0.20, 0.42],
-    ["zoomPerLine", perLine("zoom"), 0.03, 0.16],
-    ["pedestalPerLine", perLine("pedestal"), 0.04, 0.15],
-    ["panV2PerLine", perLine("panV2"), 0.05, 0.18],
-    ["sePerLine", perLine("se"), 0.04, 0.16],
-  ];
-  for (const [name, value, min, max] of checks) {
-    assert.ok(typeof value === "number" && Number.isFinite(value), `${name} is not a finite number`);
-    assert.ok(BETWEEN(value, min, max),
-              `${name} ${show(value)} is outside ${min}..${max} (${results.length} scenes)`);
+  assert.ok(report.aggregate && typeof report.aggregate === "object", "report.aggregate is missing");
+  assert.deepEqual(rangeFailures(report.aggregate), []);
+  // The stored aggregate must be the successful-scene aggregate, not a stale or
+  // hand-edited object that happens to sit inside the ranges.
+  const recomputed = aggregate(report.results.map((result) => result.summary));
+  for (const [name, valueOf] of AGGREGATE_RANGES) {
+    const stored = valueOf(report.aggregate), fresh = valueOf(recomputed);
+    assert.ok(typeof stored === "number" && Number.isFinite(stored), `${name} is not stored in report.aggregate`);
+    assert.ok(Math.abs(stored - fresh) < 1e-9,
+              `${name} stored ${stored} does not match the successful-scene aggregate ${fresh}`);
   }
+});
+
+test("the aggregate range checker rejects a mutated named field", () => {
+  const good = {
+    charsMean: 14, perTextLine: { twoLineShare: 0.39, shortShare: 0.16 }, soloRunShare: 0.6,
+    focusPerLine: 0.42, motionsPerLine: 1.03, lookAnyPerLine: 0.32, zoomPerLine: 0.12,
+    pedestalPerLine: 0.09, panV2PerLine: 0.07, sePerLine: 0.08,
+  };
+  assert.deepEqual(rangeFailures(good), []);
+  assert.ok(rangeFailures({ ...good, focusPerLine: 0.9 }).some((failure) => failure.includes("focusPerLine")));
+  assert.ok(rangeFailures({ ...good, motionsPerLine: undefined }).some((failure) => failure.includes("motionsPerLine")));
 });
 
 test("every new official command family is compiled at least once", { skip }, () => {

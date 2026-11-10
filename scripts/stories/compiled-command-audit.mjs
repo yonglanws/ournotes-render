@@ -153,6 +153,7 @@ export const auditCompiledStory = ({ episode, story = null, script = null, requi
   const inspectSound = (row, index, id, code) => {
     if (id === undefined || id === null || String(id).trim() === "") {
       failures.push({ code: "soundId", index, cmd: row.cmd, message: `${row.cmd} has no sound id` });
+      closure.missing.push({ index, cmd: row.cmd, sound: null, sheet: null, storyPart: null, reason: "soundId" });
       return;
     }
     const sound = episode?.sounds?.[String(id)];
@@ -287,10 +288,11 @@ const readJson = (file) => JSON.parse(fs.readFileSync(path.resolve(file), "utf8"
 const cli = async (argv) => {
   const o = parseAuditArgs(argv);
   if (o.help) {
-    console.log("Usage: npm run audit:stories -- --episode <episode.json> [--site <site> --base <manifest>]\n" +
-      "       [--story <compiled-story.json>] [--manifest <site-manifest.json>] [--lang <language>]\n\n" +
-      "Reports row indices, raw ids, parameter ranges, sound closure and HostActions looks.\n" +
-      "Exit code 1 when any check fails.");
+    console.log("Usage: npm run audit:stories -- --episode <episode.json> " +
+      "(--manifest <site-manifest.json> | --story <compiled-story.json with commands>)\n" +
+      "       [--site <site> --base <story manifest>] [--lang <language>]\n\n" +
+      "Reports row indices, raw ids, parameter ranges, sound closure, HostActions looks and the " +
+      "requires.commands/story.commands lists.\nExit code 1 when any check fails.");
     return 0;
   }
   const episode = readJson(o.episode);
@@ -302,7 +304,12 @@ const cli = async (argv) => {
     story = { ...(story || {}), parts: catalog.base.story.parts };
   }
   const manifest = o.manifest ? readJson(o.manifest) : null;
-  const audit = auditCompiledStory({ episode, story, requires: manifest?.requires || manifest });
+  const requires = manifest?.requires || manifest || null;
+  if (!Array.isArray(requires?.commands) && !Array.isArray(story?.commands)) {
+    throw new Error("--manifest (with requires.commands) or --story (with commands) is required: " +
+      "an audit cannot pass without checking the required-command list");
+  }
+  const audit = auditCompiledStory({ episode, story, requires });
   console.log(JSON.stringify({ ok: audit.failures.length === 0, ...audit }, null, 2));
   return audit.failures.length ? 1 : 0;
 };
