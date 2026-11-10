@@ -54,3 +54,23 @@ test("every schema in schema/ compiles", () => {
   assert.ok(names.length >= 5);
   for (const f of names) compile(JSON.parse(fs.readFileSync(path.join(schemaDir, f), "utf8")));
 });
+
+test("the episode schema declares the official command fields the compiler writes", () => {
+  const schema = JSON.parse(fs.readFileSync(path.join(schemaDir, "episode.schema.json"), "utf8"));
+  const props = schema.$defs.command.properties;
+  assert.deepEqual(props.MotionFadeIn, { type: "number" });
+  assert.deepEqual(props.MotionWait, { type: "boolean" });
+  assert.deepEqual(props.CanvasLayers, { type: "array", items: { type: "integer" } });
+  assert.deepEqual(props.TargetTextColors, { type: "array", items: { type: "string" } });
+  const check = compile(schema);
+  const episode = {
+    advId: 0, asset: "", commandCount: 2,
+    commands: [
+      { i: 0, cmd: "Motion", raw: 21, TargetName: "a", MotionName: "mtn_smile01", MotionFadeIn: -1, MotionWait: true },
+      { i: 1, cmd: "DoF", raw: 48, Parameter1: "0.5", Duration: 1.5, CanvasLayers: [0, 2] },
+    ],
+    text: {}, sounds: {}, cuesheets: {}, videos: {}, resources: [],
+    master: { _id: 0, _advEpisodeAsset: "", _titleTextId: "", _playbackMode: 0 }, title: null,
+  };
+  assert.deepEqual(check(episode), []);
+});

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { buildQuickCastMessages, buildStoryMessages } from "../ai/prompt.js";
 import { generateScript, prepareScript } from "../ai/storyWriter.js";
 import { directionBudgetFor } from "../ai/official-targets.js";
-import { buildDialogueMessages, mergeStagedScript, normalizeDialogue, onStageProblems, spreadPositions } from "../ai/staged.js";
+import { buildDialogueMessages, buildStoryboardMessages, mergeStagedScript, normalizeDialogue, onStageProblems, spreadPositions } from "../ai/staged.js";
 import { quietLogger } from "./helpers.mjs";
 
 const CATALOG = {
@@ -419,6 +419,17 @@ test("extended camera and sound fields survive the staged merge", () => {
   const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
   const first = merged.doc.beats.find((b) => b.text === "第一句。");
   for (const [key, value] of Object.entries(extra)) assert.equal(first[key], value, key);
+});
+
+test("both prompt paths list the site's SE cues and never a placeholder", () => {
+  const catalog = { ...CATALOG, sounds: [{ cue: "sound_se_adv_door_knock", label: "Door Knock" }] };
+  const [, single] = buildStoryMessages({ catalog, request: { prompt: "放学后" }, config: CONFIG });
+  assert.match(single.content, /sound_se_adv_door_knock/);
+  assert.doesNotMatch(single.content, /se_cue/);
+  const dialogue = { lines: [{ id: "l1", say: "a", text: "第一句。" }, { id: "l2", say: "b", text: "第二句。" }] };
+  const [, storyboard] = buildStoryboardMessages({ plan: PLAN2, dialogue, catalog, request: {}, config: STAGED_CONFIG });
+  assert.match(storyboard.content, /sound_se_adv_door_knock/);
+  assert.doesNotMatch(storyboard.content, /se_cue/);
 });
 
 test("a speaker the storyboard left off stage is sent back for a repair", async () => {

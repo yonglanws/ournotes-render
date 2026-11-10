@@ -150,7 +150,7 @@ const loadScript = async (site, file) => {
   const models = site.models().map((m) => m.id), keys = Object.fromEntries(site.models().map((m) => [m.id, m.key]));
   const actions = {};
   for (const c of script.cast) if (models.includes(c.model) && !actions[c.model]) actions[c.model] = (await site.model(c.model)).actions;
-  const checked = checkScript(script, { base, models, actions });
+  const checked = checkScript(script, { base, models, actions, sounds: base.sounds });
   const all = [...errors, ...checked.errors];
   return { ok: all.length === 0, doc, script, language: checked.language, errors: all, warnings: checked.warnings, base,
            models: keys, actions };
@@ -169,7 +169,8 @@ const writeFixed = async (site, opts, doc, problems) => {
   return { file, applied, failed, ok: c.ok, errors: c.errors.length, warnings: c.warnings.length };
 };
 
-const compileChecked = (c) => compileScript(c.script, { base: c.base, models: c.models, actions: c.actions }, c.language);
+const compileChecked = (c) => compileScript(c.script, { base: c.base, models: c.models, actions: c.actions,
+                                                         sounds: c.base.sounds }, c.language);
 
 const familyOf = (c) => fontFamily(c.script.font, c.language);
 

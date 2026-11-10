@@ -55,6 +55,18 @@ export const FOCUS_POINT_MIN = 1;
 export const FOCUS_POINT_MAX = 9;
 export const TRACK_MIN = -4;
 export const TRACK_MAX = 4;
+// The verified official camera and gaze ranges (docs/story-director.md). Durations are shared by the Focus, Track,
+// Pedestal, PanV2 and DoF fields; 1.5 s is the official non-zero camera move.
+export const ZOOM_MIN = 0.7;
+export const ZOOM_MAX = 2.5;
+export const PEDESTAL_MIN = -4;
+export const PEDESTAL_MAX = 5;
+export const PAN_MIN = -30;
+export const PAN_MAX = 30;
+export const LOOK_MIN = -1;
+export const LOOK_MAX = 1;
+export const OFFICIAL_DURATION_MAX = 20;
+export const DEFAULT_OFFICIAL_DURATION = 1.5;
 const MAX_CAMERA_DURATION = 10;
 const MAX_PAUSE = 60;
 const MAX_ACTION_PAUSE = 10;
@@ -159,8 +171,8 @@ const str = (v) => (typeof v === "string" ? v : "");
 // joiner (U+2060, zero width, no break) after every "\" keeps it from starting an escape; line breaks are line feeds.
 export const plainText = (s) => str(s).replace(/\r\n?/g, "\n").replace(/</g, LT_FULLWIDTH).replace(/\\/g, `\\${WORD_JOINER}`);
 
-// "sound_bgm_adv_the_tender_light" -> "The Tender Light"
-export const cueLabel = (cue) => str(cue).replace(/^sound_bgm_(adv_)?/i, "").split("_").filter(Boolean)
+// "sound_bgm_adv_the_tender_light" -> "The Tender Light"; "sound_se_adv_door_knock" -> "Door Knock"
+export const cueLabel = (cue) => str(cue).replace(/^sound_(?:bgm|se)_(?:adv_)?/i, "").split("_").filter(Boolean)
   .map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 
 // ------------------------------------------------------------------------------------------------ layout fixes
@@ -302,6 +314,19 @@ export const musicChoices = (episode, story) => {
   return [...out.values()].sort((a, b) => a.cue.localeCompare(b.cue));
 };
 
+// The SE cues of a base story: the sound rows whose cue sheet is an SE sheet the story has the sound files of
+// (story.json parts.sounds) -> [{cue, label, sound, sheet}], by cue name. A sheet may hold several cue names.
+export const soundChoices = (episode, story) => {
+  const audio = story?.parts?.sounds || {}, out = new Map();
+  for (const [id, row] of Object.entries((episode && episode.sounds) || {})) {
+    const sheet = episode.cuesheets && episode.cuesheets[row._soundCueSheetID];
+    const name = sheet && sheet._cueSheetName;
+    if (!name || !/^sound_se/i.test(name) || !audio[name] || !row._cueName || out.has(row._cueName)) continue;
+    out.set(row._cueName, { cue: row._cueName, label: cueLabel(row._cueName), sound: Number(id), sheet: name });
+  }
+  return [...out.values()].sort((a, b) => a.cue.localeCompare(b.cue));
+};
+
 // The stages of a base story: [{id, key, caption}] in the order its episode sets them (the others last, by key). The
 // id is the key's last segment, or the whole key where two keys end alike; the caption is the first location caption
 // (in `language`) the episode shows while that stage is set, or "".
@@ -397,14 +422,24 @@ export const withBrowserFonts = (fonts, family) => {
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const TOP_KEYS = ["format", "base", "language", "title", "font", "cast", "beats"];
 const BEAT_KEYS = {
-  scene: ["id", "scene", "music", "location", "camera", "focus", "track", "positions"],
-  say: ["id", "say", "text", "motion", "expression", "lookAt", "focus", "camera", "track", "zoom", "zoomDuration", "actions"],
-  narrate: ["id", "narrate", "focus", "camera", "track", "zoom", "zoomDuration", "actions"],
-  positions: ["id", "positions", "camera", "focus", "track"],
-  camera: ["id", "camera", "focus", "track", "zoom", "zoomDuration", "duration"],
+  scene: ["id", "scene", "music", "location", "camera", "focus", "track", "positions", "focusDuration",
+          "trackDuration", "se", "seDuration", "seDelay", "seStop"],
+  say: ["id", "say", "text", "motion", "expression", "lookAt", "focus", "camera", "track", "zoom", "zoomDuration",
+        "focusDuration", "trackDuration", "pedestal", "pedestalDuration", "pan", "panDuration", "panFocusSlide",
+        "dof", "dofDuration", "dofLayers", "look", "lookY", "lookDuration", "se", "seDuration", "seDelay", "seStop",
+        "motionFadeIn", "motionWait", "actions"],
+  narrate: ["id", "narrate", "focus", "camera", "track", "zoom", "zoomDuration", "focusDuration", "trackDuration",
+            "pedestal", "pedestalDuration", "pan", "panDuration", "panFocusSlide", "dof", "dofDuration", "dofLayers",
+            "actions"],
+  positions: ["id", "positions", "camera", "focus", "track", "focusDuration", "trackDuration", "motionFadeIn",
+              "motionWait"],
+  camera: ["id", "camera", "focus", "track", "zoom", "zoomDuration", "cameraDuration", "focusDuration", "trackDuration",
+           "pedestal", "pedestalDuration", "pan", "panDuration", "panFocusSlide", "dof", "dofDuration", "dofLayers",
+           "se", "seDuration", "seDelay", "seStop", "duration"],
   fade: ["id", "fade", "duration"],
   pause: ["id", "pause"],
-  action: ["id", "action", "motion", "expression", "lookAt", "duration"],
+  action: ["id", "action", "motion", "expression", "lookAt", "look", "lookY", "lookDuration", "duration", "se",
+           "seDuration", "seDelay", "seStop", "motionFadeIn", "motionWait"],
 };
 const KINDS = Object.keys(BEAT_KEYS);
 
@@ -412,7 +447,7 @@ const KINDS = Object.keys(BEAT_KEYS);
 // form (a value with an error is left out); errors: [{path, code, message, ...}] with codes format, type, missing,
 // unknownKey, castId, beatKind, empty, duplicateId, unknownLanguage, unknownFont, unknownPosition, unknownCamera.
 export const parseScript = (doc) => {
-  const errors = [];
+  const errors = [], warnings = [];
   const err = (path, code, message, extra = {}) => errors.push({ path, code, message, ...extra });
   const keys = (o, allowed, path) => {
     for (const k of Object.keys(o)) {
@@ -464,14 +499,81 @@ export const parseScript = (doc) => {
     if (v < TRACK_MIN || v > TRACK_MAX) { err(path, "range", `${k} must be between ${TRACK_MIN} and ${TRACK_MAX}`); return undefined; }
     return v;
   };
-  // an optional slow Zoom on a line or a camera beat: a zoom ratio (0.8..1.5) and its seconds
+  // an optional slow Zoom on a line or a camera beat: a zoom ratio (0.7..2.5) and its seconds (0.2..20)
   const zoomOf = (b, path) => {
-    const zoom = numberOf(b, "zoom", `${path}/zoom`, { min: 0.8, max: 1.5, what: "zoom" });
+    const zoom = numberOf(b, "zoom", `${path}/zoom`, { min: ZOOM_MIN, max: ZOOM_MAX, what: "zoom" });
     const duration = numberOf(b, "zoomDuration", `${path}/zoomDuration`,
-                              { min: 0.5, max: MAX_CAMERA_DURATION, what: "zoomDuration" });
+                              { min: 0.2, max: OFFICIAL_DURATION_MAX, what: "zoomDuration" });
     if (duration !== undefined && zoom === undefined)
       err(`${path}/zoom`, "empty", "zoomDuration needs a zoom");
     return { zoom, duration };
+  };
+  const booleanOf = (o, k, path, what = k) => {
+    if (!(k in o)) return undefined;
+    if (typeof o[k] !== "boolean") { err(path, "type", `${what} must be a boolean`); return undefined; }
+    return o[k];
+  };
+  // DoF canvas layers: 0 (background), 2 (characters), or absent (characters)
+  const dofLayersOf = (o, path) => {
+    if (!("dofLayers" in o)) return undefined;
+    const v = o.dofLayers;
+    if (typeof v !== "number" || !Number.isInteger(v)) {
+      err(`${path}/dofLayers`, "type", "dofLayers must be 0 or 2");
+      return undefined;
+    }
+    if (v !== 0 && v !== 2) { err(`${path}/dofLayers`, "range", "dofLayers must be 0 or 2"); return undefined; }
+    return v;
+  };
+  // The verified official camera, gaze, acting and sound fields of a beat. A field is only read on the beats the
+  // format allows it on; the dependencies and the two exclusive pairs are reported before the values are checked.
+  const directionOf = (b, beat, path, kind) => {
+    const has = (k) => BEAT_KEYS[kind].includes(k) && k in b;
+    if (has("look") && has("lookAt"))
+      err(`${path}/look`, "exclusive", "look and lookAt cannot be used on the same beat");
+    if (has("se") && has("seStop"))
+      err(`${path}/seStop`, "exclusive", "se and seStop cannot be used on the same beat");
+    if (has("seDuration") && !has("se")) err(`${path}/seDuration`, "empty", "seDuration needs a se");
+    if (has("seDelay") && !has("se")) err(`${path}/seDelay`, "empty", "seDelay needs a se");
+    if (has("panFocusSlide") && !has("pan")) err(`${path}/panFocusSlide`, "empty", "panFocusSlide needs a pan");
+    if (has("dofLayers") && !has("dof")) err(`${path}/dofLayers`, "empty", "dofLayers needs a dof");
+    if (has("pedestalDuration") && !has("pedestal"))
+      err(`${path}/pedestalDuration`, "empty", "pedestalDuration needs a pedestal");
+    const num = (k, min, max) => {
+      if (!has(k)) return;
+      const v = numberOf(b, k, `${path}/${k}`, { min, max, what: k });
+      if (v !== undefined) beat[k] = v;
+    };
+    num("focusDuration", 0, OFFICIAL_DURATION_MAX);
+    num("trackDuration", 0, OFFICIAL_DURATION_MAX);
+    num("pedestal", PEDESTAL_MIN, PEDESTAL_MAX);
+    num("pedestalDuration", 0, OFFICIAL_DURATION_MAX);
+    num("pan", PAN_MIN, PAN_MAX);
+    num("panDuration", 0, OFFICIAL_DURATION_MAX);
+    num("panFocusSlide", 0, 1);
+    num("dof", 0, 1);
+    num("dofDuration", 0.5, 10);
+    if (has("dofLayers")) {
+      const layers = dofLayersOf(b, path);
+      if (layers !== undefined) beat.dofLayers = layers;
+    }
+    num("look", LOOK_MIN, LOOK_MAX);
+    num("lookY", LOOK_MIN, LOOK_MAX);
+    num("lookDuration", 0.2, 10);
+    if (has("se")) {
+      const se = text(b, "se", `${path}/se`);
+      if (se !== undefined) beat.se = se;
+    }
+    num("seDuration", 0.5, 10);
+    num("seDelay", 0, 10);
+    if (has("seStop")) {
+      const stop = booleanOf(b, "seStop", `${path}/seStop`, "seStop");
+      if (stop !== undefined) beat.seStop = stop;
+    }
+    num("motionFadeIn", -1, 2);
+    if (has("motionWait")) {
+      const wait = booleanOf(b, "motionWait", `${path}/motionWait`, "motionWait");
+      if (wait !== undefined) beat.motionWait = wait;
+    }
   };
   // `camera` is a distance name, or {distance, focus, track}; `focus`/`track` on the beat override the object's
   const cameraOf = (b, path) => {
@@ -618,6 +720,7 @@ export const parseScript = (doc) => {
       beat.track = cam.track;
       beat.positions = "positions" in b ? positions(b.positions, `${path}/positions`) : (kind === "scene" ? [] : null);
       if (kind === "positions" && !beat.positions) return;
+      directionOf(b, beat, path, kind);
     } else if (kind === "say") {
       beat.speaker = text(b, "say", `${path}/say`, { required: true });
       beat.text = text(b, "text", `${path}/text`, { required: true });
@@ -631,6 +734,7 @@ export const parseScript = (doc) => {
       const zoom = zoomOf(b, path);
       if (zoom.zoom !== undefined) beat.zoom = zoom.zoom;
       if (zoom.duration !== undefined) beat.zoomDuration = zoom.duration;
+      directionOf(b, beat, path, "say");
       beat.actions = actionsOf(b, path);
     } else if (kind === "narrate") {
       beat.speaker = null;
@@ -642,6 +746,7 @@ export const parseScript = (doc) => {
       const zoom = zoomOf(b, path);
       if (zoom.zoom !== undefined) beat.zoom = zoom.zoom;
       if (zoom.duration !== undefined) beat.zoomDuration = zoom.duration;
+      directionOf(b, beat, path, "narrate");
       beat.actions = actionsOf(b, path);
     } else if (kind === "camera") {
       const cam = cameraOf(b, path);
@@ -651,9 +756,20 @@ export const parseScript = (doc) => {
       const zoom = zoomOf(b, path);
       if (zoom.zoom !== undefined) beat.zoom = zoom.zoom;
       if (zoom.duration !== undefined) beat.zoomDuration = zoom.duration;
-      beat.duration = numberOf(b, "duration", `${path}/duration`, { min: 0.01, max: MAX_CAMERA_DURATION, what: "duration" });
-      if (beat.camera === undefined && !beat.focus && beat.track === undefined && beat.zoom === undefined)
-        err(path, "empty", "a camera beat needs a camera distance, a focus, a track or a zoom");
+      const cameraDuration = numberOf(b, "cameraDuration", `${path}/cameraDuration`,
+                                      { min: 0, max: OFFICIAL_DURATION_MAX, what: "cameraDuration" });
+      const legacyDuration = numberOf(b, "duration", `${path}/duration`,
+                                      { min: 0, max: OFFICIAL_DURATION_MAX, what: "duration" });
+      if ("cameraDuration" in b && "duration" in b)
+        warnings.push({ path: `${path}/duration`, code: "conflict",
+                        message: "duration is an alias of cameraDuration; cameraDuration wins" });
+      const moveDuration = cameraDuration !== undefined ? cameraDuration : legacyDuration;
+      if (moveDuration !== undefined) beat.cameraDuration = moveDuration;
+      directionOf(b, beat, path, "camera");
+      if (beat.camera === undefined && !beat.focus && beat.track === undefined && beat.zoom === undefined &&
+          beat.pedestal === undefined && beat.pan === undefined && beat.dof === undefined &&
+          !beat.se && !beat.seStop)
+        err(path, "empty", "a camera beat needs a camera distance, a focus, a track, a zoom, a pedestal, a pan, a dof or a sound");
     } else if (kind === "fade") {
       const dir = text(b, "fade", `${path}/fade`, { required: true });
       if (dir && !(dir in FADE_DIRECTIONS))
@@ -676,10 +792,12 @@ export const parseScript = (doc) => {
         err(path, "emptyAction", "an action needs a motion, an expression or a lookAt");
       beat.duration = numberOf(b, "duration", `${path}/duration`,
                                { min: 0.01, max: MAX_ACTION_PAUSE, what: "duration" });
+      directionOf(b, beat, path, "action");
     }
     script.beats.push(beat);
   });
-  return { script, errors };
+  script.warnings = warnings;
+  return { script, errors, warnings };
 };
 
 // ------------------------------------------------------------------------------------------------ checking
@@ -688,11 +806,13 @@ export const parseScript = (doc) => {
 //   base     {languages, language, stages: stageChoices(...), music: musicChoices(...)} of the script's base story
 //   models   the model ids of the site's models.json (an array or a Set)
 //   actions  model id -> modelActions, for the models of the cast that exist
+//   sounds   soundChoices(...) of the base story: the SE cues a beat's `se` may name
 // -> {language, errors, warnings}: language, the language the story plays in; error codes unknownLanguage,
-// unknownModel, unknownCast, unknownStage, unknownMusic, unknownMotion, unknownExpression, beforeScene,
-// positionTaken, offStage; warning codes speakerOffStage (a line of a character not on stage), unusedCast.
+// unknownModel, unknownCast, unknownStage, unknownMusic, unknownSe, unknownMotion, unknownExpression, beforeScene,
+// positionTaken, offStage; warning codes speakerOffStage (a line of a character not on stage), unusedCast, conflict
+// (a camera beat has both duration and cameraDuration).
 export const checkScript = (script, site) => {
-  const errors = [], warnings = [];
+  const errors = [], warnings = [...(script.warnings || [])];
   const base = site.base, models = new Set(site.models || []), actions = site.actions || {};
   const language = script.language || base.language;
   if (script.language && !base.languages.includes(script.language))
@@ -749,9 +869,12 @@ export const checkScript = (script, site) => {
     }
   };
   const stageIds = base.stages.map((s) => s.id), cues = base.music.map((m) => m.cue);
+  const seCues = [...new Set((site.sounds || []).map((s) => s.cue))].sort(byName);
   const used = new Set();
   let scenes = 0, on = new Set();
   for (const b of script.beats) {
+    if (b.se && !seCues.includes(b.se))
+      errors.push(unknown(`${b.path}/se`, "unknownSe", "SE cue", b.se, seCues, "the base story's sound files"));
     if (b.kind !== "scene" && !scenes) errors.push({ path: b.path, code: "beforeScene", message: "the first beat must be a scene" });
     if (b.kind === "scene") {
       scenes++;
@@ -823,12 +946,14 @@ export const checkScript = (script, site) => {
 //            musicChoices)
 //   models   model id -> model key (Character/Live2D/<group>/<name>/model/<name>) of the site's models.json
 //   actions  model id -> modelActions
+//   sounds   soundChoices(...) of the base story: the SE cues and sound rows its `se` fields resolve through
 // language: the story language. -> {episode, story, lines: [{line, beat, path, id, speaker, name, text}], scenes}
 export const compileScript = (script, site, language) => {
   const field = STORY_LANGUAGES[language];
   if (!field) throw new Error(`unknown story language ${language}`);
   const { base, models, actions } = site;
   const stageKey = new Map(base.stages.map((s) => [s.id, s.key])), music = new Map(base.music.map((m) => [m.cue, m]));
+  const seSounds = new Map(((site && site.sounds) || []).map((s) => [s.cue, s]));
   const cast = new Map(script.cast.map((c) => [c.id, c]));
   const rows = [], text = {}, lines = [];
   const row = (cmd, fields = {}) => {
@@ -895,29 +1020,85 @@ export const compileScript = (script, site, language) => {
   };
   // A Focus row and, when the beat asks for one, a Track row: the camera pans by `track` from the focus point. A
   // track without a focus keeps the camera's current focus and only pans; a scene always re-establishes its focus.
+  // Duration priority: the field's own duration, then a camera beat's cameraDuration, then the cut/ease the compiler
+  // chooses. A Track follows the Focus row's duration unless its own trackDuration or the cameraDuration is set.
   const cameraRows = (b, staged, distance, { duration = 0, noWait = false, focusAlways = false, auto = false } = {}) => {
-    let move = duration;
+    let move = duration, hasFocusRow = false;
     if (b.focus || b.camera !== undefined || b.track === undefined || focusAlways) {
       const fields = focusFields(b, staged, distance);
-      if (auto) move = autoDuration(fields, distance);
+      if (b.focusDuration !== undefined) move = b.focusDuration;
+      else if (b.cameraDuration !== undefined) move = b.cameraDuration;
+      else if (auto) move = autoDuration(fields, distance);
       if (move) fields.Duration = move;
       if (noWait) fields.IsNoWait = 1;
       row("Focus", fields);
       lastShot = { distance, pos: fields.PositionType ?? 0, name: fields.TargetName || "" };
+      hasFocusRow = true;
     }
-    if (b.track !== undefined)
-      row("Track", { Parameter1: String(b.track), ...(move ? { Duration: move } : {}), IsNoWait: 1 });
+    if (b.track !== undefined) {
+      const trackMove = b.trackDuration !== undefined ? b.trackDuration
+        : b.cameraDuration !== undefined ? b.cameraDuration
+          : hasFocusRow ? move : 0;
+      row("Track", { Parameter1: String(b.track), ...(trackMove ? { Duration: trackMove } : {}), IsNoWait: 1 });
+    }
   };
   // a slow Zoom after the Focus/Track rows: the line's shot pushes in or pulls out over `zoomDuration` seconds
+  const durationOf = (b, own, fallback) => b[own] ?? b.cameraDuration ?? b.duration ?? fallback;
+  const pedestalRow = (b) => {
+    if (b.pedestal === undefined) return;
+    row("Pedestal", { Parameter1: String(b.pedestal), IsNoWait: 1,
+                      Duration: durationOf(b, "pedestalDuration", DEFAULT_OFFICIAL_DURATION) });
+  };
+  const panRow = (b) => {
+    if (b.pan === undefined) return;
+    const fields = { Parameter1: String(b.pan), IsNoWait: 1,
+                     Duration: durationOf(b, "panDuration", DEFAULT_OFFICIAL_DURATION) };
+    if (b.panFocusSlide !== undefined) fields.Parameter3 = String(b.panFocusSlide);
+    row("PanV2", fields);
+  };
+  const dofRow = (b) => {
+    if (b.dof === undefined) return;
+    const fields = { Parameter1: String(b.dof), IsNoWait: 1,
+                     Duration: durationOf(b, "dofDuration", DEFAULT_OFFICIAL_DURATION) };
+    // the engine reads CanvasLayers as an array; 0 is the background, 2 the character field
+    if (b.dofLayers !== undefined) fields.CanvasLayers = [b.dofLayers];
+    row("DoF", fields);
+  };
   const zoomRow = (b) => {
     if (b.zoom === undefined) return;
-    const duration = b.zoomDuration ?? (b.duration !== undefined ? b.duration : 4);
+    const duration = b.zoomDuration ?? b.cameraDuration ?? b.duration ?? DEFAULT_OFFICIAL_DURATION;
     row("Zoom", { Parameter1: String(b.zoom), Duration: duration, IsNoWait: 1 });
   };
-  const enter = (m, duration) => {
+  const seRow = (b) => {
+    if (!b.se && !b.seStop) return;
+    const sound = b.se ? seSounds.get(b.se) : null;
+    if (b.se && !sound) throw new Error(`unknown SE cue ${b.se}`);
+    const fields = b.seStop ? { Parameter1: "Stop" } : { SeID: sound.sound };
+    if (b.seDuration !== undefined) fields.Duration = b.seDuration;
+    if (b.seDelay !== undefined) fields.DelaySeconds = b.seDelay;
+    row("Se", fields);
+  };
+  const lookRow = (b, target) => {
+    if (b.look === undefined || !target) return;
+    row("Look", { TargetName: target, Parameter1: String(b.look), Parameter2: String(b.lookY ?? 0),
+                  Duration: b.lookDuration ?? b.cameraDuration ?? 0.5, IsNoWait: 1 });
+  };
+  // the official rows a beat adds after its Focus/Track rows, in a fixed order
+  const officialRows = (b, target = "") => {
+    pedestalRow(b);
+    panRow(b);
+    dofRow(b);
+    zoomRow(b);
+    seRow(b);
+    lookRow(b, target);
+  };
+  const motionFade = (b) => (b.motionFadeIn !== undefined ? b.motionFadeIn : MOTION_FADE);
+  const motionWait = (b) => (b.motionWait !== undefined ? { MotionWait: b.motionWait } : {});
+  const enter = (m, duration, b = null) => {
     const motion = enterMotion(m);
     row("In", { TargetName: m.cast, PositionType: m.slot, ...(duration ? { Duration: duration } : {}), IsNoWait: 1,
-                ...(motion ? { MotionName: motion } : {}), ...(m.expression ? { ExpressionName: m.expression } : {}) });
+                ...(motion ? { MotionName: motion } : {}), ...(m.expression ? { ExpressionName: m.expression } : {}),
+                ...(b && b.motionFadeIn !== undefined ? { MotionFadeIn: b.motionFadeIn } : {}) });
     expression.set(m.cast, m.expression || "");
   };
 
@@ -934,9 +1115,10 @@ export const compileScript = (script, site, language) => {
         const m = music.get(b.music);
         if (m.sound !== bgm) { row("Bgm", { BgmID: m.sound, Parameter1: BGM_FADE }); bgm = m.sound; }
       }
-      for (const m of next.values()) enter(m, 0);
+      for (const m of next.values()) enter(m, 0, b);
       camera = b.camera || CAMERAS.middle;
       cameraRows(b, next, camera, { focusAlways: true });
+      officialRows(b);
       if (scenes) row("FadeIn", { Duration: SCENE_FADE });
       if (b.location.trim()) row("Location", { AdvTextID: textId(`custom_location_${b.index}`, plainText(b.location)) });
       on = next;
@@ -947,24 +1129,27 @@ export const compileScript = (script, site, language) => {
       for (const m of on.values())
         if (!next.has(m.cast) || next.get(m.cast).slot !== m.slot) row("Out", { TargetName: m.cast, PositionType: m.slot, Duration: CAST_FADE });
       for (const m of next.values()) {
-        if (!on.has(m.cast) || on.get(m.cast).slot !== m.slot) enter(m, CAST_FADE);
+        if (!on.has(m.cast) || on.get(m.cast).slot !== m.slot) enter(m, CAST_FADE, b);
         else if (m.motion || m.expression) {
           const motion = resolveMotion(m.motion, m.slot, motionsOf(m.cast));
           const exp = m.expression || expression.get(m.cast) || "";
-          if (motion) row("Motion", { TargetName: m.cast, MotionName: motion, MotionFadeIn: MOTION_FADE, ...(exp ? { ExpressionName: exp } : {}) });
-          else row("Expression", { TargetName: m.cast, ExpressionName: exp, MotionFadeIn: MOTION_FADE });
+          if (motion) row("Motion", { TargetName: m.cast, MotionName: motion, MotionFadeIn: motionFade(b), ...motionWait(b),
+                                      ...(exp ? { ExpressionName: exp } : {}) });
+          else row("Expression", { TargetName: m.cast, ExpressionName: exp, MotionFadeIn: motionFade(b) });
           expression.set(m.cast, exp);
         }
       }
       if (b.camera) camera = b.camera;
       cameraRows(b, next, camera, { duration: FOCUS_MOVE, noWait: true, focusAlways: true });
+      officialRows(b);
       on = next;
     } else if (b.kind === "say" || b.kind === "narrate") {
       const speaker = b.speaker ? cast.get(b.speaker) : null;
       if (b.camera) camera = b.camera;
       if (b.focus || b.camera || b.track !== undefined)
         cameraRows(b, on, camera, { auto: true, noWait: true });
-      zoomRow(b);
+      const lookTarget = speaker && on.has(speaker.id) ? speaker.id : "";
+      officialRows(b, lookTarget);
       // actions at 0 are the game's usual pre-line reactions (a listener turning, smiling, looking over); later ones
       // stay timed inside the line and are played by Talk's HostActions
       for (const a of b.actions || []) {
@@ -988,10 +1173,11 @@ export const compileScript = (script, site, language) => {
         if (motion) {
           // a Motion row sets the expression too (an empty one is the default): the current one unless the line sets one
           const exp = b.expression || expression.get(speaker.id) || "";
-          row("Motion", { TargetName: speaker.id, MotionName: motion, MotionFadeIn: MOTION_FADE, ...(exp ? { ExpressionName: exp } : {}) });
+          row("Motion", { TargetName: speaker.id, MotionName: motion, MotionFadeIn: motionFade(b), ...motionWait(b),
+                          ...(exp ? { ExpressionName: exp } : {}) });
           expression.set(speaker.id, exp);
         } else if (b.expression) {
-          row("Expression", { TargetName: speaker.id, ExpressionName: b.expression, MotionFadeIn: MOTION_FADE });
+          row("Expression", { TargetName: speaker.id, ExpressionName: b.expression, MotionFadeIn: motionFade(b) });
           expression.set(speaker.id, b.expression);
         }
         const pos = positionOf(b.lookAt, on);
@@ -1019,11 +1205,9 @@ export const compileScript = (script, site, language) => {
                    speaker: speaker ? speaker.id : null, name: speaker ? speaker.name : "", text: b.text });
     } else if (b.kind === "camera") {
       if (b.camera) camera = b.camera;
-      if (b.camera !== undefined || b.focus || b.track !== undefined) {
-        if (b.duration !== undefined) cameraRows(b, on, camera, { duration: b.duration, noWait: true });
-        else cameraRows(b, on, camera, { auto: true, noWait: true });
-      }
-      zoomRow(b);
+      if (b.camera !== undefined || b.focus || b.track !== undefined)
+        cameraRows(b, on, camera, { auto: true, noWait: true });
+      officialRows(b);
     } else if (b.kind === "fade") {
       row(FADE_DIRECTIONS[b.fade], { Duration: b.duration || SCENE_FADE });
     } else if (b.kind === "pause") {
@@ -1031,13 +1215,15 @@ export const compileScript = (script, site, language) => {
     } else if (b.kind === "action") {
       const m = on.get(b.action);
       if (m) {
+        officialRows(b, b.action);
         const motion = resolveMotion(b.motion, m.slot, motionsOf(b.action));
         if (motion) {
           const exp = b.expression || expression.get(b.action) || "";
-          row("Motion", { TargetName: b.action, MotionName: motion, MotionFadeIn: MOTION_FADE, ...(exp ? { ExpressionName: exp } : {}) });
+          row("Motion", { TargetName: b.action, MotionName: motion, MotionFadeIn: motionFade(b), ...motionWait(b),
+                          ...(exp ? { ExpressionName: exp } : {}) });
           expression.set(b.action, exp);
         } else if (b.expression) {
-          row("Expression", { TargetName: b.action, ExpressionName: b.expression, MotionFadeIn: MOTION_FADE });
+          row("Expression", { TargetName: b.action, ExpressionName: b.expression, MotionFadeIn: motionFade(b) });
           expression.set(b.action, b.expression);
         }
         const pos = positionOf(b.lookAt, on);
@@ -1047,12 +1233,17 @@ export const compileScript = (script, site, language) => {
     }
   }
 
-  // the sounds the rows play, with their cue sheets and sound files
+  // the sounds the rows play, with their cue sheets and sound files (BGM and SE)
   const sounds = {}, cuesheets = {};
   for (const r of rows) {
-    if (r.cmd !== "Bgm" || !r.BgmID) continue;
-    const s = base.episode.sounds[r.BgmID], sheet = base.episode.cuesheets[s._soundCueSheetID];
-    sounds[r.BgmID] = s;
+    if (r.cmd !== "Bgm" && r.cmd !== "Se") continue;
+    const id = r.cmd === "Bgm" ? r.BgmID : r.SeID;
+    if (!Number(id)) continue;
+    const s = base.episode.sounds[id];
+    if (!s) throw new Error(`sound ${id} is not in the base episode`);
+    const sheet = base.episode.cuesheets[s._soundCueSheetID];
+    if (!sheet) throw new Error(`cue sheet ${s._soundCueSheetID} is not in the base episode`);
+    sounds[id] = s;
     cuesheets[s._soundCueSheetID] = sheet;
     story.parts.sounds[sheet._cueSheetName] = base.story.parts.sounds[sheet._cueSheetName];
   }

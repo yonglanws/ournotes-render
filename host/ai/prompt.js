@@ -273,8 +273,12 @@ export const buildStoryMessages = ({ catalog, request, config, plan = null }) =>
   }).join("\n");
 
   const stages = catalog.stages.slice(0, 80), music = catalog.music.slice(0, 40);
+  const soundChoices = catalog.sounds || [];
   const stageLines = stages.map((s) => `- ${s.id}${s.caption ? ` — ${s.caption}` : ""}`).join("\n") || "(none)";
   const musicLines = music.map((m) => `- ${m.cue}${m.label ? ` — ${m.label}` : ""}`).join("\n") || "(none)";
+  const soundLines = soundChoices.slice(0, 40)
+    .map((s) => `- ${s.cue}${s.label ? ` — ${s.label}` : ""}`).join("\n") || "(none)";
+  const exampleSe = soundChoices[0]?.cue || "";
 
   const system = [
     "你是《BanG Dream! Our Notes》的 ADV 分镜演出家，不是小说作者。",
@@ -337,6 +341,7 @@ export const buildStoryMessages = ({ catalog, request, config, plan = null }) =>
     // to the two-shot (middle, focus 5) instead of holding the close-up to the end
     { say: "b", text: "……嗯。那就这么说定了！\n下次可别再一个人闷着练了。", ...(bMotion2 ? { motion: bMotion2 } : {}),
       ...(bExp ? { expression: bExp } : {}), focus: "b", camera: "close", zoom: 1.06, zoomDuration: 4,
+      ...(exampleSe ? { se: exampleSe, seDuration: 1.5, seDelay: 0.2 } : {}),
       ...(aMotion2 ? { actions: [{ at: 0, cast: "a", motion: aMotion2 }] } : {}) },
     { say: "b", text: "……回去吧。", ...(bMotion ? { motion: bMotion } : {}),
       ...(bIdle ? { expression: bIdle } : {}), camera: "middle", focus: 5 },
@@ -411,13 +416,12 @@ ${JSON.stringify(example, null, 2)}
 - pan / panDuration / panFocusSlide：角度 -30~30，duration 0~20，focus slide 0~1；只在换组或明确横移时用。
 - dof / dofDuration / dofLayers：强度 0~1，duration 0.5~10，layers 0/2/省略；只在情绪特写时用。
 - look / lookY / lookDuration：x/y -1~1，duration 0.2~10，默认 0.5；与 lookAt 二选一，同一 beat 不要同时写。
-- se / seDuration / seDelay / seStop：se 必须是站点声音清单里的 cue；duration 0.5~10，delay 0~10；seStop 与 se 互斥。
+- se / seDuration / seDelay / seStop：se 必须是站点声音清单里的 cue（清单为 (none) 时不要写 se/seStop）；duration 0.5~10，delay 0~10；seStop 与 se 互斥。
 - motionFadeIn / motionWait：fade -1~2，wait 布尔；默认 ${OFFICIAL_TARGETS.motionFadeInDefault}/false，只在明确需要节奏时写。
 示例（只演示字段位置，不要照抄数值）：
 {"say": "a", "text": "……嗯。", "focusDuration": 1.5, "trackDuration": 2, "pedestal": -0.2, "pedestalDuration": 1.5,
  "pan": 12, "panDuration": 2.5, "panFocusSlide": 0.5, "dof": 0.4, "dofDuration": 1.5, "dofLayers": 2,
- "look": -0.4, "lookY": 0.1, "lookDuration": 0.5, "se": "se_cue", "seDuration": 2, "seDelay": 0.2,
- "seStop": false, "motionFadeIn": ${OFFICIAL_TARGETS.motionFadeInDefault}, "motionWait": false}
+ "look": -0.4, "lookY": 0.1, "lookDuration": 0.5, ${exampleSe ? `"se": ${JSON.stringify(exampleSe)}, "seDuration": 2, "seDelay": 0.2, ` : ""}"motionFadeIn": ${OFFICIAL_TARGETS.motionFadeInDefault}, "motionWait": false}
 
 ## 台词与角色
 - 每个角色要有自己的句长和语气：寡言角色 4~10 字、常带「……」、少分两行；活泼角色 16~24 字、可两行、感叹号多；稳重角色 12~18 字、少感叹号；嘴硬角色 12~18 字、短句反问；随性角色 4~8 字、答非所问。
@@ -447,6 +451,9 @@ ${stageLines}
 
 ## 可用音乐
 ${musicLines}
+
+## 可用音效（se 只能从这里选；列表为 (none) 时不写 se/seStop）
+${soundLines}
 
 ## 可用角色与模型（model 必须从这里选）
 ${modelLines}

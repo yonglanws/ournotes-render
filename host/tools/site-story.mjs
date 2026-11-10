@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
-import { compileScript, checkScript, cueLabel, fontFamily, parseScript, withBrowserFonts } from "../../scripts/lib/story-author/script.js";
+import { compileScript, checkScript, cueLabel, fontFamily, parseScript, soundChoices, withBrowserFonts } from "../../scripts/lib/story-author/script.js";
 import { STORY_LANGUAGES } from "../../src/story/params.js";
 
 const FIELD = (language) => {
@@ -143,17 +143,29 @@ export const readSiteCatalog = (site, baseRel, language = "") => {
     } catch { /* not a model */ }
   }
   const modelIds = [...actions.keys()];
+  // The sheets whose audio the site actually has (the manifest lists audio/<sheet>/…), so soundChoices only offers
+  // cues the renderer can play. A sheet may hold several cue names.
+  const sheetNames = new Set(Object.values(baseEpisode.cuesheets || {}).map((sheet) => sheet && sheet._cueSheetName)
+    .filter(Boolean));
+  const audioSheets = new Set(Object.keys(baseManifest.files || {})
+    .map((file) => /^audio\/([^/]+)\//.exec(file)?.[1])
+    .filter((name) => name && sheetNames.has(name)));
+  const storyParts = {
+    scene: "scene.json",
+    ui: { [lang]: "ui/ui.json" },
+    fonts: { [lang]: "ui/fonts.json" },
+    assets: {},
+    sounds: Object.fromEntries([
+      ...music.map((m) => [m.sheet, "cuesheets/placeholder.json"]),
+      ...[...audioSheets].map((name) => [name, `audio/${name}`]),
+    ]),
+  };
+  const baseStory = { parts: storyParts };
   const base = {
     language: lang, languages: unique([lang, ...(baseManifest.story?.languages || []), ...Object.keys(baseManifest.languages || {})]),
-    stages: stageList, music,
+    stages: stageList, music, sounds: soundChoices(baseEpisode, baseStory),
     episode: baseEpisode,
-    story: { parts: {
-      scene: "scene.json",
-      ui: { [lang]: "ui/ui.json" },
-      fonts: { [lang]: "ui/fonts.json" },
-      assets: {},
-      sounds: Object.fromEntries(music.map((m) => [m.sheet, "cuesheets/placeholder.json"])),
-    } },
+    story: baseStory,
   };
   return { baseManifest, baseEpisode, base, lang, field, models: modelIds, actions, modelKeys };
 };
@@ -166,12 +178,15 @@ export const buildSiteStory = ({ site, baseRel, script, advId, language = "", ti
   const requested = language || parsed.script.language || "";
   const catalog = readSiteCatalog(site, baseRel, requested);
   const lang = requested || catalog.lang;
-  const checked = checkScript(parsed.script, { base: catalog.base, models: catalog.models, actions: Object.fromEntries(catalog.actions) });
+  const checked = checkScript(parsed.script, { base: catalog.base, models: catalog.models,
+                                               actions: Object.fromEntries(catalog.actions),
+                                               sounds: catalog.base.sounds });
   if (checked.errors.length) return { errors: checked.errors, warnings: checked.warnings };
   const compiled = compileScript(parsed.script, {
     base: catalog.base,
     models: Object.fromEntries(catalog.modelKeys),
     actions: Object.fromEntries(catalog.actions),
+    sounds: catalog.base.sounds,
   }, checked.language);
   const id = String(advId);
   const commands = unique(compiled.episode.commands.map((c) => c.cmd));
@@ -284,6 +299,7 @@ const main = async () => {
       base: o.base, language: c.lang,
       stages: c.base.stages,
       music: c.base.music,
+      sounds: c.base.sounds,
       models: c.models.map((id) => ({ id, ...c.actions.get(id) })),
     }, null, 2));
     return;

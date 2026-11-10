@@ -57,7 +57,8 @@ export const catalogFromSite = (site, baseRel, language = "", { personas = [] } 
     models.push(m);
   }
   return { manifest: baseRel, language: c.lang, languages: c.base.languages, title: "",
-           stages: c.base.stages, music: c.base.music, models, font: "sans" };
+           stages: c.base.stages, music: c.base.music,
+           sounds: (c.base.sounds || []).map((s) => ({ cue: s.cue, label: s.label })), models, font: "sans" };
 };
 
 const pickTitle = (titles, language) => {

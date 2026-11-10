@@ -232,14 +232,14 @@ beat may have an `id`, reported with its lines by `render`). The director fields
 
 | Beat | Keys |
 |---|---|
-| scene | `scene`: a stage id. `music`: a cue of the base story, `"stop"`, or absent to keep what plays. `location`: a caption shown at the start. `camera`: `near` (1.2x, the widest), `middle` (1.4x, default), `far` (1.8x, group), `close` (2.8x, close-up) or `very-close` (4x), or `{distance, focus, track}`. `focus`: a cast id, a position, or a focus point 1..9 the camera looks at. `track`: optional horizontal camera offset. `positions`: who stands where (absent: nobody). A scene after the first fades out and in, and clears the stage. |
-| positions | `positions`: who stands where from now on; characters not named leave, characters on a new position leave and enter there, each with a short fade. `camera`, `focus`, `track`: optional, as for a scene. |
-| say | `say`: a cast id. `text`: the line. `motion`: optional, a motion of the speaker's model. `expression`: optional, an expression of the speaker's model. `lookAt`: optional gaze target. `focus`, `camera`, `track`: optional camera. `zoom`, `zoomDuration`: optional slow push-in/pull-out. `actions`: optional timed acting before or during the line (speaker or listeners). |
-| narrate | `narrate`: a line without a speaker. `focus`, `camera`, `track`: optional. `zoom`, `zoomDuration`: optional slow push-in/pull-out. `actions`: optional; each action names its `cast`. |
-| camera | `camera`: a distance or `{distance, focus, track}`. `focus`, `track`: optional. `zoom`, `zoomDuration`: optional slow zoom (its seconds default to `duration`, else 4). `duration`: seconds. Moves the camera without changing the staging. |
+| scene | `scene`: a stage id. `music`: a cue of the base story, `"stop"`, or absent to keep what plays. `location`: a caption shown at the start. `camera`: `near` (1.2x, the widest), `middle` (1.4x, default), `far` (1.8x, group), `close` (2.8x, close-up) or `very-close` (4x), or `{distance, focus, track}`. `focus`: a cast id, a position, or a focus point 1..9 the camera looks at. `track`: optional horizontal camera offset. `focusDuration`, `trackDuration`: optional seconds of the camera move. `positions`: who stands where (absent: nobody). `se`, `seDuration`, `seDelay`, `seStop`: an optional sound effect (see [Camera, gaze and sound fields](#camera-gaze-and-sound-fields)). A scene after the first fades out and in, and clears the stage. |
+| positions | `positions`: who stands where from now on; characters not named leave, characters on a new position leave and enter there, each with a short fade. `camera`, `focus`, `track`: optional, as for a scene. `focusDuration`, `trackDuration`: optional camera move seconds. `motionFadeIn`, `motionWait`: optional Motion row fields. |
+| say | `say`: a cast id. `text`: the line. `motion`: optional, a motion of the speaker's model. `expression`: optional, an expression of the speaker's model. `lookAt`: optional gaze target. `focus`, `camera`, `track`: optional camera. `zoom`, `zoomDuration`: optional slow push-in/pull-out. `focusDuration`, `trackDuration`, `pedestal`, `pedestalDuration`, `pan`, `panDuration`, `panFocusSlide`, `dof`, `dofDuration`, `dofLayers`, `look`, `lookY`, `lookDuration`, `se`, `seDuration`, `seDelay`, `seStop`, `motionFadeIn`, `motionWait`: optional official camera, gaze, acting and sound fields. `actions`: optional timed acting before or during the line (speaker or listeners). |
+| narrate | `narrate`: a line without a speaker. `focus`, `camera`, `track`: optional. `zoom`, `zoomDuration`: optional slow push-in/pull-out. `focusDuration`, `trackDuration`, `pedestal`, `pedestalDuration`, `pan`, `panDuration`, `panFocusSlide`, `dof`, `dofDuration`, `dofLayers`: optional camera fields. `actions`: optional; each action names its `cast`. |
+| camera | `camera`: a distance or `{distance, focus, track}`. `focus`, `track`: optional. `zoom`, `zoomDuration`: optional slow zoom (its seconds default to `cameraDuration`, else 1.5). `cameraDuration`: seconds of the move; `duration` is its older alias. `focusDuration`, `trackDuration`, `pedestal`, `pedestalDuration`, `pan`, `panDuration`, `panFocusSlide`, `dof`, `dofDuration`, `dofLayers`, `se`, `seDuration`, `seDelay`, `seStop`: optional official fields. Moves the camera without changing the staging. |
 | fade | `fade`: `"out"` or `"in"`. `duration`: seconds (default 1). |
 | pause | `pause`: seconds of silence, compiled to `Delay`. |
-| action | `action`: a cast id. `motion`, `expression`, `lookAt`: optional, at least one. `duration`: optional silent beat after it. |
+| action | `action`: a cast id. `motion`, `expression`, `lookAt`: optional, at least one. `look`, `lookY`, `lookDuration`, `se`, `seDuration`, `seDelay`, `seStop`, `motionFadeIn`, `motionWait`: optional official fields. `duration`: optional silent beat after it. |
 
 An `actions` entry is `{"at": 0..1, "cast": optional, "motion": optional, "expression": optional, "lookAt":
 optional}`. `at` is the fraction of the line's body (voice length, else the typed text's display time). An action at
@@ -254,9 +254,40 @@ centred); it compiles to the game's `Track` row and is how the official episodes
 
 The camera's move time follows the official cuts: a closer distance cuts (no `Duration`), a wider one eases back over
 1.2 seconds, and a lateral move at the same distance pans over 0.5 seconds (close-ups cut between sides). An explicit
-`duration` on a camera beat wins. `zoom` (0.8..1.5) compiles to a `Zoom` row after the Focus row: 1.03..1.10 pushes
-in slowly, 0.92..0.98 pulls out; `zoomDuration` is 0.5..10 seconds and defaults to 4 (or the camera beat's
-`duration`). One slow zoom per shot is the official habit; leave it out for a static shot.
+`focusDuration` (0..20 seconds, 0 = hard cut) wins over a camera beat's `cameraDuration` (0..20, the older `duration`
+is its alias), which wins over the cut above; `trackDuration` defaults to the Focus row's duration. On a camera beat
+`duration` and `cameraDuration` together warn (`conflict`) and `cameraDuration` wins. `zoom` (0.7..2.5) compiles to a
+`Zoom` row after the Focus row: values above 1 push in, below 1 pull out; `zoomDuration` is 0.2..20 seconds and
+defaults to 1.5 (the camera beat's `cameraDuration` first). One slow zoom per shot is the official habit; leave it out
+for a static shot.
+
+### Camera, gaze and sound fields
+
+These fields compile to their own official ADV rows after the Focus/Track rows of a beat, in this order: `Pedestal`,
+`PanV2`, `DoF`, `Zoom`, `Se`, `Look`. They are optional; a beat without them compiles as before.
+
+| Field | Beats | Row | Range and default |
+|---|---|---|---|
+| `cameraDuration` | camera | Duration of `Focus`/`Track`/`Pedestal`/`PanV2`/`DoF` | 0..20; `duration` is its alias |
+| `focusDuration` | say, narrate, camera, scene, positions | `Focus` `Duration` | 0..20; 0/absent = hard cut |
+| `trackDuration` | say, narrate, camera, scene, positions | `Track` `Duration` | 0..20; own > `cameraDuration` > Focus duration |
+| `pedestal` / `pedestalDuration` | say, narrate, camera | `Pedestal` | `-4..5`; duration 0..20, default 1.5 |
+| `pan` / `panDuration` / `panFocusSlide` | say, narrate, camera | `PanV2` | angle `-30..30`; duration 0..20, default 1.5; slide 0..1 (`Parameter3`) |
+| `dof` / `dofDuration` / `dofLayers` | say, narrate, camera | `DoF` | intensity 0..1; duration 0.5..10, default 1.5; layers 0 (background), 2 (characters) or absent |
+| `zoom` / `zoomDuration` | say, narrate, camera | `Zoom` | 0.7..2.5; duration 0.2..20, default 1.5 |
+| `look` / `lookY` / `lookDuration` | say, action | `Look` | x and y `-1..1`; duration 0.2..10, default 0.5 |
+| `se` / `seDuration` / `seDelay` | scene, say, camera, action | `Se` | a cue of the base story's SE sheets; duration 0.5..10, delay 0..10 |
+| `seStop` | scene, say, camera, action | `Se` with `Parameter1: "Stop"` | boolean; cannot be combined with `se` |
+| `motionFadeIn` / `motionWait` | say, action, positions | `Motion` | fade `-1..2` (default -1); wait boolean |
+
+A field's own duration wins over `cameraDuration`, which wins over the compiler's automatic duration (or the table's
+default). `look` and `lookAt` cannot be used on the same beat: `look` is a direction, `lookAt` an official
+`LookTarget`. `panFocusSlide` needs `pan`, `dofLayers` needs `dof`, `pedestalDuration` needs `pedestal`, and
+`seDuration`/`seDelay` need `se`. A `se` that is not one of the base story's SE cues (error `unknownSe`) is refused;
+the cue list is what `site-story.mjs --list` prints as `sounds` and what the AI prompt shows as 可用音效.
+
+The default AI storyboard uses `at: 0` listener reactions only; timed gaze stays in `actions` as before, and the new
+gaze is the independent `Look` row (`docs/story-director.md` has the verified command whitelist).
 
 Positions: `far-left`, `left`, `center`, `right`, `far-right`. A position is a name, or `{"at": <name>, "motion",
 "expression"}` to enter (or, staying where it is, to act) with a motion and an expression. Two characters cannot share a
@@ -285,7 +316,9 @@ breaks the line. Keep each text line within the talk window's width; `render` re
 | `unknownBase` | The base story is missing from the site or cannot be a base. |
 | `unknownLanguage`, `unknownFont`, `unknownPosition`, `unknownCamera`, `unknownFade` | A name outside the lists above. |
 | `unknownModel`, `unknownCast`, `unknownStage`, `unknownMusic`, `unknownMotion`, `unknownExpression`, `unknownFocus`, `unknownLookAt` | A name the site, the script or the model does not have. |
-| `range` | `at` outside 0..1, `track` outside -4..4, a focus point outside 1..9, a non-positive `pause`, or a duration outside its range. |
+| `unknownSe` | An SE cue the base story's sound files do not have; `expected` lists the available cues. |
+| `exclusive` | `look` with `lookAt`, or `se` with `seStop`, on the same beat. |
+| `range` | `at` outside 0..1, `track` outside -4..4, a focus point outside 1..9, a non-positive `pause`, or a duration, zoom, pedestal, pan, DoF intensity, gaze or DoF layer outside its range above. |
 | `emptyAction`, `tooManyActions` | An action without motion/expression/lookAt, or more than 12 actions on a line. |
 | `offStageAction` | A timed action or `lookAt` target that is not on stage. |
 | `beforeScene` | A beat before the first scene. |
@@ -294,6 +327,7 @@ breaks the line. Keep each text line within the talk window's width; `render` re
 | `noLines` | `render`: the script has no line. |
 | warning `speakerOffStage` | A character speaks without standing on stage. |
 | warning `unusedCast` | A cast member never appears or speaks. |
+| warning `conflict` | A camera beat has both `duration` and `cameraDuration`; `cameraDuration` wins. |
 | warning `textTooWide`, `textTooTall` | `render`: a line does not fit the talk window. |
 
 Codes with a known fix are listed under [Fixes](#fixes).
@@ -301,10 +335,11 @@ Codes with a known fix are listed under [Fixes](#fixes).
 ## What the story is made of
 
 The tool compiles a script into the story player's data ([story-data-format.md](story-data-format.md)): an
-`episode.json` of the game's command rows (Character, Stage, Bgm, In, Out, Focus, LookTarget, FadeOut, FadeIn, Location, Motion,
-Expression, Talk, Delay) with the texts in its text table, a `story.json` naming the models and the music it plays, and the
-base story's font product with every font asset drawn by the browser
+`episode.json` of the game's command rows (Character, Stage, Bgm, In, Out, Focus, Track, Zoom, Pedestal, PanV2, DoF,
+Look, LookTarget, Se, FadeOut, FadeIn, Location, Motion, Expression, Talk, Delay) with the texts in its text table, a
+`story.json` naming the models, music and SE cue sheets it plays, and the base story's font product with every font
+asset drawn by the browser
 ([browser fonts](story-data-format.md#browser-fonts)): every character of the font family shows, laid out by
 TextMeshPro's rules with the base story's font settings. The other files (stages, talk window, shaders, the player
-settings, the music) are the base story's; the media of its own rows (frames, stills, effects, chat, videos) are left
-out.
+settings, the music and SE cue sheets) are the base story's; the media of its own rows (frames, stills, effects, chat,
+videos) are left out.

@@ -9,7 +9,7 @@ import { StoryData } from "../../../src/story/data.js";
 import { ObjectResources } from "../../../src/engine/objects.js";
 import "../../../src/story/features/index.js";
 import { fileFetch, nodeDecode } from "../headless.mjs";
-import { modelActions, musicChoices, stageBackground, stageChoices, withBrowserFonts } from "./script.js";
+import { modelActions, musicChoices, soundChoices, stageBackground, stageChoices, withBrowserFonts } from "./script.js";
 
 export class SiteError extends Error {}
 
@@ -65,7 +65,7 @@ export class Site {
 
   // The base story `manifestPath` (relative to the site root) in `language` (default: its own):
   // {path, manifest, language, languages, story, episode, scene, fonts, stages: [{id, key, caption, background}],
-  //  music: musicChoices, cast: the model ids of its Character rows}
+  //  music: musicChoices, sounds: soundChoices, cast: the model ids of its Character rows}
   base(manifestPath, language = null) {
     const key = `${manifestPath}\n${language || ""}`;
     if (!this._bases.has(key)) this._bases.set(key, this._loadBase(manifestPath, language));
@@ -94,7 +94,8 @@ export class Site {
       return { ...s, background: stageBackground(objects.prefab(asset.objects[0]), objects) };
     });
     return { path: manifestPath, manifest, language, languages: Object.keys(story.parts.ui), story, episode, scene, fonts,
-      stages, music: musicChoices(episode, story), cast: Object.keys(story.parts.models).map((key) => key.split("/").at(-1)), data, store };
+      stages, music: musicChoices(episode, story), sounds: soundChoices(episode, story),
+      cast: Object.keys(story.parts.models).map((key) => key.split("/").at(-1)), data, store };
   }
 
   // The model `id` of models.json: {entry, manifest, actions: modelActions}

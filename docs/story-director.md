@@ -264,14 +264,14 @@ stage：先两人对话，`positions` 引入第三人，再让一人退场、最
 
 | beat | 字段 | 说明 |
 | --- | --- | --- |
-| `scene` | `scene`、`music`、`location`、`camera`、`focus`、`track`、`positions` | 换舞台。第二个 scene 起会先 `FadeOut`，清空舞台，再 `FadeIn`。连续对话不要反复用。 |
-| `positions` | `positions`、`camera`、`focus`、`track` | 改变站位；未列出的角色退场，新位置的角色淡入。用来换组。 |
-| `say` | `say`、`text`、`motion`、`expression`、`lookAt`、`focus`、`camera`、`track`、`zoom`、`zoomDuration`、`actions` | 一句台词。动作/表情在台词开始前执行；`lookAt` 让说话者看向目标；`actions` 在台词前或台词中执行。 |
-| `narrate` | `narrate`、`focus`、`camera`、`track`、`zoom`、`zoomDuration`、`actions` | 无说话者的台词；`actions` 必须写 `cast`。 |
-| `camera` | `camera`、`focus`、`track`、`zoom`、`zoomDuration`、`duration` | 只移动镜头，不改变站位。 |
+| `scene` | `scene`、`music`、`location`、`camera`、`focus`、`track`、`focusDuration`、`trackDuration`、`se`、`seDuration`、`seDelay`、`seStop`、`positions` | 换舞台。第二个 scene 起会先 `FadeOut`，清空舞台，再 `FadeIn`。连续对话不要反复用。 |
+| `positions` | `positions`、`camera`、`focus`、`track`、`focusDuration`、`trackDuration`、`motionFadeIn`、`motionWait` | 改变站位；未列出的角色退场，新位置的角色淡入。用来换组。 |
+| `say` | `say`、`text`、`motion`、`expression`、`lookAt`、`focus`、`camera`、`track`、`zoom`、`zoomDuration`、`focusDuration`、`trackDuration`、`pedestal`、`pedestalDuration`、`pan`、`panDuration`、`panFocusSlide`、`dof`、`dofDuration`、`dofLayers`、`look`、`lookY`、`lookDuration`、`se`、`seDuration`、`seDelay`、`seStop`、`motionFadeIn`、`motionWait`、`actions` | 一句台词。动作/表情在台词开始前执行；`lookAt` 让说话者看向目标；`actions` 在台词前或台词中执行。 |
+| `narrate` | `narrate`、`focus`、`camera`、`track`、`zoom`、`zoomDuration`、`focusDuration`、`trackDuration`、`pedestal`、`pedestalDuration`、`pan`、`panDuration`、`panFocusSlide`、`dof`、`dofDuration`、`dofLayers`、`actions` | 无说话者的台词；`actions` 必须写 `cast`。 |
+| `camera` | `camera`、`focus`、`track`、`zoom`、`zoomDuration`、`cameraDuration`、`focusDuration`、`trackDuration`、`pedestal`、`pedestalDuration`、`pan`、`panDuration`、`panFocusSlide`、`dof`、`dofDuration`、`dofLayers`、`se`、`seDuration`、`seDelay`、`seStop`、`duration` | 只移动镜头，不改变站位；`cameraDuration` 是各运镜的统一时长，`duration` 是旧别名。 |
 | `fade` | `fade`（`out`/`in`）、`duration` | 黑场转场，只用于时间/地点跳跃。 |
 | `pause` | `pause`（秒） | 无台词留白，编译成 `Delay`；建议 0.1~0.5 秒。 |
-| `action` | `action`、`motion`、`expression`、`lookAt`、`duration` | 没有台词的反应镜头；`duration` 会追加一个 `Delay`。 |
+| `action` | `action`、`motion`、`expression`、`lookAt`、`look`、`lookY`、`lookDuration`、`se`、`seDuration`、`seDelay`、`seStop`、`motionFadeIn`、`motionWait`、`duration` | 没有台词的反应镜头；`duration` 会追加一个 `Delay`。 |
 
 `camera` 可以写 `near` / `middle` / `far` / `close` / `very-close`，也可以写
 `{ "distance": "close", "focus": 2, "track": 0.4 }`。它们对应官方的 `CameraDistance` 和 focus data 的变焦：
@@ -290,11 +290,18 @@ stage：先两人对话，`positions` 引入第三人，再让一人退场、最
 这个组合。`track` 编译成官方 `Track` 行，表示镜头相对焦点的横向偏移（-4~4，0 为正对焦点）。
 
 镜头切换的时长按官方样本自动决定：**推近是硬切（无 `Duration`）**，**拉回中景/群像缓推 1.2 秒**，同距离横移
-0.5 秒（近景之间横移仍硬切）。`camera` beat 写了 `duration` 时以它为准。
+0.5 秒（近景之间横移仍硬切）。`focusDuration`（0~20 秒，0 = 硬切）优先，其次是 camera beat 的
+`cameraDuration`（0~20 秒，旧字段 `duration` 是它的别名），最后才是自动值；`trackDuration` 默认跟随该 beat 的
+Focus 时长。
 
-`zoom` 是一个可选的慢推/慢拉，编译成官方 `Zoom` 行：`zoom: 1.03~1.10` 推近、`0.92~0.98` 拉远，
-`zoomDuration` 3~5 秒（省略时 4 秒；camera beat 用它的 `duration`）。一个机位只写一次，一场约 2~5 次；不写就
-保持静止。`zoom` 在 `Focus` 之后执行，所以要先写 `focus`/`camera` 再写 `zoom`。
+`zoom` 是一个可选的慢推/慢拉，编译成官方 `Zoom` 行：`zoom: 0.7~2.5`（官方常见 0.9/1.1/1.2/1.5），
+`zoomDuration` 0.2~20 秒，省略时 1.5 秒（camera beat 先取 `cameraDuration`）。一个机位只写一次，一场约 2~5
+次；不写就保持静止。`zoom` 在 `Focus` 之后执行，所以要先写 `focus`/`camera` 再写 `zoom`。
+
+扩展运镜与声音字段编译成独立的官方行，顺序为 `Pedestal` → `PanV2` → `DoF` → `Zoom` → `Se` → `Look`：
+`pedestal`（-4~5）、`pan`/`panFocusSlide`（-30~30 / 0~1）、`dof`/`dofLayers`（0~1，0 或 2 层）的 duration
+默认 1.5 秒；`look`/`lookY`（-1~1）与 `lookAt` 同一 beat 二选一；`se` 只能用 base story 声音清单里已有的 cue，
+`seStop` 与 `se` 互斥；`motionFadeIn`（-1~2）和 `motionWait` 写在对应的 `Motion` 行上。
 
 动作和表情行编译时带 `MotionFadeIn: -1`：播放器使用动作自带的淡入（MyGO 动作数据里是 1 秒），换动作时从当前
 姿势交叉淡入，不会突然跳到新动作第一帧。缺少这个字段时游戏按 0 秒处理，这正是自行拼 `Motion` 行时动作看起来
@@ -399,7 +406,7 @@ llm:
   `host/tools/ai-site-story.mjs` 进一步把站点目录交给 AI 写作器：它生成同一份导演脚本，用内置 TTS 逐句合成（支持情绪参考音频），把 WAV、cue sheet、`VoiceIDs`/`voiceCues` 写回站点，再编译。适合只有 bdon 下载资源、没有 nnnotes 产品站点的场景。
 
 ```sh
-# 列出站点可用的舞台、BGM、模型、动作、表情
+# 列出站点可用的舞台、BGM、音效（sounds）、模型、动作、表情
 node host/tools/site-story.mjs --site resources/site --base stories/10610.json --list --lang ja
 
 # 把导演脚本编译成站点里的新剧情（adv 90001）
@@ -423,7 +430,7 @@ node host/tools/render-story.mjs --site resources/site --story stories/90001.jso
 
 ## 能力边界
 
-- 不暴露任意 ADV 命令（例如 `PanV2`、`Pedestal`、`Tilt`、`Role`、`MoveToDirection`、`DoParam`）。分镜用 `Focus` + 远近 + `Track` + 站位 + 黑场完成。
+- 只暴露经命令审计与抽帧验证的白名单：`Focus`、`Track`、`Zoom`、`Pedestal`、`PanV2`、`DoF`、`Look`/`LookTarget`、`Se`、`Motion`、`Expression`、`In`/`Out`、`Stage`、`Bgm`、`FadeIn`/`FadeOut`、`Location`、`Talk`、`Delay` 以及编译所需的 `Character`。对应脚本字段见 [story-author.md](story-author.md#camera-gaze-and-sound-fields)（`cameraDuration`、`focusDuration`、`trackDuration`、`pedestal`、`pan`、`dof`、`zoom`、`look`、`se`、`motionFadeIn` 等）。`MoveToDirection`、`Angle`/`Tilt`、`Brightness`/`PostEffect`、`Shake`/`CameraShake`、`Role` 等不在本轮白名单。
 - 不支持逐参数面部曲线；表情必须使用模型自带的 expression。
 - 站点格式路径的 TTS 会写成站点内的真实 WAV cue；情绪支持依赖 `tts.emotion` 与角色情绪参考音频。没有情绪参考音频时，只能用语速/温度做有限的语气差异。
 - AI 负责“写”，不保证文学质量；格式、名称、站位和镜头目标由校验器兜底。

@@ -255,6 +255,12 @@
             "type": "string"
           }
         },
+        "TargetTextColors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "TargetStatus": {
           "type": "integer"
         },
@@ -314,8 +320,20 @@
         "MotionName": {
           "type": "string"
         },
+        "MotionFadeIn": {
+          "type": "number"
+        },
+        "MotionWait": {
+          "type": "boolean"
+        },
         "ExpressionName": {
           "type": "string"
+        },
+        "CanvasLayers": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
         },
         "BgmID": {
           "type": "integer"

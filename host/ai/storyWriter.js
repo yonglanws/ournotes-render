@@ -219,11 +219,13 @@ const resolveFastCast = async ({ catalog, request, config, llm, logger, signal }
 };
 
 const siteFor = (catalog) => ({
-  base: { language: catalog.language, languages: catalog.languages, stages: catalog.stages, music: catalog.music },
+  base: { language: catalog.language, languages: catalog.languages, stages: catalog.stages, music: catalog.music,
+          sounds: catalog.sounds || [] },
   models: catalog.models.map((m) => m.id),
   actions: Object.fromEntries(catalog.models.filter((m) => m.actionsKnown !== false).map((m) => [m.id, {
     motions: m.motions, expressions: m.expressions, defaultMotion: m.defaultMotion, defaultExpression: m.defaultExpression,
   }])),
+  sounds: catalog.sounds || [],
 });
 
 // Everything the API can tell a caller about a script before rendering.

@@ -100,6 +100,8 @@ export class StoryCatalog {
       title: pickTitle(chosen.title ? { [language]: chosen.title } : null, language) || chosen.manifest,
       stages: base.stages.map((s) => ({ id: s.id, caption: cleanName(s.caption) })).sort((a, b) => byName(a.id, b.id)),
       music: base.music.map((m) => ({ cue: m.cue, label: cleanName(m.label) })).sort((a, b) => byName(a.cue, b.cue)),
+      sounds: (base.sounds || []).map((s) => ({ cue: s.cue, label: cleanName(s.label) }))
+        .sort((a, b) => byName(a.cue, b.cue)),
       models,
       font: "sans",
     };
@@ -193,11 +195,12 @@ export class StoryCatalog {
     for (const c of parsed.script.cast) {
       try { castActions[c.model] = this.site.model(c.model).actions; } catch { /* checkScript reports unknownModel */ }
     }
-    const checked = checkScript(parsed.script, { base, models: catalog.models.map((m) => m.id), actions: castActions });
+    const checked = checkScript(parsed.script, { base, models: catalog.models.map((m) => m.id), actions: castActions,
+                                                sounds: base.sounds });
     if (checked.errors.length) return { errors: checked.errors, warnings: checked.warnings };
     const compiled = compileScript(parsed.script, {
       base, models: Object.fromEntries(parsed.script.cast.map((c) => [c.model, this._modelKey(c.model)])),
-      actions: castActions,
+      actions: castActions, sounds: base.sounds,
     }, checked.language);
     if (extraEpisode) extraEpisode(compiled);
     const composed = await this.site.compose(base, compiled, { language: checked.language, family, root: "../" });

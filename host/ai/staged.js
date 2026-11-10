@@ -547,6 +547,10 @@ export const buildStoryboardMessages = ({ plan, dialogue, catalog, request, conf
     .map((x) => `- ${x.id}${x.caption ? ` — ${x.caption}` : ""}`).join("\n") || "(none)";
   const musicLines = catalog.music.slice(0, 40)
     .map((x) => `- ${x.cue}${x.label ? ` — ${x.label}` : ""}`).join("\n") || "(none)";
+  const soundChoices = (catalog.sounds || []).slice(0, 40);
+  const soundLines = soundChoices
+    .map((x) => `- ${x.cue}${x.label ? ` — ${x.label}` : ""}`).join("\n") || "(none)";
+  const exampleSe = soundChoices[0]?.cue || "";
   const modelLines = plan.cast.map((c) => {
     const m = index.byId.get(c.model);
     return [
@@ -601,6 +605,9 @@ ${stageLines}
 ## 可用音乐
 ${musicLines}
 
+## 可用音效（se 只能从这里选；没有合适的就省略）
+${soundLines}
+
 ## 可用动作与表情（只能给对应的 cast）
 ${modelLines}
 
@@ -618,8 +625,7 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
     { "line": "l3", "motion": "动作名", "expression": "表情名", "focus": 5, "camera": "middle",
       "focusDuration": ${OFFICIAL_TARGETS.focusDurationDefault}, "trackDuration": 2, "pedestal": -0.2, "pedestalDuration": 1.5,
       "pan": 12, "panDuration": 2.5, "panFocusSlide": 0.5, "dof": 0.4, "dofDuration": 1.5, "dofLayers": 2,
-      "look": -0.4, "lookY": 0.1, "lookDuration": 0.5, "se": "se_cue", "seDuration": 2, "seDelay": 0.2,
-      "seStop": false, "motionFadeIn": ${OFFICIAL_TARGETS.motionFadeInDefault}, "motionWait": false },
+      "look": -0.4, "lookY": 0.1, "lookDuration": 0.5, ${exampleSe ? `"se": ${JSON.stringify(exampleSe)}, "seDuration": 2, "seDelay": 0.2, ` : ""}"motionFadeIn": ${OFFICIAL_TARGETS.motionFadeInDefault}, "motionWait": false },
     { "pause": 0.3 }
   ]
 }
@@ -635,7 +641,7 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
 - **慢推镜**：全场约 ${budget.zoomMin}~${budget.zoomMax} 次 zoom，写在情绪句/近景或结尾：推近 1.03~1.10，拉远 0.92~0.98，zoomDuration 3~5 秒。一个机位最多 1 次；不写就静止，不要每个镜头都推。
 - **视线预算**：全场约 ${budget.lookAt} 个 lookAt；双人戏每 3 句最多 1 个，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名或 1~9 的构图点；不要每句都看着对方。
 - **表演预算**：全场约 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；约 ${noMotionTarget} 句完全没有 Motion（参考上限 ${budget.maxStatic} 句；超出预算时优先修剪最短句）；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。
-- **扩展运镜与声音**：Pedestal 约 ${budget.pedestal} 次（轻微上下移），PanV2 约 ${budget.panV2} 次（只在换组/横移），DoF 约 ${budget.dof} 次（情绪特写），Look/LookTarget 约 ${budget.lookAt} 次，Se 约 ${budget.se} 条（只用声音清单里的 cue），Track 约 ${budget.track} 次。可选字段：focusDuration、trackDuration、pedestalDuration、panDuration、panFocusSlide、dofDuration、dofLayers、look、lookY、lookDuration、seDuration、seDelay、seStop、motionFadeIn、motionWait；只在明确需要时写，不写就沿用默认值或不生成。
+- **扩展运镜与声音**：Pedestal 约 ${budget.pedestal} 次（轻微上下移），PanV2 约 ${budget.panV2} 次（只在换组/横移），DoF 约 ${budget.dof} 次（情绪特写），Look/LookTarget 约 ${budget.lookAt} 次，Se 约 ${budget.se} 条（se 只能写上面音效清单里的 cue；清单为 (none) 时不写 se/seStop），Track 约 ${budget.track} 次。可选字段：focusDuration、trackDuration、pedestalDuration、panDuration、panFocusSlide、dofDuration、dofLayers、look、lookY、lookDuration、seDuration、seDelay、seStop、motionFadeIn、motionWait；只在明确需要时写，不写就沿用默认值或不生成。
 - 听者反应写进 actions（at: 0），**每句最多 1 条**，cast 必须是台上的其他角色；不要给说话者本人写 actions，也不要一句叠两个听者。
 - focus 优先写构图点/位置，角色 focus 只给 close 近景和情绪最重的 1~2 句；close / very-close 必须 focus 到角色 id 或该角色的位置，不要用 focus 5。track 只在换组/群像横移时写，-4~4，双人通常 0~1 次。
 - 没有合适的动作/表情就省略字段，不要编清单之外的名字。

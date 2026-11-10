@@ -9,8 +9,8 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import {
   SCRIPT_FORMAT, applyFixes, checkScript, compileScript, cueLabel, fontFamily, freeSlot, layoutFix, lineGroups,
-  modelActions, musicChoices, nearest, parseScript, plainText, resolveMotion, stageBackground, stageChoices, wrapText,
-  withBrowserFonts,
+  modelActions, musicChoices, nearest, parseScript, plainText, resolveMotion, soundChoices, stageBackground,
+  stageChoices, wrapText, withBrowserFonts,
 } from "../../scripts/lib/story-author/script.js";
 import { Site } from "../../scripts/lib/story-author/site.js";
 import { compile } from "../../scripts/lib/json-schema.mjs";
@@ -34,9 +34,9 @@ const ACTIONS = {
 };
 const EPISODE = {
   sounds: { 11: { _soundCueSheetID: 5, _cueName: "sound_bgm_adv_quiet_morning" },
-            12: { _soundCueSheetID: 6, _cueName: "sound_se_adv_door" },
+            12: { _soundCueSheetID: 6, _cueName: "sound_se_adv_door_knock" },
             13: { _soundCueSheetID: 7, _cueName: "sound_bgm_adv_missing" } },
-  cuesheets: { 5: { _cueSheetName: "sound_bgm_adv_quiet_morning" }, 6: { _cueSheetName: "sound_se_adv_door" },
+  cuesheets: { 5: { _cueSheetName: "sound_bgm_adv_quiet_morning" }, 6: { _cueSheetName: "sound_se_adv_door_knock" },
                7: { _cueSheetName: "sound_bgm_adv_missing" } },
   commands: [{ i: 0, cmd: "Stage", TargetAssetName: "st/garden" }, { i: 1, cmd: "Location", AdvTextID: "t1" },
              { i: 2, cmd: "Stage", TargetAssetName: "other/hall" }],
@@ -47,10 +47,12 @@ const STORY = { format: 1, advId: 9, episode: "episode.json", parts: {
   fonts: { en: "storyfonts/9_en.json", ja: "storyfonts/9_ja.json" },
   models: { [MODELS.m_a]: "models/m_a.json" }, assets: { "Adv/Stage/st/garden": "storyassets/garden.json",
     "Adv/Stage/other/hall": "storyassets/other_hall.json", "Adv/Stage/st/hall": "storyassets/hall.json" },
-  sounds: { sound_bgm_adv_quiet_morning: "cuesheets/sound_bgm_adv_quiet_morning.json", sound_se_adv_door: "cuesheets/se.json" } } };
+  sounds: { sound_bgm_adv_quiet_morning: "cuesheets/sound_bgm_adv_quiet_morning.json",
+            sound_se_adv_door_knock: "cuesheets/se.json" } } };
 const BASE = { language: "en", languages: ["en", "ja"], story: STORY, episode: EPISODE,
-               stages: stageChoices(STORY.parts.assets, EPISODE, "en"), music: musicChoices(EPISODE, STORY) };
-const SITE = { base: BASE, models: MODELS, actions: ACTIONS };
+               stages: stageChoices(STORY.parts.assets, EPISODE, "en"), music: musicChoices(EPISODE, STORY),
+               sounds: soundChoices(EPISODE, STORY) };
+const SITE = { base: BASE, models: MODELS, actions: ACTIONS, sounds: BASE.sounds };
 
 const script = (beats, extra = {}) => ({
   format: SCRIPT_FORMAT, base: "stories/9.json", language: "en", title: "T",
@@ -59,7 +61,7 @@ const script = (beats, extra = {}) => ({
 // a script through parse and check: {script, errors, warnings, language}
 const checked = (doc) => {
   const p = parseScript(doc);
-  const c = checkScript(p.script, { base: BASE, models: Object.keys(MODELS), actions: ACTIONS });
+  const c = checkScript(p.script, { base: BASE, models: Object.keys(MODELS), actions: ACTIONS, sounds: BASE.sounds });
   return { script: p.script, errors: [...p.errors, ...c.errors], warnings: c.warnings, language: c.language };
 };
 const compiled = (doc) => {
@@ -84,9 +86,103 @@ test("the base story's stages with short ids and captions, its music and a stage
                                  { id: "st/hall", key: "st/hall", caption: "" }]);
   assert.deepEqual(BASE.music, [{ cue: "sound_bgm_adv_quiet_morning", label: "Quiet Morning", sound: 11,
                                   sheet: "sound_bgm_adv_quiet_morning" }]);
+  // only SE sheets whose sound files the base story has, with the cue and its sheet
+  assert.deepEqual(BASE.sounds, [{ cue: "sound_se_adv_door_knock", label: "Door Knock", sound: 12,
+                                   sheet: "sound_se_adv_door_knock" }]);
   const prefab = new Prefab({ nodes: [node("Stage", [mb("AdvStage", { _backgroundSprite: ref("test:1") })])] });
   assert.equal(stageBackground(prefab, { sprite: () => ({ texture: { id: "test:2" } }) }), "test:2");
   assert.equal(stageBackground(prefab, { sprite: () => null }), null);
+});
+
+test("official camera, gaze, motion and sound fields parse within their ranges", () => {
+  const { script, errors } = parseScript({
+    format: SCRIPT_FORMAT, base: "stories/10610.json",
+    cast: { a: { model: "m", name: "A" } },
+    beats: [
+      { scene: "stage_a", positions: { a: "center" }, focusDuration: 1.5, trackDuration: 2,
+        se: "sound_se_adv_door_knock", seDelay: 0.2 },
+      { say: "a", text: "……", zoom: 1.2, zoomDuration: 1.5, pedestal: -0.2, pedestalDuration: 1.5,
+        pan: -5, panDuration: 1.5, panFocusSlide: 0.5, dof: 0.5, dofDuration: 1.5, dofLayers: 2,
+        focusDuration: 1.5, trackDuration: 2, look: 0.3, lookY: -0.3, lookDuration: 0.5,
+        se: "sound_se_adv_door_knock", seDuration: 0.7, motionFadeIn: 0.5, motionWait: true },
+      { narrate: "Wind.", zoom: 0.7, pedestal: 5, pan: 30, dof: 0, dofLayers: 0 },
+      { camera: "middle", cameraDuration: 3, focusDuration: 0, trackDuration: 20, zoom: 2.5,
+        pedestal: -4, pan: -30, dof: 1, se: "sound_se_adv_door_knock" },
+      { action: "a", motion: "mtn_smile01", look: 1, lookY: 1, lookDuration: 10,
+        seStop: true, motionFadeIn: -1, motionWait: false },
+    ],
+  });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(script.warnings, []);
+  assert.equal(script.beats[0].focusDuration, 1.5);
+  assert.equal(script.beats[0].trackDuration, 2);
+  assert.equal(script.beats[0].se, "sound_se_adv_door_knock");
+  assert.equal(script.beats[0].seDelay, 0.2);
+  assert.equal(script.beats[1].zoom, 1.2);
+  assert.equal(script.beats[1].zoomDuration, 1.5);
+  assert.equal(script.beats[1].pedestal, -0.2);
+  assert.equal(script.beats[1].pan, -5);
+  assert.equal(script.beats[1].panFocusSlide, 0.5);
+  assert.equal(script.beats[1].dofLayers, 2);
+  assert.equal(script.beats[1].look, 0.3);
+  assert.equal(script.beats[1].lookY, -0.3);
+  assert.equal(script.beats[1].se, "sound_se_adv_door_knock");
+  assert.equal(script.beats[1].motionFadeIn, 0.5);
+  assert.equal(script.beats[1].motionWait, true);
+  assert.equal(script.beats[2].zoom, 0.7);
+  assert.equal(script.beats[3].cameraDuration, 3);
+  assert.equal(script.beats[3].focusDuration, 0);
+  assert.equal(script.beats[3].trackDuration, 20);
+  assert.equal(script.beats[4].seStop, true);
+  assert.equal(script.beats[4].motionWait, false);
+});
+
+test("out-of-range and mutually exclusive official fields fail", () => {
+  const { errors } = parseScript({
+    format: SCRIPT_FORMAT, base: "stories/10610.json", cast: {},
+    beats: [
+      { camera: "middle", zoom: 3, pedestal: 6, pan: 31, dof: 1.1, dofDuration: 0.2, seDuration: 0.4 },
+      { say: "a", text: "x", look: 0.3, lookAt: 5, seStop: true, se: "sound_se_door", dofLayers: 1 },
+      { say: "a", text: "y", motionFadeIn: -2, motionWait: "yes" },
+    ],
+  });
+  assert.ok(errors.some((e) => e.code === "range"));
+  assert.ok(errors.some((e) => e.code === "exclusive"));
+  for (const code of ["range", "exclusive", "type", "empty"]) assert.ok(errors.some((e) => e.code === code), code);
+});
+
+test("official modifier fields need the field they modify", () => {
+  const { errors } = parseScript({
+    format: SCRIPT_FORMAT, base: "stories/10610.json",
+    cast: { a: { model: "m_a", name: "A" } },
+    beats: [
+      { scene: "garden", positions: { a: "left" }, seDuration: 1 },
+      { say: "a", text: "x", seDelay: 0.2 },
+      { say: "a", text: "y", panFocusSlide: 0.5, dofLayers: 2, pedestalDuration: 1 },
+    ],
+  });
+  assert.deepEqual(codes(errors), [
+    ["/beats/0/seDuration", "empty"], ["/beats/1/seDelay", "empty"],
+    ["/beats/2/panFocusSlide", "empty"], ["/beats/2/dofLayers", "empty"], ["/beats/2/pedestalDuration", "empty"],
+  ]);
+});
+
+test("a camera duration is the cameraDuration alias; both warn and cameraDuration wins", () => {
+  const both = parseScript({
+    format: SCRIPT_FORMAT, base: "stories/10610.json", cast: {},
+    beats: [{ camera: "middle", duration: 1, cameraDuration: 2 }],
+  });
+  assert.deepEqual(both.errors, []);
+  assert.equal(both.script.beats[0].cameraDuration, 2);
+  assert.deepEqual(both.script.warnings.map((w) => [w.path, w.code]),
+                   [["/beats/0/duration", "conflict"]]);
+  const aliasOnly = parseScript({
+    format: SCRIPT_FORMAT, base: "stories/10610.json", cast: {},
+    beats: [{ camera: "middle", duration: 2 }],
+  });
+  assert.deepEqual(aliasOnly.errors, []);
+  assert.equal(aliasOnly.script.beats[0].cameraDuration, 2);
+  assert.deepEqual(aliasOnly.script.warnings, []);
 });
 
 test("a model's motions and expressions; the clip a motion plays at a position", () => {
@@ -304,7 +400,7 @@ test("official close-ups: 2.8x and 4x, cut in, ease back, and a cast focus aims 
   ]);
 });
 
-test("a slow zoom compiles to a Zoom row, with the beat's duration or 4 s", () => {
+test("a slow zoom compiles to a Zoom row, with the beat's duration or 1.5 s", () => {
   const c = compiled(script([
     { scene: "garden", camera: "middle", focus: 5, positions: { a: "left", b: "right" } },
     { say: "a", text: "One.", zoom: 1.06, zoomDuration: 4 },
@@ -314,13 +410,48 @@ test("a slow zoom compiles to a Zoom row, with the beat's duration or 4 s", () =
   const zoomRows = strip(c.episode.commands).filter((r) => r.cmd === "Zoom");
   assert.deepEqual(zoomRows, [
     { cmd: "Zoom", Parameter1: "1.06", Duration: 4, IsNoWait: 1 },
-    { cmd: "Zoom", Parameter1: "0.94", Duration: 4, IsNoWait: 1 },
+    { cmd: "Zoom", Parameter1: "0.94", Duration: 1.5, IsNoWait: 1 },
     { cmd: "Zoom", Parameter1: "1.1", Duration: 2, IsNoWait: 1 },
   ]);
   const bad = parseScript({ format: SCRIPT_FORMAT, base: "b", cast: {}, beats: [
-    { say: "a", text: "x", zoom: 2 }, { say: "a", text: "y", zoomDuration: 3 },
+    { say: "a", text: "x", zoom: 3 }, { say: "a", text: "y", zoomDuration: 3 },
   ] }).errors;
   assert.deepEqual(bad.map((e) => e.code), ["range", "empty"]);
+});
+
+test("official camera, gaze, motion and SE fields compile to their ADV rows", () => {
+  const c = compiled(script([
+    { scene: "garden", camera: "middle", focus: 5, track: 0.2, focusDuration: 1.5, trackDuration: 2,
+      positions: { a: "left", b: "right" }, se: "sound_se_adv_door_knock", seDelay: 0.2 },
+    { say: "a", text: "One.", zoom: 1.2, pedestal: -0.2, pan: -5, panDuration: 2, panFocusSlide: 0.5,
+      dof: 0.5, dofDuration: 1.2, dofLayers: 2, look: 0.3, lookY: -0.3, lookDuration: 0.4,
+      motion: "mtn_smile01", motionFadeIn: 0.5, motionWait: true,
+      se: "sound_se_adv_door_knock", seDuration: 0.7 },
+    { action: "b", expression: "exp_idle01", seStop: true },
+  ]));
+  const rows = c.episode.commands;
+  assert.ok(rows.some((r) => r.cmd === "Focus" && r.Duration === 1.5), "focusDuration");
+  assert.ok(rows.some((r) => r.cmd === "Track" && r.Duration === 2), "trackDuration");
+  assert.ok(rows.some((r) => r.cmd === "Zoom" && r.Parameter1 === "1.2" && r.Duration === 1.5));
+  assert.ok(rows.some((r) => r.cmd === "Pedestal" && r.Parameter1 === "-0.2" && r.Duration === 1.5));
+  assert.ok(rows.some((r) => r.cmd === "PanV2" && r.Parameter1 === "-5" && r.Duration === 2 &&
+                                r.Parameter3 === "0.5"));
+  assert.ok(rows.some((r) => r.cmd === "DoF" && r.Parameter1 === "0.5" && r.Duration === 1.2 &&
+                                Array.isArray(r.CanvasLayers) && r.CanvasLayers[0] === 2));
+  assert.ok(rows.some((r) => r.cmd === "Look" && r.TargetName === "a" && r.Parameter1 === "0.3" &&
+                                r.Parameter2 === "-0.3" && r.Duration === 0.4));
+  const motion = rows.find((r) => r.cmd === "Motion" && r.TargetName === "a");
+  assert.equal(motion?.MotionFadeIn, 0.5);
+  assert.equal(motion?.MotionWait, true);
+  const se = rows.find((r) => r.cmd === "Se" && r.SeID && r.Duration === 0.7);
+  assert.equal(se?.SeID, 12);
+  assert.equal(se?.Duration, 0.7);
+  assert.ok(c.episode.sounds[se.SeID]);
+  assert.ok(c.episode.cuesheets[c.episode.sounds[se.SeID]._soundCueSheetID]);
+  assert.ok(c.story.parts.sounds[c.episode.cuesheets[c.episode.sounds[se.SeID]._soundCueSheetID]._cueSheetName]);
+  assert.ok(rows.some((r) => r.cmd === "Se" && r.Parameter1 === "Stop" && r.SeID === undefined));
+  assert.equal(c.episode.commandCount, rows.length);
+  assert.ok(rows.every((r, i) => r.i === i && Number.isInteger(r.raw) && r.raw >= 0));
 });
 
 test("track, focus points and pre-line reactions compile to the game's continuous staging", () => {
@@ -369,6 +500,14 @@ test("every motion and expression cross-fades from the pose on screen", () => {
   assert.ok(animated.every((r) => r.MotionFadeIn === -1), JSON.stringify(animated));
 });
 
+test("an SE cue is checked against the base story's sound files", () => {
+  const { errors } = checked(script([
+    { scene: "garden", positions: { a: "left" }, se: "sound_se_adv_nope" },
+  ]));
+  assert.deepEqual(codes(errors), [["/beats/0/se", "unknownSe"]]);
+  assert.deepEqual(errors[0].expected, ["sound_se_adv_door_knock"]);
+});
+
 test("director names are checked: focus, actions and lookAt need a cast member on stage", () => {
   const { errors, warnings } = checked(script([
     { scene: "garden", positions: { a: "left", b: "right" } },
@@ -401,7 +540,9 @@ test("a script's problem names the fix that writes it in", () => {
   assert.equal(by["/beats/3/postions"].suggestion, undefined);       // no near name in this beat's keys
   assert.equal(by["/beats/3/postions"].fix, undefined);              // and so no fix
   assert.deepEqual(by["/beats/3/postions"].expected,
-                   ["id", "narrate", "focus", "camera", "track", "zoom", "zoomDuration", "actions"]);
+                   ["id", "narrate", "focus", "camera", "track", "zoom", "zoomDuration", "focusDuration",
+                    "trackDuration", "pedestal", "pedestalDuration", "pan", "panDuration", "panFocusSlide",
+                    "dof", "dofDuration", "dofLayers", "actions"]);
   assert.equal(parseScript({ format: SCRIPT_FORMAT, zzz: 1 }).errors[0].fix, undefined);
   // a key whose near name is taken is left alone: renaming onto it would lose a value
   const taken = parseScript({ format: SCRIPT_FORMAT, base: "b", cast: {},
@@ -596,6 +737,8 @@ test("a site: base stories, the stories a script can use, models and their actio
     assert.equal(b.language, "ja");
     assert.deepEqual(b.languages, ["en", "ja"]);
     assert.deepEqual(b.stages.map((s) => [s.id, s.background]), [["garden", "stage:1"], ["hall", "stage:1"]]);
+    assert.deepEqual(b.sounds, [{ cue: "sound_se_adv_door_knock", label: "Door Knock", sound: 12,
+                                  sheet: "sound_se_adv_door_knock" }]);
     assert.deepEqual((await site.baseFiles(b, ["stage:1"])).get("stage:1"), png(8, 4));
     assert.deepEqual(b.cast, ["m_a"]);
     assert.equal(b.fonts.language, "ja");
