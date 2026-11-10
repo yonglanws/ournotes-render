@@ -176,10 +176,13 @@ const number = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fa
 // or blank) inherits the most recent Focus CameraDistance. A new close run
 // starts at each Focus while the inherited distance is >=4, except a 4->5
 // refinement of the same shot. A run's length is the number of text-bearing
-// Talk rows until the next start; a trailing blank is a held reaction after
-// the final spoken line, so it ends the run and the closing line is not
-// counted separately. Zero-text runs count as one. This reproduces the checked
-// 149 close runs, 116 of them length 1-2 (0.7785).
+// Talk rows until the next start.
+//
+// Audit definition (checked 149 runs / 116 length 0-2 / 0.7785):
+// - a zero-text close shot counts as one run of length 1 (空镜按 1 段计);
+// - a trailing blank Talk row ends the shot and shortens its counted spoken
+//   lines by one (末尾空白 Talk 会缩短段长), so the closing line is a held
+//   reaction rather than a separate dialogue line.
 export const closeRunAttribution = (episode, { language = "zh-Hans" } = {}) => {
   const commands = Array.isArray(episode?.commands) ? episode.commands : [];
   const shots = [];

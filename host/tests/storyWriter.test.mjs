@@ -42,6 +42,16 @@ test("a clean supplied script passes and is normalized", () => {
   assert.equal(r.warnings.length, 0);
 });
 
+test("maxLines below two is rejected instead of becoming a two-line story", async () => {
+  let calls = 0;
+  const llm = { available: true, async json() { calls++; return { content: JSON.stringify(script()) }; } };
+  await assert.rejects(
+    () => generateScript({ llm, catalog: CATALOG, request: { prompt: "放学后", maxLines: 1 },
+      config: CONFIG, logger: quietLogger() }),
+    /maxLines must be at least 2/);
+  assert.equal(calls, 0, "the LLM is not called");
+});
+
 test("near names and a model given by character name are fixed", () => {
   const doc = script();
   doc.cast.a.model = "灯";                       // the model id, but the display name was written

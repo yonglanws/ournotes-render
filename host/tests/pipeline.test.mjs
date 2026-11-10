@@ -129,6 +129,23 @@ test("a prompt without a configured LLM is refused with 503", async () => {
     (e) => e.status === 503 && e.code === "llm_missing");
 });
 
+test("maxLines below two is rejected before generation", async () => {
+  const output = tmpDir();
+  let calls = 0;
+  const llm = { available: true, async json() { calls++; return { content: JSON.stringify(SCRIPT) }; } };
+  const pipeline = new Pipeline({
+    config: configFor(output), catalog: stubCatalog(), llm, tts: null,
+    renderer: { async render() { throw new Error("must not render"); } }, logger: quietLogger(),
+  });
+  const badCap = (e) => e.status === 400 && e.code === "bad_request" &&
+    /maxLines/.test(e.message) && /at least 2/.test(e.message);
+  await assert.rejects(() => pipeline.generateScriptOnly({ prompt: "写一场对话", maxLines: 1 }), badCap);
+  await assert.rejects(
+    () => pipeline.run({ prompt: "写一场对话", maxLines: 1 }, { signal: null, jobId: "bad-max", progress: () => {} }),
+    badCap);
+  assert.equal(calls, 0, "neither path reaches the LLM");
+});
+
 test("the AI stage can return a script without rendering", async () => {
   const output = tmpDir();
   const doc = { ...SCRIPT, beats: [...SCRIPT.beats, { narrate: "安静的夜晚。" }] };

@@ -22,6 +22,19 @@ const parseJsonArg = (v) => {
   try { return JSON.parse(v); } catch { throw new PipelineError("script is not valid JSON", { status: 400, code: "bad_request" }); }
 };
 
+// A one-line story cannot be staged (two lines are the minimum for a
+// speaker/listener exchange), so a cap below two is a request error instead of
+// being silently promoted to two.
+const maxLinesOf = (request, fallback) => {
+  const raw = request.maxLines ?? fallback;
+  if (raw == null) return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 2) {
+    throw new PipelineError("maxLines must be at least 2", { status: 400, code: "bad_request" });
+  }
+  return Math.min(300, Math.round(value));
+};
+
 export class Pipeline {
   constructor({ config, catalog, llm, tts, renderer, logger }) {
     this.config = config;
@@ -46,8 +59,7 @@ export class Pipeline {
       title: String(request.title || "").trim().slice(0, 64),
       targetMinutes: request.targetMinutes != null
         ? Math.max(0.5, Math.min(10, Number(request.targetMinutes) || 3)) : undefined,
-      maxLines: request.maxLines != null
-        ? Math.max(1, Math.min(300, Math.round(Number(request.maxLines) || 120))) : undefined,
+      maxLines: maxLinesOf(request, this.config.story?.maxLines),
     };
     if (!req.prompt) throw new PipelineError("prompt is required", { status: 400, code: "bad_request" });
     const out = await generateScript({ llm: this.llm, catalog, request: req, config: this.config, logger: this.logger,
@@ -71,8 +83,7 @@ export class Pipeline {
       title: String(request.title || "").trim().slice(0, 64),
       targetMinutes: request.targetMinutes != null
         ? Math.max(0.5, Math.min(10, Number(request.targetMinutes) || 3)) : undefined,
-      maxLines: request.maxLines != null
-        ? Math.max(1, Math.min(300, Math.round(Number(request.maxLines) || 120))) : undefined,
+      maxLines: maxLinesOf(request, this.config.story?.maxLines),
       tts: request.tts !== false,
     };
     if (!req.prompt && !req.script) throw new PipelineError("prompt or script is required", { status: 400, code: "bad_request" });

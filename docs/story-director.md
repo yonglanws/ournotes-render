@@ -28,10 +28,12 @@ Our Notes 自己的 `Talk` 行 + `HostActions` 扩展，并在官方 ADV 的虚�
 2. 平均 **0.40 次 `Focus`/`Talk` 行**（按有文本行约 0.45）。`CameraDistance` 在 `Talk` 行上的占比：
    2（1.4×）38.9%、3（1.8×）36.1%、4（2.8×）20.4%；1（1.2×）和 5（4×）是少数。按有文本行算，
    **约 20% 的台词在 4（近景）**、39% 在 2、36% 在 3：近景不是稀有镜头，群像/双人仍以 2/3 为主。
-   近景连续 1~2 句约占 **77.9%**（149 段近景中 116 段为 1~2 句，`closeRunOneOrTwoShare`），3 句及以上约 22%。
-3. `Motion` 约 1.30 个/有文本行；5.96% 的句子没有 `Motion`；约 **44.7%** 的有文本行有 >=2 个表演动作
-   （`Motion + Expression + Look + LookTarget` = 518/1158，`twoMotionShare`）。归属有文本 Talk 的 1502 条
-   `Motion` 中 1497 条携带 `ExpressionName`；全语料 1508 条中 1503 条携带。
+   近景段长 0~2 句（空镜按 1 段；末尾空白 Talk 会缩短段长）约占 **77.9%**（116/149，
+   `closeRunOneOrTwoShare`），3 句及以上约 22%。
+3. `Motion` 约 1.30 个/有文本行；5.96% 的句子没有 `Motion`；约 **44.7%** 的有文本行有 2 个以上表演动作
+   (Motion + Expression + Look + LookTarget) = 518/1158（`twoMotionShare`）；有动作的行中为 518/1094 = 47.3%，
+   恰好 2 个 `Motion` 的行是 276/1158 = 23.8%。归属有文本 Talk 的 1502 条 `Motion` 中 1497 条携带
+   `ExpressionName`；全语料 1508 条中 1503 条携带。
 4. 独立 `Expression` 全语料只有 2 条（约 0.067 条/集）：表情基本都挂在 `Motion` 上；默认 `idle`，不是每句都笑。
 5. `Look` 217 + `LookTarget` 145 = 362，约 0.313 次/有文本行；31.26% 的句子带视线。双人戏开场常先 1 人，
    2~4 句后另一人 `In`。
@@ -41,7 +43,7 @@ Our Notes 自己的 `Talk` 行 + `HostActions` 扩展，并在官方 ADV 的虚�
    缓慢的 ±10% 推拉很常见，所以脚本格式提供可选的 `zoom`/`zoomDuration`。
 
 所以提示词要求：**二人同框（`middle`）↔ 说话者近景（`close`）交替，每 3~4 句一组；`near` 全场最多 1 次，
-`close` 约占 20% 的台词（30 句约 6 次），近景连续 1~2 句后回到二人/群像；`Focus` 约 0.40/句；`track` 只在
+`close` 约占 20% 的台词（30 句约 6 次），近景停 1~2 句后回到二人/群像；`Focus` 约 0.40/句；`track` 只在
 换组/群像横移时用（约 0~2 次）；`zoom` 每场约 2~5 次。** `fade` 只留给真正的时间/地点跳跃，连续对话里不用。
 10610 的 `10 Focus / 5 Track / 20 Motion` 不要当成日常戏模板。所有预算由 `host/ai/official-targets.js` 的
 `dialogueBudgetFor` / `directionBudgetFor` 从同一组 checked 常量计算，提示词、长度闸和 staged merge 不再各写一套。
@@ -316,14 +318,14 @@ stage：先两人对话，`positions` 引入第三人，再让一人退场、最
 ## 官方风格的演出规则
 
 1. **一场戏一个 stage**：先建立空间，之后用 `positions` 换组，不要为每次换人新开 scene。只有真正换时间/地点才 `fade`。开场先放 1 人（最多 2 人），2~4 句后让下一人进场；一场最多 2 次 `positions` 变化。换组时让已有人物保持原位，只让角色退场/进场；把同一角色从 `left` 改到 `center` 会编译成 `Out` + `In`，画面会闪一下。
-2. **镜头按组**：双人戏用“二人同框（`middle`，`focus: 5`）↔ 说话者近景（`close`，`focus` 该角色）”交替，每个机位保持 3~4 句；三人用 `far` + `focus: 5` 群像，偶尔用两人构图。`Focus` 约 0.40/句：一场 30 句约 12 次 `Focus` 变化，不要只写 4 个就停。`near` 全场最多 1 次，`close` 约占 20% 的台词（30 句约 6 次），近景连续 1~2 句后回到 `middle` + `focus: 5`；不要连续两句 `close`，也不要停在同一个 `close` 上直到结尾。推近时保持同一侧 `focus`，只改 `camera.distance`，不要换焦点；情绪镜头可以加一次 `zoom` 慢推。
+2. **镜头按组**：双人戏用“二人同框（`middle`，`focus: 5`）↔ 说话者近景（`close`，`focus` 该角色）”交替，每个机位保持 3~4 句；三人用 `far` + `focus: 5` 群像，偶尔用两人构图。`Focus` 约 0.40/句：一场 30 句约 12 次 `Focus` 变化，不要只写 4 个就停。`near` 全场最多 1 次，`close` 约占 20% 的台词（30 句约 6 次），近景停 1~2 句后回到 `middle` + `focus: 5`；不要连续两句 `close`，也不要停在同一个 `close` 上直到结尾。推近时保持同一侧 `focus`，只改 `camera.distance`，不要换焦点；情绪镜头可以加一次 `zoom` 慢推。
 3. **两人分站两侧**：两人同台用 `far-left` / `far-right`，`focus: 5` 框住两人；不要用 `center+right`、`center+left` 或
    `left+right`，两个角色会叠在一起。三人群像用 `far-left` / `center` / `far-right`，`camera: far`、`focus: 5`、`track: 0`
    （AI 默认 `story.maxOnStage: 3`；要严格两人可设 2，第三人换组进出）。`focus` 优先写位置；角色 `focus` 只给
    情绪最重的 1~2 句。
 4. **听者先反应**：听者的表情/动作写 `actions` 的 `at: 0`；说话者的主动作写 `say.motion`。一句最多一个说话者动作、一个听者反应。官方样本没有句中动作，`at` 一律写 0。
 5. **表情跟动作**：表情和 `motion` 写在同一条 `say` 上；默认 `idle`，不要每句都笑。官方独立 `Expression` 约 0.07 条/集（默认 0），确有必要一场最多 1 次。
-6. **动作预算**：`Motion` 约 1.30/句；约 6% 的句子没有动作；有动作的句子里约 45% 有 2 个动作。不要给同一角色同一句叠 2 个动作，也不要每句都动；staged merge 的 `maxStatic`（约 12%）只是修剪极端过演的上限。
+6. **动作预算**：`Motion` 约 1.30/句；约 6% 的句子没有动作；约 44.7% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)（518/1158；有动作的行中 47.3%；恰好 2 个 Motion 23.8%）。不要给同一角色同一句叠 2 个动作，也不要每句都动；staged merge 的 `maxStatic`（约 12%）只是修剪极端过演的上限。
 7. **台词长短**：约 38% 的台词分两行，三行及以上不足 1%；约 22% 是 2~6 字的短反应；不同角色要有不同的句长和语气。
 8. **留白克制**：`pause` 只用于 0.1~0.5 秒的呼吸；`fade` 只用于真正的时间/地点跳跃。
 

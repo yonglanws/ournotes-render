@@ -71,10 +71,21 @@ test("staged messages built from 40 lines carry the 30-sample official targets",
   for (const needle of [
     "30 部官方样本", "整条台词常见 1~30 字", "约 38% 两行", "Focus 约 0.40/句",
     "Pedestal", "PanV2", "DoF", "Look", "Se",
+    "约 44.7% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)",
+    "近景段长 0~2 句（空镜按 1 段",
   ]) {
     assert.ok(text.includes(needle), `staged messages must mention ${needle}`);
   }
   assert.ok(!text.includes("8 部官方剧情实测"), "the old 8-episode provenance is gone");
+  assert.ok(!text.includes("有动作的句子里约"), "the two-action share is not conditioned on action lines");
+});
+
+test("the single prompt states the two-action share and close-run rule with the correct denominator", () => {
+  const [, user] = buildStoryMessages({ catalog: CATALOG, request: { prompt: "放学后" }, config: CONFIG });
+  assert.ok(user.content.includes(
+    "约 44.7% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)"));
+  assert.ok(user.content.includes("近景段长 0~2 句（空镜按 1 段"));
+  assert.ok(!user.content.includes("有动作的句子里约"), "no action-line-conditioned wording");
 });
 
 test("configured maxLines is a strict cap for the single and staged dialogue prompts", () => {

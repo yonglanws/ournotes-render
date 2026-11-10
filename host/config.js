@@ -255,7 +255,13 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   cfg.queue.outputMaxAgeHours = Math.max(0, num(cfg.queue.outputMaxAgeHours, 24));
   cfg.story.targetMinutes = Math.max(0.5, num(cfg.story.targetMinutes, 3));
   cfg.story.maxModels = Math.max(1, Math.round(num(cfg.story.maxModels, 24)));
-  cfg.story.maxLines = Math.max(1, Math.round(num(cfg.story.maxLines, 120)));
+  const maxLines = Math.round(num(cfg.story.maxLines, 120));
+  if (maxLines < 2) {
+    errors.push({ path: "story.maxLines", message: "must be at least 2; a one-line story cannot be staged" });
+    cfg.story.maxLines = maxLines;
+  } else {
+    cfg.story.maxLines = Math.min(300, maxLines);
+  }
   cfg.story.maxOnStage = Math.max(2, Math.min(3, Math.round(num(cfg.story.maxOnStage, 3))));
   cfg.llm.temperature = Math.max(0, Math.min(2, num(cfg.llm.temperature, 0.85)));
   cfg.llm.maxTokens = Math.max(256, Math.round(num(cfg.llm.maxTokens, 8192)));

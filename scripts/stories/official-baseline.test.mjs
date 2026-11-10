@@ -6,7 +6,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import {
   discoverOfficialCorpus, episodeText, episodeToLines, rawCommandDistributions,
-  readEpisodeAsset, tailAttribution,
+  readEpisodeAsset, tailAttribution, closeRunAttribution,
 } from "./official-corpus.mjs";
 import {
   aggregate, percentile, summarize, summarizeTailCounts, windowsOf, withTailCounts,
@@ -68,6 +68,32 @@ test("ignored events count for the next line while trailing events stay separate
   assert.equal(raw.talkRows, 1);
   assert.equal(raw.textLines, 1);
   assert.equal(raw.noMotionLines, 0);
+});
+
+test("close runs count a zero-text close shot as one run of length one", () => {
+  const episode = { commands: [
+    { i: 0, cmd: "Focus", CameraDistance: 4 },
+    { i: 1, cmd: "Focus", CameraDistance: 2 },
+  ] };
+  assert.deepEqual(closeRunAttribution(episode, { language: "zh-Hans" }), {
+    total: 1, oneOrTwo: 1, lengths: [1],
+  });
+});
+
+test("close runs shorten when the last Talk row before the next shot is blank", () => {
+  const line = (i, text) => ({ i, cmd: "Talk", raw: 2, TargetName: "a", AdvTextID: `t${i}`,
+    lines: { "zh-Hans": text } });
+  const episode = { commands: [
+    { i: 0, cmd: "Focus", CameraDistance: 4 },
+    line(1, "第一句。"), line(2, "第二句。"), line(3, "第三句。"),
+    { i: 4, cmd: "Talk", raw: 2 },
+    { i: 5, cmd: "Focus", CameraDistance: 2 },
+  ] };
+  // Three text rows with a trailing blank Talk count as a 0~2-line close shot:
+  // the blank ends the shot and its closing spoken line is not counted separately.
+  assert.deepEqual(closeRunAttribution(episode, { language: "zh-Hans" }), {
+    total: 1, oneOrTwo: 1, lengths: [2],
+  });
 });
 
 test("slot transforms without TargetName do not create phantom on-stage characters", () => {

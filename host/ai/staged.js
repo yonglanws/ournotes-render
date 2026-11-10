@@ -424,7 +424,10 @@ export const normalizeDialogue = ({ raw, plan, request, config }) => {
       pushSay(s(item.say || item.cast || item.speaker), item.text ?? item.line ?? item.content);
     }
   }
-  const maxLines = Math.max(2, Number(request.maxLines ?? config.story?.maxLines ?? 120));
+  const maxLines = Number(request.maxLines ?? config.story?.maxLines ?? 120);
+  if (!Number.isFinite(maxLines) || maxLines < 2) {
+    throw new RangeError("maxLines must be at least 2");
+  }
   if (lines.length > maxLines) lines.length = maxLines;
   if (lines.length < 2) return null;
   return { title: (s(doc.title) || plan.title || "").slice(0, 64), lines };
@@ -562,7 +565,6 @@ export const buildStoryboardMessages = ({ plan, dialogue, catalog, request, conf
   const budget = directionBudgetFor(lines);
   const motionBudget = `${budget.motionMin}~${budget.motionMax}`;
   const noMotionTarget = Math.max(1, Math.round(lines * OFFICIAL_TARGETS.noMotionShare));
-  const twoMotion = Math.round(lines * OFFICIAL_TARGETS.twoMotionShare);
   const example = storyboardExample({ plan, dialogue, catalog });
 
   return [
@@ -586,7 +588,7 @@ ${castBlock(plan)}
 
 ## 官方节奏（30 部官方样本：8 部本地章节 + 22 部双人友情戏）
 - 台词：整条台词常见 1~${OFFICIAL_TARGETS.lineCharsP90} 字（均值 ${fixed(OFFICIAL_TARGETS.lineCharsMean, 1)} 字、p90 ${OFFICIAL_TARGETS.lineCharsP90} 字），换行片段均值 ${fixed(OFFICIAL_TARGETS.segmentCharsMean, 1)} 字；约 ${pct(OFFICIAL_TARGETS.twoLineShare)}% 两行，三行以上不足 1%；2~6 字短反应约 ${pct(OFFICIAL_TARGETS.shortShare)}%。
-- 镜头：Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句；距离 2/3/4 分别约 ${pct(OFFICIAL_TARGETS.distance2Share)}%/${pct(OFFICIAL_TARGETS.distance3Share)}%/${pct(OFFICIAL_TARGETS.distance4Share)}%；近景连续 1~2 句约占 ${pct1(OFFICIAL_TARGETS.closeRunOneOrTwoShare)}%。
+- 镜头：Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句；距离 2/3/4 分别约 ${pct(OFFICIAL_TARGETS.distance2Share)}%/${pct(OFFICIAL_TARGETS.distance3Share)}%/${pct(OFFICIAL_TARGETS.distance4Share)}%；近景段长 0~2 句（空镜按 1 段；末尾空白 Talk 会缩短段长）约占 ${pct1(OFFICIAL_TARGETS.closeRunOneOrTwoShare)}%。
 - 运镜：Pedestal 约 ${perEpisode(OFFICIAL_TARGETS.pedestalPerTextLine)} 次/集、PanV2 约 ${perEpisode(OFFICIAL_TARGETS.panV2PerTextLine)} 次/集、DoF 约 ${perEpisode(OFFICIAL_TARGETS.dofPerTextLine)} 次/集、Look + LookTarget 约 ${fixed(OFFICIAL_TARGETS.lookAnyPerTextLine, 2)}/句、Se 约 ${perEpisode(OFFICIAL_TARGETS.sePerTextLine)} 条/集。
 
 ## 台词稿（逐字定稿，按顺序）
@@ -631,7 +633,7 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
   大部分 line beat 不要写 focus/camera/track，只有真的换机位时才写；同一机位保持 3~4 句，连续两句都写 focus 通常就是切太碎。推近（middle/far → close）是硬切，拉回（close → middle/far）会自动缓推，不需要写 duration。
 - **慢推镜**：全场约 ${budget.zoomMin}~${budget.zoomMax} 次 zoom，写在情绪句/近景或结尾：推近 1.03~1.10，拉远 0.92~0.98，zoomDuration 3~5 秒。一个机位最多 1 次；不写就静止，不要每个镜头都推。
 - **视线预算**：全场约 ${budget.lookAt} 个 lookAt；双人戏每 3 句最多 1 个，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名或 1~9 的构图点；不要每句都看着对方。
-- **表演预算**：全场约 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；约 ${noMotionTarget} 句完全没有动作（最多不超过 ${budget.maxStatic} 句）；约 ${twoMotion} 句有 2 个动作；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。
+- **表演预算**：全场约 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；约 ${noMotionTarget} 句完全没有动作（最多不超过 ${budget.maxStatic} 句）；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。
 - **扩展运镜与声音**：Pedestal 约 ${budget.pedestal} 次（轻微上下移），PanV2 约 ${budget.panV2} 次（只在换组/横移），DoF 约 ${budget.dof} 次（情绪特写），Look/LookTarget 约 ${budget.lookAt} 次，Se 约 ${budget.se} 条（只用声音清单里的 cue），Track 约 ${budget.track} 次。可选字段：focusDuration、trackDuration、pedestalDuration、panDuration、panFocusSlide、dofDuration、dofLayers、look、lookY、lookDuration、seDuration、seDelay、seStop、motionFadeIn、motionWait；只在明确需要时写，不写就沿用默认值或不生成。
 - 听者反应写进 actions（at: 0），**每句最多 1 条**，cast 必须是台上的其他角色；不要给说话者本人写 actions，也不要一句叠两个听者。
 - focus 优先写构图点/位置，角色 focus 只给 close 近景和情绪最重的 1~2 句；close / very-close 必须 focus 到角色 id 或该角色的位置，不要用 focus 5。track 只在换组/群像横移时写，-4~4，双人通常 0~1 次。
