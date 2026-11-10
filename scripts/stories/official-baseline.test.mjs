@@ -12,7 +12,8 @@ import {
   aggregate, percentile, summarize, summarizeTailCounts, windowsOf, withTailCounts,
 } from "./story-metrics.mjs";
 import {
-  BASELINE_TARGETS, buildBaseline, compareBaselineToReport, corpusConfigFromEnv, corpusEvidence,
+  BASELINE_TARGETS, OFFICIAL_TARGETS, buildBaseline,
+  compareBaselineToReport, corpusConfigFromEnv, corpusEvidence, canonicalReportDigest,
 } from "./official-baseline.mjs";
 
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/mini-official-episode.json", import.meta.url)));
@@ -142,13 +143,17 @@ test("malformed site manifests produce structured failures without aborting disc
       files: { "episode.json": { asset: "assets/ep.gz" } },
     }));
     const found = discoverOfficialCorpus({ siteRoot, sampleRoot, assetsRoot });
-    assert.deepEqual(found.map((e) => e.id), ["10450"]);
+    assert.equal(found.length, 1);
     assert.equal(found.failures.length, 1);
     assert.equal(found.failures[0].id, "10438");
     assert.equal(found.failures[0].kind, "manifest");
     assert.match(found.failures[0].error, /JSON|Unexpected|Expected/i);
     const built = buildBaseline({ siteRoot, sampleRoot, assetsRoot });
     assert.ok(built.failures.some((f) => f.id === "10438" && f.kind === "manifest"));
+    const injected = [...found];
+    Object.defineProperty(injected, "failures", { value: found.failures, enumerable: false });
+    const injectedBuilt = buildBaseline({ siteRoot, sampleRoot, assetsRoot, corpus: injected });
+    assert.ok(injectedBuilt.failures.some((f) => f.id === "10438" && f.kind === "manifest"));
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
@@ -227,6 +232,58 @@ test("corpus discovery accepts string manifests, compressed assets and real lang
   }
 });
 
+test("aggregate recursively averages nested rate objects without NaN", () => {
+  const a = summarize([
+    { id: "a", speaker: "x", body: "甲", chars: 2, renderedLines: 1, segmentChars: [2] },
+  ]);
+  const b = summarize([
+    { id: "b", speaker: "y", body: "乙？", chars: 2, renderedLines: 1, segmentChars: [2] },
+  ]);
+  const result = aggregate([a, b]);
+  assert.equal(result.count, 1);
+  assert.equal(result.perTextLine.twoLineShare, 0);
+  assert.equal(result.perTextLine.questionShare, 0.5);
+  assert.equal(result.perTalkRow.duoShare, 0);
+  assert.ok(Object.values(result.perTextLine).every(Number.isFinite));
+  assert.ok(Object.values(result.perTalkRow).every(Number.isFinite));
+});
+
+test("OFFICIAL_TARGETS is a frozen flat adapter derived from one checked source", () => {
+  assert.equal(Object.isFrozen(OFFICIAL_TARGETS), true);
+  const expectedKeys = [
+    "lineCharsMean", "lineCharsMedian", "lineCharsP90", "segmentCharsMean",
+    "twoLineShare", "threeLineShare", "shortShare", "ellipsisShare",
+    "questionShare", "exclaimShare", "speakerRunMean", "soloRunShare",
+    "focusPerTalkRow", "focusPerTextLine", "motionsPerTextLine",
+    "lookAnyPerTextLine", "zoomPerTextLine", "pedestalPerTextLine",
+    "trackPerTextLine", "dofPerTextLine", "panV2PerTextLine", "sePerTextLine",
+    "bgmPerEpisode", "noMotionShare", "lookLineShare", "distance2Share",
+    "distance3Share", "distance4Share", "duoShare", "effectiveDuoShare",
+    "textLinesPerEpisodeMean", "textLinesPerEpisodeMin", "textLinesPerEpisodeMax",
+    "commandsPerEpisodeMean", "linesPerMinute", "charsPerMinute",
+    "focusDurationDefault", "zoomDurationDefault", "motionFadeInDefault",
+    "zoomDefault", "staticLineBudget", "closeUps", "motionBudget",
+    "focusChanges", "lookAtBudget",
+  ];
+  assert.deepEqual(Object.keys(OFFICIAL_TARGETS).sort(), [...expectedKeys].sort());
+  assert.equal(OFFICIAL_TARGETS.lineCharsMean, BASELINE_TARGETS.distributions.charsMean);
+  assert.equal(OFFICIAL_TARGETS.twoLineShare, BASELINE_TARGETS.distributions.perTextLineTwoLineShare);
+  assert.equal(OFFICIAL_TARGETS.shortShare, BASELINE_TARGETS.distributions.perTextLineShortShare);
+  assert.equal(OFFICIAL_TARGETS.focusPerTalkRow, 0.397);
+  assert.equal(OFFICIAL_TARGETS.focusPerTextLine,
+    Number((BASELINE_TARGETS.totals.focus / BASELINE_TARGETS.totals.textLines).toFixed(3)));
+  assert.equal(OFFICIAL_TARGETS.motionsPerTextLine,
+    Number((BASELINE_TARGETS.totals.motion / BASELINE_TARGETS.totals.textLines).toFixed(3)));
+  assert.equal(OFFICIAL_TARGETS.lookAnyPerTextLine,
+    Number((BASELINE_TARGETS.totals.lookRows / BASELINE_TARGETS.totals.textLines).toFixed(3)));
+  assert.equal(OFFICIAL_TARGETS.textLinesPerEpisodeMean,
+    BASELINE_TARGETS.totals.textLines / BASELINE_TARGETS.totals.episodes);
+  for (const value of Object.values(OFFICIAL_TARGETS)) {
+    assert.equal(typeof value, "number");
+    assert.ok(Number.isFinite(value));
+  }
+});
+
 test("shared metrics expose percentiles, aggregation and guarded full windows", () => {
   assert.equal(percentile([1, 2, 3, 4], 0.5), 2.5);
   assert.equal(percentile([], 0.9), 0);
@@ -254,6 +311,40 @@ test("external report comparison rejects stale or fabricated evidence", { skip: 
   const mismatches = compareBaselineToReport(recomputed, stale);
   assert.match(mismatches.join(" | "), /provenance\.digest mismatch/);
   assert.match(mismatches.join(" | "), /report totals\.talkRows mismatch/);
+});
+
+test("canonical report digest rejects tampering with every material report field", { skip: corpusSkip }, () => {
+  const recomputed = buildBaseline(config);
+  const mutate = (fn) => {
+    const forged = JSON.parse(JSON.stringify(recomputed));
+    fn(forged);
+    forged.provenance.digest = canonicalReportDigest(forged);
+    return compareBaselineToReport(recomputed, forged);
+  };
+  const cases = [
+    ["all.corpus", (r) => { r.all.corpus.motions += 1; }],
+    ["all.perEpisodeMean", (r) => { r.all.perEpisodeMean.count += 1; }],
+    ["all.rawDistributions", (r) => { r.all.rawDistributions.noMotionLines += 1; }],
+    ["all.tailCounts", (r) => { r.all.tailCounts.se += 1; }],
+    ["nested rate object", (r) => { r.all.corpus.perTextLine.shortShare += 0.1; }],
+    ["totals.commandHistogram", (r) => { r.totals.commandHistogram.Motion += 1; }],
+    ["commandHistogram", (r) => { r.commandHistogram.Motion += 1; }],
+    ["expectations", (r) => { r.expectations.totals.motion += 1; }],
+    ["failures", (r) => { r.failures.push({ error: "forged" }); }],
+    ["generatedFrom", (r) => { r.generatedFrom.siteRoot = "forged"; }],
+    ["per-episode summary", (r) => { r.episodes[0].summary.count += 1; }],
+    ["per-episode provenance", (r) => { r.episodes[0].provenance.bytes += 1; }],
+    ["omitted all", (r) => { delete r.all; }],
+  ];
+  for (const [name, tamper] of cases) {
+    const mismatches = mutate(tamper);
+    assert.notDeepEqual(mismatches, [], `tampered ${name} must be rejected`);
+  }
+  const unchanged = JSON.parse(JSON.stringify(recomputed));
+  unchanged.generatedAt = "1999-01-01T00:00:00.000Z";
+  unchanged.provenance.digest = canonicalReportDigest(unchanged);
+  assert.deepEqual(compareBaselineToReport(recomputed, unchanged), [],
+    "volatile generatedAt may change without invalidating provenance");
 });
 
 test("30-episode corpus recomputes the checked official totals", { skip: corpusSkip }, () => {

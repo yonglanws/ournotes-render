@@ -100,10 +100,19 @@ export const withTailCounts = (summary, records) => {
     [k, typeof counts[k] === "number" ? v + counts[k] : v]));
 };
 
+const isPlainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
 export const aggregate = (summaries) => {
   const keys = new Set(summaries.flatMap((s) => Object.keys(s || {})));
   const out = {};
-  for (const k of keys) out[k] = mean(summaries.map((s) => s?.[k] || 0));
+  for (const key of keys) {
+    const values = summaries.map((s) => s?.[key]);
+    if (values.some(isPlainObject)) {
+      out[key] = aggregate(values.map((v) => isPlainObject(v) ? v : {}));
+    } else {
+      out[key] = mean(values.map((v) => typeof v === "number" && Number.isFinite(v) ? v : 0));
+    }
+  }
   return out;
 };
 
