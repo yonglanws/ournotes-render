@@ -4,7 +4,7 @@ import { buildQuickCastMessages, buildStoryMessages } from "../ai/prompt.js";
 import { parseScript } from "../../scripts/lib/story-author/script.js";
 import { generateScript, prepareScript } from "../ai/storyWriter.js";
 import { directionBudgetFor } from "../ai/official-targets.js";
-import { buildDialogueMessages, buildStoryboardMessages, mergeStagedScript, normalizeDialogue, onStageProblems, spreadPositions } from "../ai/staged.js";
+import { buildDialogueMessages, balanceLineBreaks, buildStoryboardMessages, mergeStagedScript, normalizeDialogue, onStageProblems, spreadPositions } from "../ai/staged.js";
 import { quietLogger } from "./helpers.mjs";
 
 const CATALOG = {
@@ -282,6 +282,22 @@ test("the staged pipeline writes cast, dialogue, then storyboard", async () => {
   assert.equal(out.usage, null, "the fake returns no usage");
 });
 
+test("a truncated staged answer is retried once before failing", async () => {
+  let calls = 0;
+  const llm = { available: true,
+    async json() {
+      calls++;
+      if (calls === 1) return { content: JSON.stringify(CAST_DOC) };
+      if (calls === 2) return { content: JSON.stringify(DIALOGUE_DOC) };
+      if (calls === 3) throw new Error("LLM answer was truncated (finish_reason=length); raise llm.maxTokens");
+      return { content: JSON.stringify(STORYBOARD_DOC) };
+    } };
+  const out = await stagedRun(llm);
+  assert.equal(calls, 4);
+  assert.ok(out.stages.some((stage) => stage.stage === "storyboard-retry"));
+  assert.ok(out.warnings.includes("storyboard 回答被截断，已重试一次"));
+});
+
 test("a dialogue answer with no usable lines is retried once", async () => {
   const calls = [];
   const llm = {
@@ -420,6 +436,27 @@ test("extended camera and sound fields survive the staged merge", () => {
   const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
   const first = merged.doc.beats.find((b) => b.text === "第一句。");
   for (const [key, value] of Object.entries(extra)) assert.equal(first[key], value, key);
+});
+
+test("one invented action name is repaired or dropped instead of failing the storyboard", () => {
+  const dialogue = { lines: [
+    { id: "l1", say: "a", text: "第一句。" },
+    { id: "l2", say: "b", text: "第二句。" },
+  ] };
+  const storyboard = { beats: [
+    { scene: "stage_a", camera: "middle", positions: { a: "far-left", b: "far-right" } },
+    { line: "l1", motion: "mtn_smile99", expression: "exp_nope",
+      actions: [{ at: 0, cast: "b", expression: "exp_smile99" }] },
+    { line: "l2" },
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
+  const first = merged.doc.beats.find((b) => b.text === "第一句。");
+  assert.equal(first.motion, "mtn_smile01", "the close motion name is repaired");
+  assert.equal("expression" in first, false, "an unfixable expression is dropped, not the line");
+  assert.equal(first.actions[0].expression, "exp_smile01", "the close listener expression is repaired");
+  assert.ok(merged.warnings.some((w) => w.code === "unknownMotion"));
+  assert.ok(merged.warnings.some((w) => w.code === "unknownExpression"));
+  assert.deepEqual(parseScript(merged.doc).errors, []);
 });
 
 test("both prompt paths list the site's SE cues and never a placeholder", () => {
@@ -614,6 +651,30 @@ test("the dialogue pass accepts turns and flattens them into line ids", () => {
   assert.deepEqual(dialogue.lines.map((l) => l.id), ["l1", "l2", "l3", "l4"]);
 });
 
+test("excess two-line dialogue is joined to the official two-line share", () => {
+  const dialogue = { lines: Array.from({ length: 10 }, (_, i) =>
+    ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `前半句${i}，\n后半句。` })) };
+  const { removed } = balanceLineBreaks(dialogue);
+  const twoLine = dialogue.lines.filter((line) => line.text.includes("\n")).length;
+  assert.ok(removed > 0);
+  assert.equal(twoLine + removed, 10);
+  assert.ok(twoLine <= Math.round(10 * 0.3826), "two-line share is back near the official 38%");
+  assert.ok(dialogue.lines.every((line) => [...line.text.replace(/\s/g, "")].length <= 22));
+});
+
+test("all-single dialogue gets two-line breaks up to the official share", () => {
+  const dialogue = { lines: Array.from({ length: 10 }, (_, i) =>
+    ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `前半句第一段${i}，后半句第二段。` })) };
+  const { added } = balanceLineBreaks(dialogue);
+  const twoLine = dialogue.lines.filter((line) => line.text.includes("\n")).length;
+  assert.ok(added > 0);
+  assert.equal(twoLine, 4);
+  assert.ok(twoLine <= Math.round(10 * 0.3826), "no more than the official share is split");
+  for (const line of dialogue.lines) {
+    for (const segment of line.text.split("\n")) assert.ok([...segment.replace(/\s/g, "")].length <= 22);
+  }
+});
+
 test("the dialogue pass teaches turns and carries only the core persona sections", () => {
   const long = [
     "## 核心机制",
@@ -699,6 +760,53 @@ test("prompt-compliant acting is not over-pruned", () => {
   assert.ok(!merged.warnings.some((w) => w.code === "performanceBudget"), "no prune warning");
 });
 
+test("over-directed camera cuts are pruned to the measured focus budget", () => {
+  const dialogue = { title: "雨", lines: Array.from({ length: 20 }, (_, i) =>
+    ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `第${i + 1}句台词的内容。` })) };
+  const storyboard = { beats: [
+    { scene: "stage_a", camera: "middle", positions: { a: "far-left", b: "far-right" } },
+    ...dialogue.lines.map((l, i) => ({ line: l.id, focus: i % 2 ? "b" : "a", camera: i % 3 ? "middle" : "close" })),
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
+  const says = merged.doc.beats.filter((b) => "say" in b);
+  const directed = says.filter((b) => b.focus !== undefined || b.camera !== undefined || b.track !== undefined);
+  const structural = merged.doc.beats.filter((b) => b.scene !== undefined || b.positions !== undefined).length;
+  assert.equal(directed.length, directionBudgetFor(20).focusChanges - structural);
+  assert.ok(directed.length < says.length, "most lines inherit the previous shot");
+  assert.ok(merged.warnings.some((w) => w.code === "focusBudget"));
+  assert.ok(says.every((b) => b.track === undefined || b.focus !== undefined || b.camera !== undefined));
+});
+
+test("over-directed gaze is pruned to the measured look budget and keeps one Look offset", () => {
+  const dialogue = { title: "雨", lines: Array.from({ length: 20 }, (_, i) =>
+    ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `第${i + 1}句台词的内容。` })) };
+  const storyboard = { beats: [
+    { scene: "stage_a", camera: "middle", positions: { a: "far-left", b: "far-right" } },
+    ...dialogue.lines.map((l, i) => ({ line: l.id,
+      ...(i === 4 ? { look: -0.4, lookY: 0.1 } : { lookAt: l.say === "a" ? "b" : "a" }) })),
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
+  const says = merged.doc.beats.filter((b) => "say" in b);
+  const gaze = says.reduce((n, b) => n + (b.lookAt !== undefined ? 1 : 0) + (b.look !== undefined ? 1 : 0), 0);
+  assert.ok(gaze <= directionBudgetFor(20).lookAt, `gaze ${gaze} <= ${directionBudgetFor(20).lookAt}`);
+  assert.ok(says.some((b) => b.look !== undefined), "the independent Look offset survives");
+  assert.ok(merged.warnings.some((w) => w.code === "gazeBudget"));
+});
+
+test("lookAt and look on one beat keep lookAt and warn instead of failing the parser", () => {
+  const dialogue = { lines: [{ id: "l1", say: "a", text: "第一句。" }] };
+  const storyboard = { beats: [
+    { scene: "stage_a", camera: "middle", positions: { a: "far-left" } },
+    { line: "l1", lookAt: "a", look: 0.4, lookY: 0.1 },
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
+  const line = merged.doc.beats.find((b) => b.text === "第一句。");
+  assert.equal(line.lookAt, "a");
+  for (const key of ["look", "lookY", "lookDuration"]) assert.equal(key in line, false, key);
+  assert.ok(merged.warnings.some((w) => w.code === "lookChannel"));
+  assert.deepEqual(parseScript(merged.doc).errors, []);
+});
+
 test("a storyboard that can never pass falls back to bare lines instead of failing the job", async () => {
   const calls = [];
   const llm = { available: true,
@@ -708,7 +816,7 @@ test("a storyboard that can never pass falls back to bare lines instead of faili
       if (calls.length === 2) return { content: JSON.stringify(DIALOGUE_DOC) };
       return { content: JSON.stringify({ beats: [
         { scene: "stage_a", camera: "middle", positions: { a: "far-left", b: "far-right" } },
-        { line: "l1", motion: "mtn_totally_unknown" },
+        { line: "l1", dof: 9 },
       ] }) };
     } };
   const out = await generateScript({

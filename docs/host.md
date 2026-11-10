@@ -353,7 +353,9 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
 2. **校验与修复**：两条管线都经过 JSON 提取 → 结构校验 → 已知问题自动修复 → 最多 `llm.repairRounds` 轮定向修复。
    staged 的修复轮只重发分镜提示词，台词稿固定在上下文里，所以修几轮都不会把台词改坏。校验器与
    [剧情编写工具](story-author.md)共用同一套规则。站点格式的 AI 目录列出所有“有角色卡或已知名字”的模型，每个角色只取
-   一套服装（底本用过的优先），因此可以写跨乐队剧情；用 `story.cast` 可以限定只从某个乐队选。
+   一套服装（底本用过的优先），因此可以写跨乐队剧情；用 `story.cast` 可以限定只从某个乐队选。staged 合并按本场
+   官方预算修剪过量的 focus/视线剪辑点，并把换行比例调整到官方约 38% 两行（只在现有标点后移动换行，不改字词）；
+   分镜修复后仍不可用时会退回「默认走位 + 无动作演出」。
 3. **TTS**：按台词逐句调用 GPT-SoVITS（可并发、磁盘缓存、可重试、失败降级；切换角色权重时串行）。角色音色来自
    `tts.defaultVoice` / `tts.voices` / `voicesFile`，不再读取 AstrBot 或其它外部配置；完整字段、匹配规则和试音步骤
    见 [TTS 配置与试音](tts.md)。`tts.textLang` 默认 `auto`（跟随剧本语言）；设为具体语言（如 `ja`）且与剧本语言不同
@@ -442,13 +444,78 @@ OURNOTES_E2E_CORE=resources/site/vendor/live2dcubismcore.min.js \
 node --test host/tests/e2e-director.test.mjs
 ```
 
+### 固定场景 AI 评估与命令审计
+
+`scripts/stories/ai-eval.mjs` 用固定的 8 个双人场景离线调用 `StoryWriter`，逐场编译、做命令审计并计算与官方语料
+相同的指标。场景和中文 logline 直接写在源码里（改动 logline 等于换评估基线）：
+
+| # | label | 场景 |
+|---|---|---|
+| 1 | `rain-stop` | 雨后便利店屋檐下等雨停，一人想走，一人想再待一会儿 |
+| 2 | `lost-ticket` | 检票口找不到车票，另一人嘴上不管却蹲下一起找 |
+| 3 | `last-rehearsal` | 熄灯前为一句和声反复磨合，一人失去耐心，一人坚持再来 |
+| 4 | `shared-snack` | 深夜厨房最后一份点心推来推去，谁也不肯先吃 |
+| 5 | `one-umbrella` | 放学突然下雨只有一把伞，两人挤在伞下谁都不走快 |
+| 6 | `before-stage` | 演出前十分钟一人在后台紧张失语，另一人笨拙地让她开口 |
+| 7 | `missing-earring` | 更衣室少了一只耳环，一人安慰，一人翻遍每个角落 |
+| 8 | `last-train` | 末班车进站前聊起明天，广播响了谁都没有先动 |
+
+```sh
+# 必需：站点格式的底本目录；报告写到仓库外（默认 <workspace>/../ournotes-ai-lab）
+OURNOTES_CONFIG=/path/to/ournotes-player/config.yaml \
+OURNOTES_SITE_FORMAT=/path/to/ournotes-player/resources/site \
+OURNOTES_AI_LAB=/path/to/ournotes-ai-lab \
+npm run eval:stories -- --run phase1 --pipeline staged --temperature 0.8
+```
+
+- `--run <name>`：报告目录名，必填，只允许字母、数字、`.`、`_`、`-`。
+- `--prompts all|1,2,...`：选择固定场景（1 起始）；`--runs N` 将每个选中场景重复 N 次，标签追加 `-runN`。
+- `--pipeline staged|single`、`--temperature`、`--target`：覆盖本次运行；固定覆盖 `targetMinutes`、`maxLines: 36`、
+  `repairRounds: 2`、`translateForTts: false`、`jsonMode: "auto"`、`maxTokens: 16384`、`timeoutMs: 180000`、`maxOnStage: 2`。
+  `llm.model`、`llm.baseUrl` 和 `llm.apiKeyEnv` 仍来自操作者配置；密钥只从环境变量读取，不写入报告。
+- `OURNOTES_SITE_FORMAT` 可以是绝对路径，因此可以在 worktree 里读取主仓库的 `resources/site`，但评估不会写入站点。
+- 单场超时、JSON 失败、编译失败或命令审计失败只记录该场，继续其余场景；回答被 `finish_reason=length` 截断时
+  同一请求先重试一次。分镜经修复仍不可用、退回「默认走位 + 无动作演出」时按失败场记录（该场没有可验收的演出）。
+  成功场数与失败列表分开写入。
+
+报告目录：
+
+```text
+runs/<run>/<label>.story.json     该场最终脚本（ournotes.story-script/1）
+runs/<run>/<label>.report.json    该场 latency/usage/warnings/summary/compiled counts；失败场记录 error
+runs/<run>/<label>.raw.txt        最后一次模型回复（分镜修复或降级时用于诊断，不含提示词和密钥）
+runs/<run>/all-stories.json       label -> 脚本
+runs/<run>/report.json            generatedAt、脱敏配置、逐场结果、仅成功场的 aggregate、failures
+```
+
+质量门读取一次命名 run 的报告；报告未设置或不存在时按明确原因 skip，不当作通过：
+
+```sh
+OURNOTES_EVAL_REPORT=/path/to/ournotes-ai-lab/runs/phase1/report.json npm run test:stories
+```
+
+门禁检查每场 `summary.count >= 28`、`charsTotal >= 400`、`warnings` 与 `compiled.commands` 存在；聚合区间为
+`charsMean 12..19`、`twoLineShare 0.25..0.50`、`shortShare 0.12..0.30`、`soloRunShare 0.58..0.82`、
+`focusPerLine 0.30..0.50`、`motionsPerLine 1.0..1.5`、`lookAnyPerLine 0.20..0.42`、`zoomPerLine 0.03..0.16`、
+`pedestalPerLine 0.04..0.15`、`panV2PerLine 0.05..0.18`、`sePerLine 0.04..0.16`，并要求 `Zoom` / `Pedestal` /
+`PanV2` / `DoF` / `Look` / `Se` 至少各编译出一条。聚合只统计成功场；不要为了通过而放宽区间。
+
+已编译 episode 的命令审计可以单独运行（检查 `i`/`raw`/`commandCount`、注册命令、参数区间、SE 资源闭合和
+`HostActions` 里的 `LookTargetPosition`，失败时退出码为 1）：
+
+```sh
+npm run audit:stories -- --episode output/phase1/episode.json \
+  --site resources/site --base stories/10438.json --manifest output/phase1/stories/99001.json
+```
+
 ## 已知限制
 
 - **HTTP AI 队列需要产品站点**（`nnnotes.product/1`）。站点格式（`ournotes.story-manifest/2`）可以用
   `host/tools/ai-site-story.mjs` 让 AI 写导演脚本、合成 TTS 并编译，或用 `site-story` 编译手写脚本，再用
   `render-story` 直接渲染。站点格式的 TTS 会写成真实 WAV cue，渲染时由页面解码给 MotionSync；不再静音。
 - 导演脚本只覆盖 `scene` / `positions` / `say` / `narrate` / `camera` / `fade` / `pause` / `action`。底本
-  finalize 行里的淡出等仍会执行，但作者不能逐条写任意 ADV 命令（`PanV2`、`Pedestal`、`Tilt`、`DoParam` 等）；
+  finalize 行里的淡出等仍会执行，但作者不能逐条写任意 ADV 命令；只暴露经命令审计与抽帧验证的白名单
+  （`Focus` / `Track` / `Zoom` / `Pedestal` / `PanV2` / `DoF` / `Look` / `LookTarget` / `Se` 等），
   `Track` 只作为 `camera`/`track` 字段暴露，不支持任意参数。
 - `actions` 只支持动作、表情和 `lookAt`，不支持逐参数面部曲线。
 - 产品站点的 AI 剧本 TTS 嘴型使用游戏的 air lip sync（按句时长），不是 MotionSync 音频分析。站点格式的

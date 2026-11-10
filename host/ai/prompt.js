@@ -210,6 +210,12 @@ export const stagingRules = (maxOnStage = 3, budget = null) => {
       `zoom ${budget.zoomMin}~${budget.zoomMax} 次、lookAt 约 ${budget.lookAt} 次、` +
       `Se 约 ${budget.se} 条、Track 约 ${budget.track} 次。`
     : "";
+  // The extension fields are part of the measured official performance, not optional decoration: state them in the
+  // same shared rules so both prompt paths ask for the sampled Pedestal/PanV2/DoF/Look counts.
+  const extensionBudget = budget
+    ? `扩展运镜预算：Pedestal 约 ${budget.pedestal} 次、PanV2 约 ${budget.panV2} 次、DoF 约 ${budget.dof} 次、` +
+      `独立 look 至少 ${Math.max(1, Math.round(budget.lookAt * 0.15))} 次（与 lookAt 二选一）、Se 约 ${budget.se} 条。`
+    : "";
   return [
     `一场戏只写一个很小的具体事件（拍照、找东西、等人、收拾器材、分零食、试新曲……），${limit === 2 ? "2 人一组" : "2~3 人一组"}（需要时让其他成员分批进出，同台最多 ${limit} 人）；不要世界观解说、比赛结果或生离死别。`,
     limit === 2
@@ -221,9 +227,12 @@ export const stagingRules = (maxOnStage = 3, budget = null) => {
     "镜头档位：near 1.2× 是最广的全景（只在开场/收尾用，全场 0~1 次）；middle 1.4× 是双人中景（默认）；far 1.8× 是群像/紧中景；close 2.8× 是情绪近景；very-close 4× 是大特写（最多 1 次）。不要把 near 当近景。",
     "镜头每 3~4 句换一次：双人戏用二人同框（middle，focus 5）和说话者近景（close，focus 该角色）交替；三人群像用 far + focus 5，偶尔用两人构图（middle，focus 4/6）。不要每句切，也不要只在一个机位站桩。近景停 1~2 句（偶尔 3 句），随后回到二人/群像；不要连续两句都切 close。",
     budgetLine,
+    extensionBudget,
     `慢推镜（可选）：zoom 1.03~1.10 缓慢推近、0.92~0.98 拉远，zoomDuration 3~5 秒；${budget ? `一场 ${budget.zoomMin}~${budget.zoomMax} 次` : "次数按本场预算"}，官方最常见值是 ${OFFICIAL_TARGETS.zoomDefault}，但本脚本默认只写缓慢推拉；只给情绪句、近景或结尾，一个机位最多 1 次。`,
     `表演：一句台词最多一个说话者动作，听者反应最多一个；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的台词没有 Motion；表情和动作一起写，默认 idle，不要每句都笑。`,
-    limit === 2 ? "视线：双人戏每 2~3 句写一个 lookAt。" : "视线：双人戏每 2~3 句写一个 lookAt；三人以上只在被点名或明显反应时用。",
+    limit === 2
+      ? "视线：双人戏每 3~4 句写一个 lookAt，不要每 1~2 句都写；角色把视线移开时用独立 look/lookY。"
+      : "视线：双人戏每 3~4 句写一个 lookAt，三人以上只在被点名或明显反应时用；角色把视线移开时用独立 look/lookY。",
     "留白只用于 0.1~0.5 秒的呼吸；fade out/in 只用于真正的时间或地点跳跃。",
   ].filter(Boolean).join("\n");
 };
@@ -410,12 +419,12 @@ ${JSON.stringify(example, null, 2)}
 - 结尾用一句短话、一个小动作或一句没说完的话收束，不要总结主题，不要写“未完待续”。
 
 ## 扩展运镜与声音字段（可直接写在 beat 顶层）
-这些字段是可选演出增强；不写就沿用默认值或不生成。只能使用站点清单里已有的名称，数值不要越界。
+这些字段是官方实测演出的一部分，按本场预算写，不是可选装饰；不写就沿用默认值。只能使用站点清单里已有的名称，数值不要越界。
 - focusDuration / trackDuration：0~20 秒；focusDuration 需要同一 beat 的 focus 或 camera（scene/positions 总有 Focus 行），0 表示硬切，${fixed(OFFICIAL_TARGETS.focusDurationDefault, 1)} 是官方常见过渡值；trackDuration 需要 track，默认跟随该 beat 的 focus/camera。
-- pedestal / pedestalDuration：Y 偏移 -4~5，duration 0~20，默认 1.5；只在轻微上下移时用。
-- pan / panDuration / panFocusSlide：角度 -30~30，duration 0~20，focus slide 0~1；只在换组或明确横移时用。
-- dof / dofDuration / dofLayers：强度 0~1，duration 0.5~10，layers 0（背景）/2（角色）/省略（角色）；角色 DoF 需要台上目标（say 用说话者，action 用动作角色；camera/narrate 的 focus 要指向具体角色或有人的位置，省略 focus 时编译器会选当前镜头附近的台上角色），背景 DoF 不需要目标。
-- look / lookY / lookDuration：x/y -1~1，duration 0.2~10，默认 0.5；与 lookAt 二选一，同一 beat 不要同时写。
+- pedestal / pedestalDuration：Y 偏移 -4~5，duration 0~20，默认 1.5；本场写 2~${direction.pedestal} 次（"pedestal": -0.2），只在轻微上下移时用。
+- pan / panDuration / panFocusSlide：角度 -30~30，duration 0~20，focus slide 0~1；本场写 2~${direction.panV2} 次（"pan": -5 或 8），只在换组或明确横移时用。
+- dof / dofDuration / dofLayers：强度 0~1，duration 0.5~10，layers 0（背景）/2（角色）/省略（角色）；本场写 ${Math.max(1, direction.dof)} 次（"dof": 0.5, "dofLayers": 2）；角色 DoF 需要台上目标（say 用说话者，action 用动作角色；camera/narrate 的 focus 要指向具体角色或有人的位置，省略 focus 时编译器会选当前镜头附近的台上角色），背景 DoF 不需要目标。
+- look / lookY / lookDuration：x/y -1~1，duration 0.2~10，默认 0.5；至少 2 句写独立 look（"look": -0.4, "lookY": 0.1），表现角色把视线移开；与 lookAt 二选一，同一 beat 不要同时写。
 - se / seDuration / seDelay / seStop：se 必须是站点声音清单里的 cue（清单为 (none) 时不要写 se/seStop）；duration 0.5~10，delay 0~10；seStop 与 se 互斥。
 - motionFadeIn / motionWait：fade -1~2，wait 布尔；默认 ${OFFICIAL_TARGETS.motionFadeInDefault}/false，只在明确需要节奏时写。
 示例（只演示字段位置，不要照抄数值）：

@@ -11,9 +11,10 @@ import { extractJson } from "./json.js";
 import { dialogueBudgetFor } from "./official-targets.js";
 import { buildPlanMessages, buildQuickCastMessages, buildStoryMessages, MAX_PROMPT_MODELS } from "./prompt.js";
 import {
-  buildCastMessages, buildDialogueLengthPrompt, buildDialogueMessages, buildDialogueRepairMessages,
-  buildStoryboardMessages, buildStoryboardRepairMessages, fallbackCastPlan, mergeStagedScript, modelIndex,
-  normalizeCastPlan, normalizeDialogue, onStageProblems, resolveModel, spreadPositions, countDialogueChars,
+  balanceLineBreaks, buildCastMessages, buildDialogueLengthPrompt, buildDialogueMessages,
+  buildDialogueRepairMessages, buildStoryboardMessages, buildStoryboardRepairMessages, fallbackCastPlan,
+  mergeStagedScript, modelIndex, normalizeCastPlan, normalizeDialogue, onStageProblems, resolveModel,
+  spreadPositions, countDialogueChars,
 } from "./staged.js";
 
 export class StoryWriterError extends Error {
@@ -28,6 +29,10 @@ export class StoryWriterError extends Error {
 
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const lower = (s) => String(s || "").trim().toLowerCase();
+// A provider that counts reasoning against max_tokens can return finish_reason=length before any JSON is written.
+// One retry of the same fixed request is cheaper than losing a finished dialogue pass.
+const isTruncatedAnswer = (error) =>
+  /truncated|finish_reason=length/i.test(`${error?.message || ""} ${error?.cause?.message || ""}`);
 
 // Extended official camera/sound fields: normalize() preserves them for the parser, checker and compiler so a staged
 // answer is not silently stripped.
@@ -371,9 +376,19 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
   const ask = async (messages, label) => {
     if (signal?.aborted) throw signal.reason || new Error("aborted");
     const startedAt = Date.now();
-    const answer = await llm.json(messages, { signal, label });
-    if (answer.usage) usages.push({ stage: label, ...answer.usage });
-    stages.push({ stage: label, model: answer.model ?? null, latencyMs: Date.now() - startedAt,
+    let usedLabel = label;
+    let answer;
+    try {
+      answer = await llm.json(messages, { signal, label });
+    } catch (e) {
+      if (signal?.aborted || !isTruncatedAnswer(e)) throw e;
+      stageWarnings.push(`${label} 回答被截断，已重试一次`);
+      logger.warn?.(`${label}: answer truncated; retrying once`);
+      usedLabel = `${label}-retry`;
+      answer = await llm.json(messages, { signal, label: usedLabel });
+    }
+    if (answer.usage) usages.push({ stage: usedLabel, ...answer.usage });
+    stages.push({ stage: usedLabel, model: answer.model ?? null, latencyMs: Date.now() - startedAt,
                   usage: answer.usage ?? null, ok: true });
     return answer;
   };
@@ -475,6 +490,9 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
       }
     }
   }
+  const breakBalance = balanceLineBreaks(dialogue);
+  if (breakBalance.removed || breakBalance.added)
+    stageWarnings.push(`台词换行已按官方两行比例调整（合并 ${breakBalance.removed} 条，拆分 ${breakBalance.added} 条）`);
 
   onProgress("storyboard", 0.48, "AI 设计分镜");
   let answer = await ask(buildStoryboardMessages({ plan, dialogue, catalog, request, config }), "storyboard")
