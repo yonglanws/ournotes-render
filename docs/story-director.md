@@ -271,7 +271,7 @@ stage：先两人对话，`positions` 引入第三人，再让一人退场、最
 | `camera` | `camera`、`focus`、`track`、`zoom`、`zoomDuration`、`cameraDuration`、`focusDuration`、`trackDuration`、`pedestal`、`pedestalDuration`、`pan`、`panDuration`、`panFocusSlide`、`dof`、`dofDuration`、`dofLayers`、`se`、`seDuration`、`seDelay`、`seStop`、`duration` | 只移动镜头，不改变站位；`cameraDuration` 是各运镜的统一时长，`duration` 是旧别名。 |
 | `fade` | `fade`（`out`/`in`）、`duration` | 黑场转场，只用于时间/地点跳跃。 |
 | `pause` | `pause`（秒） | 无台词留白，编译成 `Delay`；建议 0.1~0.5 秒。 |
-| `action` | `action`、`motion`、`expression`、`lookAt`、`look`、`lookY`、`lookDuration`、`se`、`seDuration`、`seDelay`、`seStop`、`motionFadeIn`、`motionWait`、`duration` | 没有台词的反应镜头；`duration` 会追加一个 `Delay`。 |
+| `action` | `action`、`motion`、`expression`、`lookAt`、`look`、`lookY`、`lookDuration`、`dof`、`dofDuration`、`dofLayers`、`se`、`seDuration`、`seDelay`、`seStop`、`motionFadeIn`、`motionWait`、`duration` | 没有台词的反应镜头；`duration` 会追加一个 `Delay`。 |
 
 `camera` 可以写 `near` / `middle` / `far` / `close` / `very-close`，也可以写
 `{ "distance": "close", "focus": 2, "track": 0.4 }`。它们对应官方的 `CameraDistance` 和 focus data 的变焦：
@@ -301,7 +301,10 @@ Focus 时长。
 扩展运镜与声音字段编译成独立的官方行，顺序为 `Pedestal` → `PanV2` → `DoF` → `Zoom` → `Se` → `Look`：
 `pedestal`（-4~5）、`pan`/`panFocusSlide`（-30~30 / 0~1）、`dof`/`dofLayers`（0~1，0 或 2 层）的 duration
 默认 1.5 秒；`look`/`lookY`（-1~1）与 `lookAt` 同一 beat 二选一；`se` 只能用 base story 声音清单里已有的 cue，
-`seStop` 与 `se` 互斥；`motionFadeIn`（-1~2）和 `motionWait` 写在对应的 `Motion` 行上。
+`seStop` 与 `se` 互斥；`motionFadeIn`（-1~2）和 `motionWait` 写在对应的 `Motion` 行上。角色 `DoF` 必须带台上目标：
+say 用说话者，action 用动作角色，camera/narrate 用 focus 指向的角色/位置或当前镜头附近的台上角色；`dofLayers: 0`
+是纯背景虚化，不需要目标。`panDuration`/`panFocusSlide` 需要 `pan`，`dofDuration`/`dofLayers` 需要 `dof`，
+`lookY`/`lookDuration` 需要 `look`，`trackDuration` 需要 `track`，`focusDuration` 需要 `focus` 或 `camera`。
 
 动作和表情行编译时带 `MotionFadeIn: -1`：播放器使用动作自带的淡入（MyGO 动作数据里是 1 秒），换动作时从当前
 姿势交叉淡入，不会突然跳到新动作第一帧。缺少这个字段时游戏按 0 秒处理，这正是自行拼 `Motion` 行时动作看起来

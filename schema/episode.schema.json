@@ -324,7 +324,10 @@
           "type": "number"
         },
         "MotionWait": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "number"
+          ]
         },
         "ExpressionName": {
           "type": "string"

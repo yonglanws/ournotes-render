@@ -49,7 +49,8 @@ const makeCatalog = () => {
   return cat;
 };
 
-test("composeWithVoices compiles the raw script and attaches the TTS sound product", async () => {  const dir = tmpDir();
+test("composeWithVoices compiles the raw script and attaches the TTS sound product", async () => {
+  const dir = tmpDir();
   const wav = path.join(dir, "line.wav");
   sineWav(wav, { seconds: 1 });
   const voices = new Map([[1, { file: wav, sampleRate: 48000, samples: 48000, channels: 1, cueName: "tts_line_1" }]]);

@@ -411,15 +411,16 @@ ${JSON.stringify(example, null, 2)}
 
 ## 扩展运镜与声音字段（可直接写在 beat 顶层）
 这些字段是可选演出增强；不写就沿用默认值或不生成。只能使用站点清单里已有的名称，数值不要越界。
-- focusDuration / trackDuration：0~20 秒；focusDuration 0 表示硬切，${fixed(OFFICIAL_TARGETS.focusDurationDefault, 1)} 是官方常见过渡值；trackDuration 默认跟随该 beat 的 focus/camera。
+- focusDuration / trackDuration：0~20 秒；focusDuration 需要同一 beat 的 focus 或 camera，0 表示硬切，${fixed(OFFICIAL_TARGETS.focusDurationDefault, 1)} 是官方常见过渡值；trackDuration 需要 track，默认跟随该 beat 的 focus/camera。
 - pedestal / pedestalDuration：Y 偏移 -4~5，duration 0~20，默认 1.5；只在轻微上下移时用。
 - pan / panDuration / panFocusSlide：角度 -30~30，duration 0~20，focus slide 0~1；只在换组或明确横移时用。
-- dof / dofDuration / dofLayers：强度 0~1，duration 0.5~10，layers 0/2/省略；只在情绪特写时用。
+- dof / dofDuration / dofLayers：强度 0~1，duration 0.5~10，layers 0（背景）/2（角色）/省略（角色）；角色 DoF 需要台上目标（say 用说话者，action 用动作角色；camera/narrate 的 focus 要指向具体角色或有人的位置，省略 focus 时编译器会选当前镜头附近的台上角色），背景 DoF 不需要目标。
 - look / lookY / lookDuration：x/y -1~1，duration 0.2~10，默认 0.5；与 lookAt 二选一，同一 beat 不要同时写。
 - se / seDuration / seDelay / seStop：se 必须是站点声音清单里的 cue（清单为 (none) 时不要写 se/seStop）；duration 0.5~10，delay 0~10；seStop 与 se 互斥。
 - motionFadeIn / motionWait：fade -1~2，wait 布尔；默认 ${OFFICIAL_TARGETS.motionFadeInDefault}/false，只在明确需要节奏时写。
 示例（只演示字段位置，不要照抄数值）：
-{"say": "a", "text": "……嗯。", "focusDuration": 1.5, "trackDuration": 2, "pedestal": -0.2, "pedestalDuration": 1.5,
+{"say": "a", "text": "……嗯。", "focus": 5, "camera": "middle", "track": 0.2, "focusDuration": 1.5, "trackDuration": 2,
+ "pedestal": -0.2, "pedestalDuration": 1.5,
  "pan": 12, "panDuration": 2.5, "panFocusSlide": 0.5, "dof": 0.4, "dofDuration": 1.5, "dofLayers": 2,
  "look": -0.4, "lookY": 0.1, "lookDuration": 0.5, ${exampleSe ? `"se": ${JSON.stringify(exampleSe)}, "seDuration": 2, "seDelay": 0.2, ` : ""}"motionFadeIn": ${OFFICIAL_TARGETS.motionFadeInDefault}, "motionWait": false}
 

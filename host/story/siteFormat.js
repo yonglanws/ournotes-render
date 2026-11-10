@@ -33,9 +33,9 @@ export const characterName = (id, personas = []) => {
   return hit ? hit.name : id;
 };
 
-// The prompt catalog of a site-format story: every model whose character has a name (a sheet or the map above), one
-// costume per character, base-story outfits first. A model without a sheet (an NPC, or a band the operator did not
-// provide) is left out so the AI cannot cast a character it knows nothing about.
+// The prompt catalog of a site-format story: its stages, music, SE cue choices and every model whose character has a
+// name (a sheet or the map above), one costume per character, base-story outfits first. A model without a sheet (an
+// NPC, or a band the operator did not provide) is left out so the AI cannot cast a character it knows nothing about.
 export const catalogFromSite = (site, baseRel, language = "", { personas = [] } = {}) => {
   const c = readSiteCatalog(site, baseRel, language);
   const baseIds = new Set(Object.keys(c.baseManifest.models || {}));

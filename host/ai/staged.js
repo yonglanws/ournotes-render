@@ -622,7 +622,7 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
     { "line": "l2", "lookAt": "${plan.cast[0]?.id || "a"}", "focus": "${plan.cast[0]?.id || "a"}", "camera": "close",
       "zoom": 1.06, "zoomDuration": 4,
       "actions": [{ "at": 0, "cast": "${plan.cast[0]?.id || "a"}", "expression": "表情名" }] },
-    { "line": "l3", "motion": "动作名", "expression": "表情名", "focus": 5, "camera": "middle",
+    { "line": "l3", "motion": "动作名", "expression": "表情名", "focus": 5, "camera": "middle", "track": 0.5,
       "focusDuration": ${OFFICIAL_TARGETS.focusDurationDefault}, "trackDuration": 2, "pedestal": -0.2, "pedestalDuration": 1.5,
       "pan": 12, "panDuration": 2.5, "panFocusSlide": 0.5, "dof": 0.4, "dofDuration": 1.5, "dofLayers": 2,
       "look": -0.4, "lookY": 0.1, "lookDuration": 0.5, ${exampleSe ? `"se": ${JSON.stringify(exampleSe)}, "seDuration": 2, "seDelay": 0.2, ` : ""}"motionFadeIn": ${OFFICIAL_TARGETS.motionFadeInDefault}, "motionWait": false },
@@ -634,14 +634,15 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
 - 第一条 beat 必须是 scene；scene 的 positions 只放 1 人，其余角色 2~4 句后用 positions 进场。
 - **每个 line id 必须出现且只出现一次，顺序与台词稿完全一致**；不要在 line beat 里写 say 或 text。
 - 非 line beat 只有 scene / positions / camera / fade / pause / action，插在合适的台词之间；不要为每一句新开 scene，也不要反复 fade。
-- line beat 只写演出字段：motion、expression、lookAt、focus、camera、track、zoom、zoomDuration、actions，以及可选的 focusDuration、trackDuration、pedestal、pedestalDuration、pan、panDuration、panFocusSlide、dof、dofDuration、dofLayers、look、lookY、lookDuration、se、seDuration、seDelay、seStop、motionFadeIn、motionWait。不写 focus/camera/track 就保持当前镜头。
+- line beat 只写演出字段：motion、expression、lookAt、focus、camera、track、zoom、zoomDuration、actions，以及可选的 focusDuration、trackDuration、pedestal、pedestalDuration、pan、panDuration、panFocusSlide、dof、dofDuration、dofLayers、look、lookY、lookDuration、se、seDuration、seDelay、seStop、motionFadeIn、motionWait。不写 focus/camera/track 就保持当前镜头。trackDuration 只在写了 track 时有效，focusDuration 只在写了 focus/camera 时有效。
+- narrate 台词（[narrate]）没有说话者，不能写 motion、expression、lookAt、look、lookY、lookDuration、se、seDuration、seDelay、seStop、motionFadeIn、motionWait；只写 focus/camera/track/zoom/运镜字段和 actions（actions 必须带 cast）。
 - 每个说话者开口前必须已经在台上；用 positions 让他进场。**两人同台必须 far-left / far-right**；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0）" : "同台最多 2 人，第 3 人必须等一人退场后再进场"}；不要用 center+right、center+left 或 left+right（会重叠）。
 - **镜头预算**：全场约 ${budget.focusChanges} 个 focus（含 scene/positions 上的；官方 Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句），其中 close 近景约 ${budget.closeUps} 次（距离 4 约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行），near 全景 0~1 次。close 停 1~2 句（偶尔 3 句），下一句用 middle + focus 5 回到二人/群像；不要连续两句 close，也不要停在同一个 close 上直到结尾。
   大部分 line beat 不要写 focus/camera/track，只有真的换机位时才写；同一机位保持 3~4 句，连续两句都写 focus 通常就是切太碎。推近（middle/far → close）是硬切，拉回（close → middle/far）会自动缓推，不需要写 duration。
 - **慢推镜**：全场约 ${budget.zoomMin}~${budget.zoomMax} 次 zoom，写在情绪句/近景或结尾：推近 1.03~1.10，拉远 0.92~0.98，zoomDuration 3~5 秒。一个机位最多 1 次；不写就静止，不要每个镜头都推。
 - **视线预算**：全场约 ${budget.lookAt} 个 lookAt；双人戏每 3 句最多 1 个，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名或 1~9 的构图点；不要每句都看着对方。
 - **表演预算**：全场约 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；约 ${noMotionTarget} 句完全没有 Motion（参考上限 ${budget.maxStatic} 句；超出预算时优先修剪最短句）；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。
-- **扩展运镜与声音**：Pedestal 约 ${budget.pedestal} 次（轻微上下移），PanV2 约 ${budget.panV2} 次（只在换组/横移），DoF 约 ${budget.dof} 次（情绪特写），Look/LookTarget 约 ${budget.lookAt} 次，Se 约 ${budget.se} 条（se 只能写上面音效清单里的 cue；清单为 (none) 时不写 se/seStop），Track 约 ${budget.track} 次。可选字段：focusDuration、trackDuration、pedestalDuration、panDuration、panFocusSlide、dofDuration、dofLayers、look、lookY、lookDuration、seDuration、seDelay、seStop、motionFadeIn、motionWait；只在明确需要时写，不写就沿用默认值或不生成。
+- **扩展运镜与声音**：Pedestal 约 ${budget.pedestal} 次（轻微上下移），PanV2 约 ${budget.panV2} 次（只在换组/横移），DoF 约 ${budget.dof} 次（情绪特写），Look/LookTarget 约 ${budget.lookAt} 次，Se 约 ${budget.se} 条（se 只能写上面音效清单里的 cue；清单为 (none) 时不写 se/seStop），Track 约 ${budget.track} 次。可选字段：focusDuration、trackDuration、pedestalDuration、panDuration、panFocusSlide、dofDuration、dofLayers、look、lookY、lookDuration、seDuration、seDelay、seStop、motionFadeIn、motionWait；只在明确需要时写，不写就沿用默认值或不生成。trackDuration 只在写了 track 时有效，focusDuration 只在写了 focus/camera 时有效；角色 DoF 需要台上目标（say 默认说话者，action 用动作角色；camera/narrate 的 focus 指向具体角色或有人的位置，省略 focus 时编译器选当前镜头附近的台上角色），背景 DoF（dofLayers 0）不需要。
 - 听者反应写进 actions（at: 0），**每句最多 1 条**，cast 必须是台上的其他角色；不要给说话者本人写 actions，也不要一句叠两个听者。
 - focus 优先写构图点/位置，角色 focus 只给 close 近景和情绪最重的 1~2 句；close / very-close 必须 focus 到角色 id 或该角色的位置，不要用 focus 5。track 只在换组/群像横移时写，-4~4，双人通常 0~1 次。
 - 没有合适的动作/表情就省略字段，不要编清单之外的名字。
@@ -683,6 +684,10 @@ const EXTRA_DIRECTION_KEYS = ["focusDuration", "trackDuration", "pedestal", "ped
 
 const DIRECTION_KEYS = ["motion", "expression", "lookAt", "focus", "camera", "track", "zoom", "zoomDuration",
                         "actions", ...EXTRA_DIRECTION_KEYS];
+// A narration has no speaker: motion/expression/gaze/sound/acting fields belong to a say or action beat.
+const NARRATE_DIRECTION_KEYS = ["focus", "camera", "track", "zoom", "zoomDuration", "focusDuration", "trackDuration",
+                                "pedestal", "pedestalDuration", "pan", "panDuration", "panFocusSlide",
+                                "dof", "dofDuration", "dofLayers", "actions"];
 const BEAT_KEYS = ["scene", "positions", "camera", "focus", "track", "zoom", "zoomDuration", "music", "location",
                    "duration", "fade", "pause", "action", "motion", "expression", "lookAt",
                    ...EXTRA_DIRECTION_KEYS];
@@ -878,7 +883,12 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
         warnings.push({ code: "duplicateLine", message: `分镜重复引用了 ${lines[at].id}，保留第一次` });
         continue;
       }
-      direction[at] = pick(beat, DIRECTION_KEYS);
+      direction[at] = pick(beat, lines[at].narrate ? NARRATE_DIRECTION_KEYS : DIRECTION_KEYS);
+      if (lines[at].narrate) {
+        const dropped = DIRECTION_KEYS.filter((k) => k in beat && !NARRATE_DIRECTION_KEYS.includes(k));
+        if (dropped.length)
+          warnings.push({ code: "narrateField", message: `旁白没有说话者，已忽略 ${dropped.join("、")}` });
+      }
       next = at + 1;
       continue;
     }

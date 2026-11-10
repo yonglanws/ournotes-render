@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildQuickCastMessages, buildStoryMessages } from "../ai/prompt.js";
+import { parseScript } from "../../scripts/lib/story-author/script.js";
 import { generateScript, prepareScript } from "../ai/storyWriter.js";
 import { directionBudgetFor } from "../ai/official-targets.js";
 import { buildDialogueMessages, buildStoryboardMessages, mergeStagedScript, normalizeDialogue, onStageProblems, spreadPositions } from "../ai/staged.js";
@@ -430,6 +431,28 @@ test("both prompt paths list the site's SE cues and never a placeholder", () => 
   const [, storyboard] = buildStoryboardMessages({ plan: PLAN2, dialogue, catalog, request: {}, config: STAGED_CONFIG });
   assert.match(storyboard.content, /sound_se_adv_door_knock/);
   assert.doesNotMatch(storyboard.content, /se_cue/);
+});
+
+test("a narrate line drops speaker-only direction before parsing", () => {
+  const dialogue = { lines: [
+    { id: "l1", say: "a", text: "第一句。" },
+    { id: "l2", narrate: "雨声。" },
+  ] };
+  const storyboard = { beats: [
+    { scene: "stage_a", camera: "middle", positions: { a: "far-left" } },
+    { line: "l1" },
+    { line: "l2", focus: 5, se: "sound_se_adv_door_knock", look: 0.2, lookY: 0.1,
+      motionFadeIn: 0.5, motionWait: true, motion: "mtn_smile01", lookAt: "a" },
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {},
+                                     config: STAGED_CONFIG });
+  const narrate = merged.doc.beats.find((b) => b.narrate);
+  assert.equal(narrate.focus, 5);
+  for (const key of ["se", "look", "lookY", "motionFadeIn", "motionWait", "motion", "expression", "lookAt"]) {
+    assert.equal(key in narrate, false, key);
+  }
+  assert.ok(merged.warnings.some((w) => w.code === "narrateField"));
+  assert.deepEqual(parseScript(merged.doc).errors, []);
 });
 
 test("a speaker the storyboard left off stage is sent back for a repair", async () => {

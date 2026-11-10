@@ -82,7 +82,7 @@ export class StoryCatalog {
     return bases[0];
   }
 
-  // {base, language, languages, stages, music, cast, models}
+  // {base, language, languages, stages, music, sounds, cast, models}
   async catalog({ manifest = "", refresh = false } = {}) {
     const chosen = this.pickBase(manifest);
     const key = `${chosen.manifest}\n${this.language}`;

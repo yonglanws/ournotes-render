@@ -59,18 +59,21 @@ test("the episode schema declares the official command fields the compiler write
   const schema = JSON.parse(fs.readFileSync(path.join(schemaDir, "episode.schema.json"), "utf8"));
   const props = schema.$defs.command.properties;
   assert.deepEqual(props.MotionFadeIn, { type: "number" });
-  assert.deepEqual(props.MotionWait, { type: "boolean" });
+  assert.deepEqual(props.MotionWait, { type: ["boolean", "number"] });
   assert.deepEqual(props.CanvasLayers, { type: "array", items: { type: "integer" } });
   assert.deepEqual(props.TargetTextColors, { type: "array", items: { type: "string" } });
   const check = compile(schema);
   const episode = {
-    advId: 0, asset: "", commandCount: 2,
+    advId: 0, asset: "", commandCount: 3,
     commands: [
       { i: 0, cmd: "Motion", raw: 21, TargetName: "a", MotionName: "mtn_smile01", MotionFadeIn: -1, MotionWait: true },
-      { i: 1, cmd: "DoF", raw: 48, Parameter1: "0.5", Duration: 1.5, CanvasLayers: [0, 2] },
+      // the official rows store seconds (0.5, 1, 3.5 …), not a boolean
+      { i: 1, cmd: "Motion", raw: 21, TargetName: "b", MotionName: "mtn_nod01", MotionWait: 3.5 },
+      { i: 2, cmd: "DoF", raw: 48, Parameter1: "0.5", Duration: 1.5, CanvasLayers: [0, 2] },
     ],
     text: {}, sounds: {}, cuesheets: {}, videos: {}, resources: [],
     master: { _id: 0, _advEpisodeAsset: "", _titleTextId: "", _playbackMode: 0 }, title: null,
   };
   assert.deepEqual(check(episode), []);
+  assert.ok(check({ ...episode, commands: [{ i: 0, cmd: "Motion", raw: 21, MotionWait: "wait" }] }).length);
 });

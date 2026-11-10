@@ -239,7 +239,7 @@ beat may have an `id`, reported with its lines by `render`). The director fields
 | camera | `camera`: a distance or `{distance, focus, track}`. `focus`, `track`: optional. `zoom`, `zoomDuration`: optional slow zoom (its seconds default to `cameraDuration`, else 1.5). `cameraDuration`: seconds of the move; `duration` is its older alias. `focusDuration`, `trackDuration`, `pedestal`, `pedestalDuration`, `pan`, `panDuration`, `panFocusSlide`, `dof`, `dofDuration`, `dofLayers`, `se`, `seDuration`, `seDelay`, `seStop`: optional official fields. Moves the camera without changing the staging. |
 | fade | `fade`: `"out"` or `"in"`. `duration`: seconds (default 1). |
 | pause | `pause`: seconds of silence, compiled to `Delay`. |
-| action | `action`: a cast id. `motion`, `expression`, `lookAt`: optional, at least one. `look`, `lookY`, `lookDuration`, `se`, `seDuration`, `seDelay`, `seStop`, `motionFadeIn`, `motionWait`: optional official fields. `duration`: optional silent beat after it. |
+| action | `action`: a cast id. `motion`, `expression`, `lookAt`: optional, at least one. `look`, `lookY`, `lookDuration`, `dof`, `dofDuration`, `dofLayers`, `se`, `seDuration`, `seDelay`, `seStop`, `motionFadeIn`, `motionWait`: optional official fields. `duration`: optional silent beat after it. |
 
 An `actions` entry is `{"at": 0..1, "cast": optional, "motion": optional, "expression": optional, "lookAt":
 optional}`. `at` is the fraction of the line's body (voice length, else the typed text's display time). An action at
@@ -268,24 +268,32 @@ These fields compile to their own official ADV rows after the Focus/Track rows o
 
 | Field | Beats | Row | Range and default |
 |---|---|---|---|
-| `cameraDuration` | camera | Duration of `Focus`/`Track`/`Pedestal`/`PanV2`/`DoF` | 0..20; `duration` is its alias |
-| `focusDuration` | say, narrate, camera, scene, positions | `Focus` `Duration` | 0..20; 0/absent = hard cut |
-| `trackDuration` | say, narrate, camera, scene, positions | `Track` `Duration` | 0..20; own > the beat's Focus duration; `cameraDuration` only when the beat has no Focus row |
-| `pedestal` / `pedestalDuration` | say, narrate, camera | `Pedestal` | `-4..5`; duration 0..20, default 1.5 |
-| `pan` / `panDuration` / `panFocusSlide` | say, narrate, camera | `PanV2` | angle `-30..30`; duration 0..20, default 1.5; slide 0..1 (`Parameter3`) |
-| `dof` / `dofDuration` / `dofLayers` | say, narrate, camera | `DoF` | intensity 0..1; duration 0.5..10, default 1.5; layers 0 (background), 2 (characters) or absent |
+| `cameraDuration` | camera | Duration of `Focus`/`Track`/`Pedestal`/`PanV2`/`DoF`/`Zoom` | 0..20; `duration` is its alias |
+| `focusDuration` | say, narrate, camera, scene, positions | `Focus` `Duration` | 0..20; needs a `focus` or `camera` (scene/positions always have a Focus row); 0/absent = hard cut |
+| `trackDuration` | say, narrate, camera, scene, positions | `Track` `Duration` | 0..20; needs a `track`; own > the beat's Focus duration; `cameraDuration` only when the beat has no Focus row |
+| `pedestal` / `pedestalDuration` | say, narrate, camera | `Pedestal` | `-4..5`; duration 0..20, default 1.5; duration needs `pedestal` |
+| `pan` / `panDuration` / `panFocusSlide` | say, narrate, camera | `PanV2` | angle `-30..30`; duration 0..20, default 1.5; slide 0..1 (`Parameter3`); duration/slide need `pan` |
+| `dof` / `dofDuration` / `dofLayers` | say, narrate, camera, action | `DoF` | intensity 0..1; duration 0.5..10, default 1.5; layers 0 (background), 2 (characters) or absent; duration/layers need `dof` |
 | `zoom` / `zoomDuration` | say, narrate, camera | `Zoom` | 0.7..2.5; duration 0.2..20, default 1.5 |
-| `look` / `lookY` / `lookDuration` | say, action | `Look` | x and y `-1..1`; duration 0.2..10, default 0.5 |
-| `se` / `seDuration` / `seDelay` | scene, say, camera, action | `Se` | a cue of the base story's SE sheets; duration 0.5..10, delay 0..10 |
+| `look` / `lookY` / `lookDuration` | say, action | `Look` | x and y `-1..1`; duration 0.2..10, default 0.5; y/duration need `look` |
+| `se` / `seDuration` / `seDelay` | scene, say, camera, action | `Se` | a cue of the base story's SE sheets; duration 0.5..10, delay 0..10; duration/delay need `se` |
 | `seStop` | scene, say, camera, action | `Se` with `Parameter1: "Stop"` | boolean; cannot be combined with `se` |
-| `motionFadeIn` / `motionWait` | say, action, positions | `Motion` | fade `-1..2` (default -1); wait boolean |
+| `motionFadeIn` / `motionWait` | say, action, positions | `Motion` | fade `-1..2` (default -1); wait boolean (true/false, or the official seconds when written into an episode) |
 
 A field's own duration wins over `cameraDuration`, which wins over the compiler's automatic duration (or the table's
 default). A Track is the exception: it follows the Focus row's duration, and `cameraDuration` is only its fallback
 when the beat has no Focus row. `look` and `lookAt` cannot be used on the same beat: `look` is a direction, `lookAt` an official
-`LookTarget`. `panFocusSlide` needs `pan`, `dofLayers` needs `dof`, `pedestalDuration` needs `pedestal`, and
-`seDuration`/`seDelay` need `se`. A `se` that is not one of the base story's SE cues (error `unknownSe`) is refused;
-the cue list is what `site-story.mjs --list` prints as `sounds` and what the AI prompt shows as 可用音效.
+`LookTarget`. Every modifier needs the field it modifies: `panDuration`/`panFocusSlide` need `pan`,
+`dofDuration`/`dofLayers` need `dof`, `lookY`/`lookDuration` need `look`, `trackDuration` needs `track`,
+`pedestalDuration` needs `pedestal`, `focusDuration` needs a `focus` or `camera` (scene/positions always have a Focus
+row), and `seDuration`/`seDelay` need `se`. A `se` that is not one of the base story's SE cues (error `unknownSe`) is
+refused; the cue list is what `site-story.mjs --list` prints as `sounds` and what the AI prompt shows as 可用音效.
+
+A character `DoF` row names a target: a `say` targets its speaker, an `action` its cast, and a `camera`/`narrate`
+targets its explicit `focus` when that names a cast or an occupied slot; without a focus it targets the on-stage
+character nearest the current shot. `dofLayers: 0` is background-only and needs no target. A character DoF without a
+resolvable on-stage target is an `offStage` error (the player would resolve position 0 and do nothing). Both the local
+story engine and the 0.1.8 site engine read `PositionType` first, then `TargetName`.
 
 The default AI storyboard uses `at: 0` listener reactions only; timed gaze stays in `actions` as before, and the new
 gaze is the independent `Look` row (`docs/story-director.md` has the verified command whitelist).
@@ -324,7 +332,7 @@ breaks the line. Keep each text line within the talk window's width; `render` re
 | `offStageAction` | A timed action or `lookAt` target that is not on stage. |
 | `beforeScene` | A beat before the first scene. |
 | `positionTaken` | Two characters on one position. |
-| `offStage` | A motion or an expression for a speaker who is not on stage. |
+| `offStage` | A motion, an expression, a look or a character DoF for a speaker who is not on stage; or a `camera`/`narrate` character DoF without an on-stage target. |
 | `noLines` | `render`: the script has no line. |
 | warning `speakerOffStage` | A character speaks without standing on stage. |
 | warning `unusedCast` | A cast member never appears or speaks. |

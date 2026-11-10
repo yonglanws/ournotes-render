@@ -15,6 +15,7 @@ import {
   BASELINE_TARGETS, OFFICIAL_TARGETS, buildBaseline,
   compareBaselineToReport, corpusConfigFromEnv, corpusEvidence, canonicalReportDigest,
 } from "./official-baseline.mjs";
+import { compile } from "../lib/json-schema.mjs";
 
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/mini-official-episode.json", import.meta.url)));
 
@@ -438,6 +439,19 @@ test("30-episode corpus reproduces the official distribution metrics", { skip: c
   assert.equal(recomputed.all.rawDistributions.talkRows, BASELINE_TARGETS.rawDistributions.talkRows);
   assert.equal(recomputed.all.rawDistributions.textLines, BASELINE_TARGETS.rawDistributions.textLines);
   assert.equal(recomputed.all.rawDistributions.noMotionLines, BASELINE_TARGETS.rawDistributions.noMotionLines);
+});
+
+test("the local official episodes validate against the episode schema", { skip: corpusSkip }, () => {
+  const check = compile(JSON.parse(readFileSync(
+    new URL("../../schema/episode.schema.json", import.meta.url), "utf8")));
+  const corpus = discoverOfficialCorpus({ siteRoot: config.siteRoot, sampleRoot: config.sampleRoot,
+                                          assetsRoot: config.assetsRoot });
+  assert.deepEqual(corpus.failures, []);
+  assert.equal(corpus.length, BASELINE_TARGETS.totals.episodes);
+  for (const entry of corpus) {
+    const episode = entry.episode || readEpisodeAsset(entry.file);
+    assert.deepEqual(check(episode), [], entry.id);
+  }
 });
 
 test("raw close-up runs and performance-action lines are recomputed from the corpus", { skip: corpusSkip }, () => {

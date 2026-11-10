@@ -94,19 +94,39 @@ test("the base story's stages with short ids and captions, its music and a stage
   assert.equal(stageBackground(prefab, { sprite: () => null }), null);
 });
 
+test("soundChoices keeps the SE cues whose sheet has audio, several per sheet, without duplicates", () => {
+  const episode = {
+    sounds: {
+      1: { _soundCueSheetID: 1, _cueName: "sound_se_adv_door_knock" },
+      2: { _soundCueSheetID: 1, _cueName: "sound_se_adv_phone_buzz" },
+      3: { _soundCueSheetID: 1, _cueName: "sound_se_adv_door_knock" },
+      4: { _soundCueSheetID: 2, _cueName: "sound_se_adv_missing" },
+      5: { _soundCueSheetID: 3, _cueName: "sound_bgm_adv_quiet" },
+    },
+    cuesheets: { 1: { _cueSheetName: "sound_se_adv_room" }, 2: { _cueSheetName: "sound_se_adv_missing" },
+                 3: { _cueSheetName: "sound_bgm_adv_quiet" } },
+  };
+  const story = { parts: { sounds: { sound_se_adv_room: "cuesheets/room.json" } } };
+  assert.deepEqual(soundChoices(episode, story), [
+    { cue: "sound_se_adv_door_knock", label: "Door Knock", sound: 1, sheet: "sound_se_adv_room" },
+    { cue: "sound_se_adv_phone_buzz", label: "Phone Buzz", sound: 2, sheet: "sound_se_adv_room" },
+  ]);
+});
+
 test("official camera, gaze, motion and sound fields parse within their ranges", () => {
   const { script, errors } = parseScript({
     format: SCRIPT_FORMAT, base: "stories/10610.json",
     cast: { a: { model: "m", name: "A" } },
     beats: [
-      { scene: "stage_a", positions: { a: "center" }, focusDuration: 1.5, trackDuration: 2,
+      { scene: "stage_a", positions: { a: "center" }, focusDuration: 1.5, trackDuration: 2, track: 0.2,
         se: "sound_se_adv_door_knock", seDelay: 0.2 },
       { say: "a", text: "……", zoom: 1.2, zoomDuration: 1.5, pedestal: -0.2, pedestalDuration: 1.5,
         pan: -5, panDuration: 1.5, panFocusSlide: 0.5, dof: 0.5, dofDuration: 1.5, dofLayers: 2,
-        focusDuration: 1.5, trackDuration: 2, look: 0.3, lookY: -0.3, lookDuration: 0.5,
+        focusDuration: 1.5, trackDuration: 2, focus: 5, camera: "middle", track: 0.2,
+        look: 0.3, lookY: -0.3, lookDuration: 0.5,
         se: "sound_se_adv_door_knock", seDuration: 0.7, motionFadeIn: 0.5, motionWait: true },
       { narrate: "Wind.", zoom: 0.7, pedestal: 5, pan: 30, dof: 0, dofLayers: 0 },
-      { camera: "middle", cameraDuration: 3, focusDuration: 0, trackDuration: 20, zoom: 2.5,
+      { camera: "middle", cameraDuration: 3, focusDuration: 0, trackDuration: 20, track: 0.1, zoom: 2.5,
         pedestal: -4, pan: -30, dof: 1, se: "sound_se_adv_door_knock" },
       { action: "a", motion: "mtn_smile01", look: 1, lookY: 1, lookDuration: 10,
         seStop: true, motionFadeIn: -1, motionWait: false },
@@ -437,6 +457,17 @@ test("a Track follows the Focus duration; cameraDuration is the no-Focus fallbac
   ]);
 });
 
+test("a Track without a Focus row falls back to cameraDuration", () => {
+  // A parsed camera beat always names a camera distance and therefore emits a Focus row; this guards the compiler's
+  // fallback for a hand-built beat (the same shape a caller could construct before compiling).
+  const doc = { format: SCRIPT_FORMAT, base: "b", language: "en", title: "", font: { preset: "sans" }, warnings: [],
+    cast: [{ id: "a", model: "m_a", name: "Ann", path: "/cast/a" }],
+    beats: [{ kind: "camera", index: 0, path: "/beats/0", focus: "", track: 0.5, cameraDuration: 2.5 }] };
+  assert.deepEqual(strip(compileScript(doc, SITE, "en").episode.commands), [
+    { cmd: "Track", Parameter1: "0.5", Duration: 2.5, IsNoWait: 1 },
+  ]);
+});
+
 test("a look needs its speaker on stage", () => {
   const { errors } = checked(script([
     { scene: "garden", positions: { b: "right" } },
@@ -448,7 +479,7 @@ test("a look needs its speaker on stage", () => {
 test("official camera rows compile in deterministic order with their durations", () => {
   const c = compiled(script([
     { scene: "garden", camera: "middle", focus: 5, positions: { a: "left", b: "right" } },
-    { camera: "middle", focus: 5, cameraDuration: 3, focusDuration: 1, track: 0.5, pedestal: -0.2,
+    { camera: "middle", focus: "a", cameraDuration: 3, focusDuration: 1, track: 0.5, pedestal: -0.2,
       pan: -5, panFocusSlide: 0.5, dof: 0.5, dofLayers: 2, zoom: 1.2,
       se: "sound_se_adv_door_knock", seDuration: 0.7 },
     { say: "a", text: "One.", look: 0.3, lookY: -0.3, lookDuration: 0.4 },
@@ -459,12 +490,14 @@ test("official camera rows compile in deterministic order with their durations",
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 5, CameraDistance: 2 },
     // one Focus then one Track: the explicit Focus duration wins over cameraDuration for both
-    { cmd: "Focus", PositionType: 5, CameraDistance: 2, Duration: 1, IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 3, CameraDistance: 2, Duration: 1, IsNoWait: 1 },
     { cmd: "Track", Parameter1: "0.5", Duration: 1, IsNoWait: 1 },
     // cameraDuration is the fallback for the rows that have no duration of their own
     { cmd: "Pedestal", Parameter1: "-0.2", Duration: 3, IsNoWait: 1 },
     { cmd: "PanV2", Parameter1: "-5", Duration: 3, IsNoWait: 1, Parameter3: "0.5" },
-    { cmd: "DoF", Parameter1: "0.5", Duration: 3, IsNoWait: 1, CanvasLayers: [2] },
+    // a character DoF names its on-stage target; both engines resolve PositionType, else TargetName
+    { cmd: "DoF", Parameter1: "0.5", IsNoWait: 1, Duration: 3, CanvasLayers: [2],
+      TargetName: "a", PositionType: 3 },
     { cmd: "Zoom", Parameter1: "1.2", Duration: 3, IsNoWait: 1 },
     { cmd: "Se", SeID: 12, Duration: 0.7 },
     // look is a say field: it follows the camera rows of the beat before it
@@ -494,6 +527,71 @@ test("motion fade/wait and a SE stop reach their rows", () => {
       TargetTextColors: ["#FFFFFF"] },
     { cmd: "Se", Parameter1: "Stop" },
     { cmd: "Expression", TargetName: "b", ExpressionName: "exp_idle01", MotionFadeIn: 0.75 },
+  ]);
+});
+
+test("character DoF rows always carry an on-stage target", () => {
+  const c = compiled(script([
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    { say: "a", text: "One.", dof: 0.4, dofLayers: 2 },
+    { action: "b", expression: "exp_idle01", dof: 0.6 },
+    { camera: "middle", focus: "b", dof: 0.5 },
+    { camera: "middle", dof: 0.3 },
+    { camera: "middle", focus: 5, dof: 0.2, dofLayers: 0 },
+    { narrate: "Wind.", dof: 0.1 },
+  ]));
+  assert.deepEqual(strip(c.episode.commands).filter((r) => r.cmd === "DoF"), [
+    { cmd: "DoF", Parameter1: "0.4", IsNoWait: 1, Duration: 1.5, CanvasLayers: [2],
+      TargetName: "a", PositionType: 3 },
+    { cmd: "DoF", Parameter1: "0.6", IsNoWait: 1, Duration: 1.5, TargetName: "b", PositionType: 7 },
+    { cmd: "DoF", Parameter1: "0.5", IsNoWait: 1, Duration: 1.5, TargetName: "b", PositionType: 7 },
+    // no explicit focus: the nearest on-stage character to the current shot is the target
+    { cmd: "DoF", Parameter1: "0.3", IsNoWait: 1, Duration: 1.5, TargetName: "a", PositionType: 3 },
+    // background-only DoF needs no character target
+    { cmd: "DoF", Parameter1: "0.2", IsNoWait: 1, Duration: 1.5, CanvasLayers: [0] },
+    { cmd: "DoF", Parameter1: "0.1", IsNoWait: 1, Duration: 1.5, TargetName: "a", PositionType: 3 },
+  ]);
+});
+
+test("a character DoF needs an on-stage target", () => {
+  const { errors, warnings } = checked(script([
+    { scene: "garden", positions: {} },
+    { camera: "middle", dof: 0.5 },
+    { narrate: "Rain.", dof: 0.5 },
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    { camera: "middle", focus: 5, dof: 0.5 },
+    { camera: "middle", focus: "a", dof: 0.5 },
+    { camera: "middle", focus: 5, dof: 0.5, dofLayers: 0 },
+    { positions: { a: "left" } },
+    { say: "b", text: "Off.", dof: 0.5 },
+    { say: "b", text: "Off background.", dof: 0.5, dofLayers: 0 },
+  ]));
+  assert.deepEqual(codes(errors), [
+    ["/beats/1/dof", "offStage"], ["/beats/2/dof", "offStage"], ["/beats/4/dof", "offStage"],
+    ["/beats/8", "offStage"],
+  ]);
+  assert.ok(warnings.some((w) => w.code === "speakerOffStage" && w.path === "/beats/9/say"));
+});
+
+test("modifier fields need the field they modify", () => {
+  const { errors } = parseScript({
+    format: SCRIPT_FORMAT, base: "stories/10610.json",
+    cast: { a: { model: "m_a", name: "A" } },
+    beats: [
+      { scene: "garden", positions: { a: "left" } },
+      { say: "a", text: "a", focusDuration: 1 },
+      { say: "a", text: "b", trackDuration: 1 },
+      { say: "a", text: "c", panDuration: 1 },
+      { say: "a", text: "d", dofDuration: 1 },
+      { say: "a", text: "e", lookY: 0.1, lookDuration: 1 },
+    ],
+  });
+  assert.deepEqual(codes(errors), [
+    ["/beats/1/focusDuration", "empty"],
+    ["/beats/2/trackDuration", "empty"],
+    ["/beats/3/panDuration", "empty"],
+    ["/beats/4/dofDuration", "empty"],
+    ["/beats/5/lookY", "empty"], ["/beats/5/lookDuration", "empty"],
   ]);
 });
 
