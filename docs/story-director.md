@@ -383,6 +383,8 @@ say 用说话者，action 用动作角色，camera/narrate 用 focus 指向的�
 - 台词逐字来自第二轮；第三轮即使写了 `say`/`text` 也只取演出字段，改不动台词。
 - 每个 `line` id 必须出现且只出现一次；缺的分镜按“无动作”补上，重复的保留第一次，未知 id 丢弃并记 warning。
 - 每句只保留 1 个听者反应；独立 `Expression` 最多保留 1 条（官方约 0.07 条/集，默认 0），多出来的在合并时裁掉并记 warning。
+- 旁白（`narrate`）没有说话者：分镜只保留 `focus`/`camera`/`track`/`zoom`/运镜字段和 `actions`；`motion`、`expression`、`lookAt`、`look`、`se`、`motionFadeIn`、`motionWait` 等发言人字段在合并时丢弃并记 `narrateField` warning。
+- 非 line beat 按 `scene`/`positions`/`camera`/`fade`/`pause`/`action` 的类型只保留该类型允许的字段；多写的已知字段丢弃并记 `storyboardField` warning。
 - 站位在合并后统一归一化：两人改成 `far-left`/`far-right`；三人改成 `far-left`/`center`/`far-right`，并改成
   `camera: far`、`focus: 5`、`track: 0`。模型写了 `center+right` 这种会叠人的站位也会被纠正。
 - 第一条不是 `scene` 时补一个默认 `scene`：1 人站 `center`，2 人站 `far-left`/`far-right`，3 人站

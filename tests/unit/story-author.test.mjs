@@ -595,6 +595,37 @@ test("modifier fields need the field they modify", () => {
   ]);
 });
 
+test("normalized camera state decides the duration dependencies", () => {
+  const ok = parseScript({
+    format: SCRIPT_FORMAT, base: "stories/10610.json",
+    cast: { a: { model: "m_a", name: "A" } },
+    beats: [
+      { scene: "garden", positions: { a: "left" }, focusDuration: 1 },
+      { positions: { a: "left" }, focusDuration: 1 },
+      { say: "a", text: "x", camera: { track: 0.5 }, trackDuration: 1 },
+      { say: "a", text: "y", camera: { focus: "a" }, focusDuration: 1 },
+    ],
+  });
+  assert.deepEqual(ok.errors, []);
+  assert.equal(ok.script.beats[2].track, 0.5);
+  assert.equal(ok.script.beats[2].trackDuration, 1);
+});
+
+test("a raw empty focus does not satisfy focusDuration", () => {
+  const { errors } = parseScript({
+    format: SCRIPT_FORMAT, base: "stories/10610.json",
+    cast: { a: { model: "m_a", name: "A" } },
+    beats: [
+      { scene: "garden", positions: { a: "left" } },
+      { say: "a", text: "x", focus: "", focusDuration: 1 },
+      { say: "a", text: "y", focusDuration: 1 },
+    ],
+  });
+  assert.deepEqual(codes(errors), [
+    ["/beats/1/focusDuration", "empty"], ["/beats/2/focusDuration", "empty"],
+  ]);
+});
+
 test("track, focus points and pre-line reactions compile to the game's continuous staging", () => {
   const c = compiled(script([
     { scene: "garden", camera: { distance: "far", focus: 5, track: 0.5 }, positions: { a: "left", b: "right" } },
@@ -913,6 +944,7 @@ test("the commands without a browser: new, check, build; the built story loads",
     r = run(["base", "stories/9.json", "--site", dir]);
     assert.deepEqual(r.out.stages, [{ id: "garden", caption: "Garden" }, { id: "hall", caption: "" }]);
     assert.deepEqual(r.out.music, [{ cue: "sound_bgm_adv_quiet_morning", label: "Quiet Morning" }]);
+    assert.deepEqual(r.out.sounds, [{ cue: "sound_se_adv_door_knock", label: "Door Knock" }]);
     r = run(["model", "m_a", "--site", dir]);
     assert.deepEqual(r.out.motions, [{ stem: "mtn_idle", sides: "" }]);
 

@@ -455,6 +455,31 @@ test("a narrate line drops speaker-only direction before parsing", () => {
   assert.deepEqual(parseScript(merged.doc).errors, []);
 });
 
+test("non-line storyboard beats keep only their beat kind's fields", () => {
+  const dialogue = { lines: [{ id: "l1", say: "a", text: "第一句。" }] };
+  const storyboard = { beats: [
+    { scene: "stage_a", camera: "middle", positions: { a: "far-left" } },
+    { line: "l1" },
+    { camera: "middle", focus: 5, dof: 0.4, look: 0.2, motionFadeIn: 0.5 },
+    { positions: { a: "far-left" }, motionWait: true, zoom: 1.1 },
+    { pause: 0.2, se: "sound_se_adv_door_knock" },
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {},
+                                     config: STAGED_CONFIG });
+  const camera = merged.doc.beats.find((b) => b.camera === "middle" && !("scene" in b));
+  assert.equal(camera.dof, 0.4);
+  assert.equal("look" in camera, false);
+  assert.equal("motionFadeIn" in camera, false);
+  const positions = merged.doc.beats.find((b) => b.positions && !("scene" in b));
+  assert.equal(positions.motionWait, true);
+  assert.equal("zoom" in positions, false);
+  const pause = merged.doc.beats.find((b) => "pause" in b);
+  assert.equal("se" in pause, false);
+  assert.equal(merged.warnings.filter((w) => w.code === "storyboardField").length, 3);
+  assert.ok(merged.warnings.some((w) => /look.*motionFadeIn/.test(w.message)));
+  assert.deepEqual(parseScript(merged.doc).errors, []);
+});
+
 test("a speaker the storyboard left off stage is sent back for a repair", async () => {
   const calls = [];
   const llm = {

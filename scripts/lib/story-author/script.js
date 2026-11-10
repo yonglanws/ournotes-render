@@ -544,8 +544,10 @@ export const parseScript = (doc) => {
     if (has("lookDuration") && !has("look")) err(`${path}/lookDuration`, "empty", "lookDuration needs a look");
     if (has("pedestalDuration") && !has("pedestal"))
       err(`${path}/pedestalDuration`, "empty", "pedestalDuration needs a pedestal");
-    if (has("trackDuration") && !has("track")) err(`${path}/trackDuration`, "empty", "trackDuration needs a track");
-    if (has("focusDuration") && !(kind === "scene" || kind === "positions" || has("focus") || has("camera")))
+    if (has("trackDuration") && beat.track === undefined)
+      err(`${path}/trackDuration`, "empty", "trackDuration needs a track");
+    if (has("focusDuration") &&
+        !(kind === "scene" || kind === "positions" || beat.focus || beat.camera !== undefined))
       err(`${path}/focusDuration`, "empty", "focusDuration needs a focus or a camera");
     const num = (k, min, max) => {
       if (!has(k)) return;

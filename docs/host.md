@@ -280,7 +280,7 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
 | GET | `/api/v1/tasks/:id` | 任务状态、阶段、进度、排队位置、结果 |
 | GET | `/api/v1/tasks/:id/status` | 同上（别名） |
 | POST | `/api/v1/tasks/:id/cancel` | 取消任务 |
-| GET | `/api/v1/resources` | 站点目录：底本、舞台、音乐、模型、动作、表情、音色名、人格名 |
+| GET | `/api/v1/resources` | 站点目录：底本、舞台、音乐、音效、模型、动作、表情、音色名、人格名 |
 | GET | `/api/v1/files?page=&limit=&sort=` | 分页列出 `paths.output` 中的 `.mp4` / `.json` |
 | GET | `/api/v1/download/:filename` | 下载产物 |
 | POST | `/api/v1/cleanup` | 立即清理超过 `queue.outputMaxAgeHours` 的产物 |

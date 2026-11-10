@@ -101,7 +101,7 @@ export const readModelActions = (site, id) => {
            defaultMotion: ch.DefaultMotionName || "", defaultExpression: ch.DefaultExpressionName || "" };
 };
 
-// The vocabulary of a site-format story: its stages, BGM, and every model's actions.
+// The vocabulary of a site-format story: its stages, BGM, SE cues and every model's actions.
 export const readSiteCatalog = (site, baseRel, language = "") => {
   const baseManifest = JSON.parse(fs.readFileSync(path.join(site, baseRel), "utf8"));
   if (baseManifest.format !== "ournotes.story-manifest/2")

@@ -150,7 +150,7 @@ export class ApiServer {
       const catalog = await this.catalog.catalog({ manifest: params.get("base") || "", refresh: params.get("refresh") === "1" });
       sendJson(res, 200, {
         success: true, base: catalog.manifest, language: catalog.language, languages: catalog.languages,
-        stages: catalog.stages, music: catalog.music,
+        stages: catalog.stages, music: catalog.music, sounds: catalog.sounds || [],
         models: catalog.models.map((m) => ({ id: m.id, name: m.name, character: m.character, group: m.group,
           motions: m.motions, expressions: m.expressions, defaultMotion: m.defaultMotion,
           defaultExpression: m.defaultExpression })),

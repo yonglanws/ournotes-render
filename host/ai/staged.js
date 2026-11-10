@@ -675,8 +675,8 @@ export const buildStoryboardRepairMessages = ({ plan, dialogue, storyboard, prob
 // Merge: the dialogue is authoritative, the storyboard only says how it is staged
 // ---------------------------------------------------------------------------
 
-// AI output plumbing for the extended official camera/sound fields. Parser and
-// compiler support is a separate task; the merge keeps them on the right beats.
+// The extended official camera/sound fields the parser, checker and compiler support. The merge keeps them on the
+// right beats and drops any field the resolved beat kind does not accept.
 const EXTRA_DIRECTION_KEYS = ["focusDuration", "trackDuration", "pedestal", "pedestalDuration",
   "pan", "panDuration", "panFocusSlide", "dof", "dofDuration", "dofLayers",
   "look", "lookY", "lookDuration", "se", "seDuration", "seDelay", "seStop",
@@ -691,6 +691,20 @@ const NARRATE_DIRECTION_KEYS = ["focus", "camera", "track", "zoom", "zoomDuratio
 const BEAT_KEYS = ["scene", "positions", "camera", "focus", "track", "zoom", "zoomDuration", "music", "location",
                    "duration", "fade", "pause", "action", "motion", "expression", "lookAt",
                    ...EXTRA_DIRECTION_KEYS];
+// The fields each non-line beat kind accepts, so a storyboard cannot hand the parser a field its beat rejects.
+const NON_LINE_KEYS = {
+  scene: ["scene", "music", "location", "camera", "focus", "track", "positions", "focusDuration", "trackDuration",
+          "se", "seDuration", "seDelay", "seStop"],
+  positions: ["positions", "camera", "focus", "track", "focusDuration", "trackDuration", "motionFadeIn", "motionWait"],
+  camera: ["camera", "focus", "track", "zoom", "zoomDuration", "cameraDuration", "focusDuration", "trackDuration",
+           "pedestal", "pedestalDuration", "pan", "panDuration", "panFocusSlide", "dof", "dofDuration", "dofLayers",
+           "se", "seDuration", "seDelay", "seStop", "duration"],
+  fade: ["fade", "duration"],
+  pause: ["pause"],
+  action: ["action", "motion", "expression", "lookAt", "look", "lookY", "lookDuration", "dof", "dofDuration",
+           "dofLayers", "duration", "se", "seDuration", "seDelay", "seStop", "motionFadeIn", "motionWait"],
+};
+const beatKindOf = (beat) => ["scene", "positions", "camera", "fade", "pause", "action"].find((k) => k in beat) || "";
 
 const pick = (obj, keys) => {
   const out = {};
@@ -892,7 +906,14 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
       next = at + 1;
       continue;
     }
-    const clean = pick(beat, BEAT_KEYS);
+    const kind = beatKindOf(beat);
+    const keys = kind ? NON_LINE_KEYS[kind] : BEAT_KEYS;
+    const clean = pick(beat, keys);
+    if (kind) {
+      const dropped = BEAT_KEYS.filter((k) => k in beat && !keys.includes(k));
+      if (dropped.length)
+        warnings.push({ code: "storyboardField", message: `${kind} beat 不支持 ${dropped.join("、")}，已忽略` });
+    }
     if (next < lines.length) before[next].push(clean); else tail.push(clean);
   }
   const merged = [];

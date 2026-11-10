@@ -68,6 +68,7 @@ from (Normal episodes; home spot talks and live result talks cannot be bases).
   "manifest": "stories/10002.json", "language": "zh-Hans", "languages": ["zh-Hans"],
   "stages": [{ "id": "adv_bkg_stage_000139", "caption": "…" }, "…"],
   "music": [{ "cue": "sound_bgm_adv_…", "label": "…" }],
+  "sounds": [{ "cue": "sound_se_adv_…", "label": "…" }],
   "cast": ["adv_live2d_…", "…"],
   "fonts": ["sans", "serif", "rounded"],
   "sheets": ["shots/stages.png"]
@@ -77,6 +78,7 @@ from (Normal episodes; home spot talks and live result talks cannot be bases).
 - `stages[].id` is what a scene's `scene` names: the last segment of the stage key (the whole key where two stages
   end alike). `caption` is the location caption the base story shows on that stage, empty when it has none.
 - `music[].cue` is what a scene's `music` names. A base story without sound files has none.
+- `sounds[].cue` is what a beat's `se` names: the SE cues of the base story's sound files (a sheet may hold several).
 - `cast`: the models the base story itself uses (any model of `models.json` can be cast).
 - With `--out`: `stages.png`, the background picture of each stage with its id and caption.
 

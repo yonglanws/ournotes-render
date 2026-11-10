@@ -9,6 +9,7 @@ import { quietLogger, tmpDir } from "./helpers.mjs";
 const CATALOG = {
   manifest: "stories/1.json", language: "zh-Hans", languages: ["zh-Hans"],
   stages: [{ id: "stage_a", caption: "教室" }], music: [{ cue: "bgm_a", label: "Quiet" }],
+  sounds: [{ cue: "sound_se_adv_door_knock", label: "Door Knock" }],
   models: [{ id: "m_a", name: "灯", character: "tomori", group: "g", motions: ["mtn_idle01_C"],
              expressions: ["exp_idle01"], defaultMotion: "mtn_idle01_C", defaultExpression: "exp_idle01" }],
 };
@@ -146,6 +147,7 @@ test("resources reports the catalog", async () => {
     assert.equal(r.body.base, "stories/1.json");
     assert.equal(r.body.models[0].id, "m_a");
     assert.equal(r.body.stages[0].id, "stage_a");
+    assert.equal(r.body.sounds[0].cue, "sound_se_adv_door_knock");
   } finally {
     await stop(s);
   }

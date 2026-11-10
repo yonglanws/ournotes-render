@@ -29,9 +29,8 @@ export class StoryWriterError extends Error {
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const lower = (s) => String(s || "").trim().toLowerCase();
 
-// Extended official camera/sound fields: AI output plumbing only. The parser,
-// checker and compiler learn these in a separate task; normalize() still
-// preserves them so a staged answer is not silently stripped.
+// Extended official camera/sound fields: normalize() preserves them for the parser, checker and compiler so a staged
+// answer is not silently stripped.
 const EXTRA_BEAT_FIELDS = ["focusDuration", "trackDuration", "pedestal", "pedestalDuration",
   "pan", "panDuration", "panFocusSlide", "dof", "dofDuration", "dofLayers",
   "look", "lookY", "lookDuration", "se", "seDuration", "seDelay", "seStop",

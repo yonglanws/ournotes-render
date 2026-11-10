@@ -195,6 +195,7 @@ const commands = {
     const res = { manifest: b.path, language: b.language, languages: b.languages,
                   stages: b.stages.map((s) => ({ id: s.id, caption: s.caption })),
                   music: b.music.map((m) => ({ cue: m.cue, label: m.label })),
+                  sounds: b.sounds.map((s) => ({ cue: s.cue, label: s.label })),
                   cast: b.cast, fonts: FONT_PRESETS };
     if (out) {
       const bytes = await site.baseFiles(b, b.stages.map((s) => s.background).filter(Boolean));

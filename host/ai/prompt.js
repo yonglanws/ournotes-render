@@ -411,7 +411,7 @@ ${JSON.stringify(example, null, 2)}
 
 ## 扩展运镜与声音字段（可直接写在 beat 顶层）
 这些字段是可选演出增强；不写就沿用默认值或不生成。只能使用站点清单里已有的名称，数值不要越界。
-- focusDuration / trackDuration：0~20 秒；focusDuration 需要同一 beat 的 focus 或 camera，0 表示硬切，${fixed(OFFICIAL_TARGETS.focusDurationDefault, 1)} 是官方常见过渡值；trackDuration 需要 track，默认跟随该 beat 的 focus/camera。
+- focusDuration / trackDuration：0~20 秒；focusDuration 需要同一 beat 的 focus 或 camera（scene/positions 总有 Focus 行），0 表示硬切，${fixed(OFFICIAL_TARGETS.focusDurationDefault, 1)} 是官方常见过渡值；trackDuration 需要 track，默认跟随该 beat 的 focus/camera。
 - pedestal / pedestalDuration：Y 偏移 -4~5，duration 0~20，默认 1.5；只在轻微上下移时用。
 - pan / panDuration / panFocusSlide：角度 -30~30，duration 0~20，focus slide 0~1；只在换组或明确横移时用。
 - dof / dofDuration / dofLayers：强度 0~1，duration 0.5~10，layers 0（背景）/2（角色）/省略（角色）；角色 DoF 需要台上目标（say 用说话者，action 用动作角色；camera/narrate 的 focus 要指向具体角色或有人的位置，省略 focus 时编译器会选当前镜头附近的台上角色），背景 DoF 不需要目标。
