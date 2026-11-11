@@ -70,7 +70,7 @@ export const runDoctor = (config, { logger = console } = {}) => {
       (fs.existsSync(storiesDir) && fs.readdirSync(storiesDir).some((name) => name.endsWith(".json")));
     checks.site = {
       ok: fs.existsSync(dir) && fs.statSync(dir).isDirectory() && hasStories,
-      detail: `${dir} (site-format; /api/v1/script/generate only)`,
+      detail: `${dir} (site-format)`,
     };
     if (!checks.site.ok) {
       checks.site.detail = `${dir}: not a story site with stories.json or stories/*.json`;
@@ -137,8 +137,8 @@ export const runDoctor = (config, { logger = console } = {}) => {
   checks.tts = {
     ok: !config.tts.enabled || summary.count > 0 || summary.defaultVoice,
     detail: config.tts.enabled
-      ? `${config.tts.baseUrl || "(no base URL)"}; ${summary.count} voice(s), ` +
-        `${summary.defaultVoice ? "default voice set" : "no default voice"}`
+      ? `${config.tts.provider || "gpt-sovits"} @ ${config.tts.baseUrl || "(no base URL)"}; ` +
+        `${summary.count} voice(s), ${summary.defaultVoice ? "default voice set" : "no default voice"}`
       : "disabled",
     voices: summary,
   };

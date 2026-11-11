@@ -1,140 +1,189 @@
+<div align="center">
+
 # astrbot_plugin_ournotes_script
 
-AstrBot 插件：在聊天里用一条指令生成 **Our Notes 导演剧本**。它调用
-[ournotes-render](https://github.com/yonglanws/ournotes-render) 后端的 `POST /api/v1/script/generate`，把结果整理成
-可读预览，并附上完整的 `ournotes.story-script/1` JSON 文件。
+[ournotes-render](https://github.com/yonglanws/ournotes-render) 的 AstrBot 对接插件——
+把聊天指令转成宿主的剧本生成与视频渲染请求，成品 MP4 自动回传到 QQ / Telegram
 
-## 功能
+<a href="#简介">简介</a> ·
+<a href="#快速开始">快速开始</a> ·
+<a href="#指令">指令</a> ·
+<a href="#配置">配置</a> ·
+<a href="#工作流程">工作流程</a> ·
+<a href="#故障排除">故障排除</a>
 
-- `/剧本生成 <场景描述>`：AI 选角、写台词、写分镜，返回剧本预览 + JSON 附件。
-- 预览包含标题、角色、场景、站位、台词、旁白；可选显示动作、表情、视线、镜头、焦段、横移和慢推镜。
-- JSON 可以直接回填给后端渲染，或交给 `host/tools/site-story.mjs` 编译进站点。
-- 插件数据目录只保留最近若干份剧本，旧的自动清理。
-- 平台不支持文件消息时自动回退为纯文本预览。
+</div>
 
-## 前置条件
+## 简介
 
-1. 已部署 ournotes-render，并且 `paths.site` 指向 nnnotes 产品站点（或用 `paths.siteFormat` 指向下载好的 bdon 站点）、`llm` 可用。
-2. AstrBot 4.5 或更新版本。
-3. AstrBot 能访问到 host 的 HTTP 地址（同一台机器用 `http://127.0.0.1:9881`，跨机器用内网地址）。
+插件是纯对接端：**提示词、选角、剧本校验、TTS、渲染全部在宿主完成**。
+插件只负责接收指令、调用宿主 HTTP API、显示进度、下载视频并投递到会话，
+不在 AstrBot 侧配置 LLM 提供商或角色人格。
 
-## 安装
+- **两种创作模式**：`/视频对话` 生成短视频回复（带会话级历史）；`/剧本生成` 按场景生成完整短剧
+- **宿主内置 AI harness**：插件把场景、模式、历史与时长参数交给宿主 `POST /api/v1/script/generate`，
+  由宿主完成选角、提示词裁剪、台词修复与日文翻译
+- **两段式反馈**：剧本返回后立即提示「正在渲染视频」，渲染队列的阶段与进度持续回传，完成后发送 MP4
+- **宿主统一限流**：生成与渲染并发由宿主控制；插件侧另有轻量并发闸与排队上限，宿主队列满（HTTP 429）时自动排队重试
+- **健壮回传**：视频流式下载，本地文件直发 → URL 变体 → 文件服务 token 多级降级，兼容 Docker / NAT 网络
+- **会话历史**：`/视频对话` 按聊天上下文保存最近几轮，超时自动清理；剧本与统计落盘，重启不丢
+- **运维能力**：连接状态、宿主队列、任务取消、资源概览、过期文件清理、API 地址切换（`/ournotesadmin` 仅管理员）
 
-把本目录放到 AstrBot 的插件目录：
+> `/视频对话` 的历史与 chat 模式依赖宿主 `/api/v1/script/generate` 的 `mode` / `history` 字段；
+> 旧宿主会忽略这两个字段，仍能生成视频但没有上下文。
 
-```text
-AstrBot/data/plugins/astrbot_plugin_ournotes_script/
+## 快速开始
+
+> [!IMPORTANT]
+> 需要一台已运行且启用内置 AI 的 [ournotes-render](https://github.com/yonglanws/ournotes-render) 宿主。
+> 宿主 `config.yaml` 中需要配置 `llm.enabled: true`、模型通道，以及 `paths.site` 或 `paths.siteFormat`。
+
+- AstrBot 4.10.4+
+- Python 3.10+
+- 宿主的 HTTP API 从机器人侧可达（同机 `127.0.0.1:9881`，跨机填对方 IP）
+
+```bash
+# 在 AstrBot 根目录执行；目录名必须保持 astrbot_plugin_ournotes_script
+git clone --depth 1 https://github.com/yonglanws/ournotes-render.git /tmp/ournotes-render
+cp -r /tmp/ournotes-render/astrbot_plugin_ournotes_script data/plugins/astrbot_plugin_ournotes_script
+pip install -r data/plugins/astrbot_plugin_ournotes_script/requirements.txt
+# 在 AstrBot WebUI 的插件管理中点击「重载插件」
 ```
 
-然后安装依赖（AstrBot 的插件管理器通常会自动安装；手动方式如下）：
+日志出现 `ournotes 插件就绪` 即加载成功。
 
-```sh
-pip install -r requirements.txt
-```
+## 指令
 
-在 AstrBot WebUI → 插件管理里重载插件，或重启 AstrBot。看到日志
-`[ournotes] script plugin ready` 即加载成功。
+### 创作指令
 
-> 本目录在 ournotes-render 仓库的 `astrbot_plugin_ournotes_script/` 下。也可以单独复制这个目录到
-> `data/plugins/`，不需要复制整个渲染仓库。
+| 指令 | 别名 | 说明 | 示例 |
+| --- | --- | --- | --- |
+| `/视频对话 <消息>` | `/视频生成` `/视频聊天` `/测试视频对话` | 生成一段角色短视频回复 | `/视频对话 今天好累啊` |
+| `/剧本生成 <场景>` | `/剧本对话` `/故事生成` `/story` `/写剧本` `/storygen` | 生成完整剧本视频 | `/剧本生成 放学后的教室里，灯和爽世聊起下次 Live` |
+| `/统计` | `/stats` `/统计信息` | 查看生成统计 | `/统计` |
+
+### 管理指令（`/ournotesadmin` 组，仅管理员）
+
+| 指令 | 别名 | 说明 |
+| --- | --- | --- |
+| `/ournotesadmin status` | `/状态` `/系统状态` | 宿主连接、站点、AI、渲染队列、TTS 与本地统计 |
+| `/ournotesadmin queue` | `/队列` `/排队` | 宿主队列与本地在途任务 |
+| `/ournotesadmin cancel <任务ID>` | `/取消` `/终止` `/停止` | 取消本地任务并请求宿主取消渲染任务 |
+| `/ournotesadmin resources` | `/资源列表` `/模型列表` | 查看宿主可用角色 / 舞台 / BGM / 底本 / 音色 |
+| `/ournotesadmin cleanup` | `/清理` `/清理文件` | 清理宿主与本地超过 2 小时的产物 |
+| `/ournotesadmin setapi <URL>` | - | 切换宿主地址并保存到插件配置 |
 
 ## 配置
 
-在 AstrBot WebUI → 插件管理 → `Our Notes 剧本生成` → 配置中修改：
+在 AstrBot WebUI 的插件配置页修改：
 
-| 配置 | 默认值 | 说明 |
+| 配置项 | 说明 | 默认值 |
 | --- | --- | --- |
-| `api_base` | `http://127.0.0.1:9881` | ournotes-render 地址；可带 `/api/v1` 后缀 |
-| `api_key` | 空 | host 开启 API 鉴权时填写；对应 `security.apiKeyEnv` 指向的环境变量 |
-| `language` | `zh-Hans` | `auto` = 跟随底本站点；也可选 `zh-Hant` / `ja` / `en` / `ko` |
-| `base_story` | 空 | 底本 manifest，如 `stories/10610.json`；留空自动选第一篇 Normal |
-| `target_minutes` | `2` | 目标时长（分钟） |
-| `max_lines` | `40` | 最大台词条数 |
-| `timeout_seconds` | `600` | 生成请求超时；52 句的三轮生成可能超过 5 分钟 |
-| `max_prompt_chars` | `500` | 场景描述长度上限 |
-| `preview_lines` | `20` | 聊天预览的台词条数，`0` = 全部 |
-| `max_text_chars` | `1800` | 聊天预览字符上限，适配平台单条消息限制 |
-| `send_json_file` | `true` | 发送完整 JSON 附件；平台不支持时自动回退文本 |
-| `include_directions` | `true` | 预览中显示动作/表情/镜头 |
-| `max_files` | `50` | 数据目录保留的最近剧本数 |
+| `api_base` | 宿主 API 地址（同机 `127.0.0.1:9881`，跨机填对方 IP） | `http://127.0.0.1:9881` |
+| `api_key` | 宿主前置鉴权令牌（可选） | 空 |
+| `language` | 剧本语言；`auto` 跟随底本站点 | `zh-Hans` |
+| `base_story` | 底本 manifest，如 `stories/10610.json`；留空自动选第一篇 | 空 |
+| `target_minutes` | 目标时长（分钟），`0` 跟随宿主配置 | `0` |
+| `max_lines` | 最大台词条数，`0` 跟随宿主配置 | `0` |
+| `tts` | 启用宿主 TTS 配音 | `true` |
+| `script_timeout` | 剧本生成超时（秒），含宿主重试 | `1200` |
+| `export_timeout` | 渲染与下载超时（秒） | `1800` |
+| `busy_retry_seconds` | 宿主队列满时的重试间隔（秒） | `15` |
+| `max_concurrent_requests` | 插件侧同时生成的任务数 | `2` |
+| `max_pending` | 在途 + 等待任务上限 | `20` |
+| `pipeline` | `auto` 跟随宿主 / `single` 单段 / `staged` 分段 | `auto` |
+| `max_prompt_chars` | 场景描述长度上限 | `500` |
+| `history_rounds` | `/视频对话` 保留的历史轮数 | `3` |
+| `session_timeout_minutes` | 会话历史保留时长 | `60` |
+| `poll_interval_seconds` | 渲染进度轮询间隔 | `3` |
+| `progress_interval_seconds` | 同一阶段内进度消息间隔；`0` = 只发阶段变化 | `60` |
+| `temp_dir` | 视频与剧本产物目录，留空用插件数据目录 | 空 |
+| `callback_api_base` | AstrBot 文件服务的外部可达地址 | 空 |
+| `max_video_mb` | 视频大小提醒阈值 | `50` |
+| `max_video_files` | 保留的最近视频数 | `20` |
 
-`api_base` 只接受 `http` / `https`；不接受带用户名密码或查询参数的地址。
+`api_base` 只接受 `http` / `https`；不接受带用户名密码、查询参数或片段的地址。
 
-## 使用
+### 从 0.2 升级
+
+- 主流程从「提交 `/api/v1/generate` 后整段等待」改为「`/api/v1/script/generate` 出剧本后，再用
+  `/api/v1/render` 排队渲染」；剧本会保存到插件数据目录 `stories/`，统计落到 `export_stats.json`。
+- 新增 `/视频对话` 与 `/ournotesadmin` 管理组；`timeout_seconds` 拆成 `script_timeout` 与 `export_timeout`。
+- 依赖从 `aiohttp` 换成 `httpx`，重载插件前记得重新安装 `requirements.txt`。
+
+## 工作流程
 
 ```text
-/剧本生成 放学后的教室里，灯和爽世聊起下次 Live
-/剧本生成 雨天的天台，爱音发现素世一个人在练习
-/写剧本 三个人在 Live 结束后讨论新曲
+用户发送 /剧本生成 <场景>
+    ↓
+插件健康检查（宿主 /api/v1/health）→ 立即回复「视频生成中」与任务号
+    ↓
+POST /api/v1/script/generate（场景 / 模式 / 历史 / 时长 / pipeline）
+    宿主：选角 → 台词 → 分镜 → 校验与修复
+    ↓
+POST /api/v1/render（剧本 JSON，wait: false）
+    宿主：队列 → TTS → 剧情编译 → 逐帧渲染 → 混音 → MP4
+    ↓
+GET /api/v1/tasks/<id> 轮询阶段与进度 → 发送「渲染中：配音 50%」等消息
+    ↓
+GET /api/v1/download/<文件> 流式下载 → 多级降级发送到群
+    ↓
+回执标题 / 句数 / 时长 / 大小；统计与剧本落盘；过期产物定期清理
 ```
 
-别名为 `/写剧本` 和 `/storygen`。不带参数时返回用法和当前配置。
+## 故障排除
 
-输出示例（实际内容由 AI 生成）：
+### 提示「宿主未配置内置 AI」
+
+宿主 `config.yaml` 的 `llm.enabled` 为 `false`，或 `llm.model` 为空。在宿主侧配置模型通道并重启宿主，
+插件本身不需要也不读取 AstrBot 的对话模型。
+
+### 提示「宿主未配置站点」
+
+宿主 `paths.site` 与 `paths.siteFormat` 都为空。配置一个 nnnotes 产品站点，或把下载好的 bdon 站点指向
+`paths.siteFormat`。
+
+### 提示「无法连接渲染宿主」
+
+1. 确认宿主在运行：`curl http://<宿主IP>:9881/api/v1/health`
+2. 跨设备时检查防火墙放行 9881 端口、`api_base` 填写正确 IP
+3. 修改地址可在插件配置页填写，或用 `/ournotesadmin setapi <URL>` 即时切换
+
+### 剧本生成失败（HTTP 422）
+
+宿主返回的校验错误会原样展示前几条。查看宿主日志定位具体的提示词或模型输出问题；
+插件侧没有可调的本地校验逻辑。
+
+### 提示「宿主生成队列已满」
+
+宿主队列已满，插件会自动按 `busy_retry_seconds` 重试直到 `script_timeout`。
+若经常出现，可降低 `max_concurrent_requests`，或调大宿主 `queue.concurrency`。
+
+### 视频发送失败
+
+1. Docker 部署 AstrBot 时配置 `callback_api_base` 为外部可达地址
+2. 确认 AstrBot 文件服务端口从机器人侧可达
+3. 查看插件日志中本地文件、URL、文件服务各级发送尝试记录
+
+## 项目结构
 
 ```text
-《天台上的告别》
-角色：千早爱音、长崎素世、高松灯
-共 18 句 · 1 个场景
-
-【场景】学校天台 · 背景 adv_bkg_stage_000189 · BGM sound_bgm_adv_nows_the_time
-【站位】千早爱音 far-left
-千早爱音：上来啦上来啦，夕阳正好哦！（动作 mtn_smile02 · 表情 exp_smile02）
-【站位】千早爱音 far-left，长崎素世 far-right
-长崎素世：突然叫我们上来，就是为了拍照？（表情 exp_idle02 · 视线 anon）
-...
-……（完整剧本见附件）
+astrbot_plugin_ournotes_script/
+├── main.py              # 指令、并发闸、进度、视频投递、会话历史与统计
+├── core/
+│   ├── client.py        # 宿主 HTTP 契约（health / script / render / task / download）
+│   ├── format.py        # 剧本句数统计与警告文本
+│   └── storage.py       # JSON 状态持久化、剧本落盘与产物清理
+├── metadata.yaml        # 插件元数据
+├── _conf_schema.json    # 配置模式定义
+└── requirements.txt     # Python 依赖（httpx）
 ```
 
-附件是一个 `标题-时间.json` 文件，内容形如：
+## 相关内容
 
-```json
-{
-  "format": "ournotes.story-script/1",
-  "base": "stories/10610.json",
-  "language": "zh-Hans",
-  "title": "天台上的告别",
-  "font": "sans",
-  "cast": { "anon": { "model": "...", "name": "千早爱音" } },
-  "beats": [
-    { "scene": "...", "positions": { "anon": "far-left" }, "camera": "middle" },
-    { "say": "anon", "text": "上来啦上来啦，夕阳正好哦！", "motion": "mtn_smile02" }
-  ]
-}
-```
-
-## 用生成的 JSON 渲染
-
-把附件内容作为 `script` 提交给同一个 host：
-
-```sh
-curl -sS -X POST http://127.0.0.1:9881/api/v1/render \
-  -H 'Content-Type: application/json' \
-  -d '{"script": <附件 JSON>, "tts": true}'
-```
-
-异步调用加 `"wait": false`，然后轮询 `GET /api/v1/tasks/:id`，完成后从
-`GET /api/v1/download/<file>` 取 MP4。详细的渲染参数、TTS 音色和部署说明见
-[ournotes-render 文档](https://github.com/yonglanws/ournotes-render/blob/main/docs/host.md)。
-
-## 常见问题
-
-| 现象 | 检查 |
-| --- | --- |
-| `宿主还不能生成剧本（HTTP 503）` | host 的 `paths.site`（产品站点）或 `paths.siteFormat`（bdon 站点）是否配置，`llm` 是否启用并有密钥 |
-| `宿主鉴权失败（HTTP 401/403）` | 插件 `api_key` 是否与 host 的 `security.apiKeyEnv` 环境变量一致 |
-| `无法连接 ournotes-render` | `api_base` 是否正确；从 AstrBot 所在机器执行 `curl <api_base>/api/v1/health` |
-| 生成超时 | 提高 `timeout_seconds`；确认 LLM 端点和模型正常 |
-| 只有文字没有附件 | 平台不支持文件消息，或 `send_json_file` 关闭；插件会回退为文本预览 |
-| 指令没有反应 | 检查插件是否加载、指令权限是否被 Dashboard 的动态配置限制；日志中搜索 `[ournotes]` |
-| 剧本里没有动作/镜头 | 预览的 `include_directions` 被关闭；JSON 附件始终包含完整演出 |
-
-## 安全
-
-- `api_key` 保存在 AstrBot 的插件配置里，不要把它提交到 Git。
-- host 默认只监听 `127.0.0.1`。跨机器访问时，建议只在内网开放，并给 host 设置
-  `security.apiKeyEnv` 对应的令牌。
-- 插件不接受用户提供的 host 地址；`api_base` 只来自管理员配置。
+- [ournotes-render](https://github.com/yonglanws/ournotes-render) —— 渲染宿主：无头纯 API 的 Live2D 剧情视频框架
+- [宿主配置](https://github.com/yonglanws/ournotes-render/blob/main/docs/host.md) —— 站点、LLM、TTS 与队列
+- [导演脚本](https://github.com/yonglanws/ournotes-render/blob/main/docs/story-director.md) —— `ournotes.story-script/1` 格式与演出规则
 
 ## 许可
 

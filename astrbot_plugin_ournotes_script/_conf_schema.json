@@ -1,88 +1,151 @@
 {
   "api_base": {
-    "description": "ournotes-render 后端地址",
+    "description": "ournotes-render 宿主地址",
     "type": "string",
+    "hint": "填宿主的 HTTP 地址，例如 http://127.0.0.1:9881 或 http://192.168.1.10:9881；可以带 /api/v1 后缀。插件只通过这个地址调用宿主 API，不在本地生成剧本。",
     "default": "http://127.0.0.1:9881",
-    "hint": "填 host 的 HTTP 地址，例如 http://127.0.0.1:9881 或 http://192.168.1.10:9881；可以带 /api/v1 后缀。"
+    "obvious_hint": true
   },
   "api_key": {
-    "description": "后端访问令牌（可选）",
+    "description": "宿主访问令牌（可选）",
     "type": "string",
     "default": "",
-    "hint": "对应 host 配置 security.apiKeyEnv 指向的环境变量。留空表示 host 没有开启 API 鉴权。"
+    "hint": "对应宿主 security.apiKeyEnv 指向的环境变量，作为 Authorization: Bearer 发送；宿主未开启鉴权时留空。"
   },
   "language": {
     "description": "剧本语言",
     "type": "string",
     "default": "zh-Hans",
     "options": ["auto", "zh-Hans", "zh-Hant", "ja", "en", "ko"],
-    "hint": "auto 表示跟随底本站点；选择具体语言时，host 会按该语言生成台词。"
+    "hint": "auto 表示跟随底本站点；选择具体语言时，宿主会按该语言生成台词。"
   },
   "base_story": {
     "description": "底本剧情（可选）",
     "type": "string",
     "default": "",
-    "hint": "站点内的 manifest 路径，例如 stories/10610.json。留空时由 host 自动选择第一篇 Normal 剧情。"
+    "hint": "站点内的 manifest 路径，例如 stories/10610.json。留空时由宿主自动选择第一篇剧情。"
   },
   "target_minutes": {
     "description": "目标时长（分钟）",
     "type": "float",
-    "default": 2.0,
-    "slider": { "min": 0.5, "max": 10, "step": 0.5 },
-    "hint": "传给 host 的 targetMinutes，影响台词数量和节奏。"
+    "default": 0,
+    "slider": { "min": 0, "max": 10, "step": 0.5 },
+    "hint": "传给宿主的 targetMinutes；0 表示跟随宿主配置。视频对话会由宿主自动限制在 1.5 分钟以内。"
   },
   "max_lines": {
     "description": "最大台词条数",
     "type": "int",
-    "default": 40,
-    "slider": { "min": 6, "max": 200, "step": 1 },
-    "hint": "传给 host 的 maxLines。超过上限时 host 会截断并提示。"
+    "default": 0,
+    "slider": { "min": 0, "max": 300, "step": 1 },
+    "hint": "传给宿主的 maxLines；0 表示跟随宿主配置。台词越多，AI、TTS 和渲染耗时越长。"
   },
-  "timeout_seconds": {
-    "description": "生成超时（秒）",
+  "tts": {
+    "description": "启用宿主 TTS 配音",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后只渲染画面与字幕，不合成语音；宿主 TTS 本身未配置时也会自动生成无声视频。"
+  },
+  "script_timeout": {
+    "description": "剧本生成超时（秒）",
     "type": "int",
-    "default": 600,
-    "slider": { "min": 30, "max": 1800, "step": 10 },
-    "hint": "AI 写作可能持续几分钟；超时后本次命令失败，不会影响其它任务。"
+    "default": 1200,
+    "slider": { "min": 60, "max": 3600, "step": 30 },
+    "hint": "从提交剧本请求到宿主返回剧本的总时长上限，包含宿主的重试。超时后中止并提示。"
+  },
+  "export_timeout": {
+    "description": "视频渲染超时（秒）",
+    "type": "int",
+    "default": 1800,
+    "slider": { "min": 60, "max": 86400, "step": 60 },
+    "hint": "宿主渲染与下载的单次上限。首次物化站点资源时可能需要更久，建议不低于 900。"
+  },
+  "busy_retry_seconds": {
+    "description": "宿主忙时的重试间隔（秒）",
+    "type": "int",
+    "default": 15,
+    "slider": { "min": 1, "max": 120, "step": 1 },
+    "hint": "宿主或反向代理返回 HTTP 429 时，插件每隔这么久重试一次，直到 script_timeout。"
+  },
+  "max_concurrent_requests": {
+    "description": "本地同时生成的任务数",
+    "type": "int",
+    "default": 2,
+    "slider": { "min": 1, "max": 16, "step": 1 },
+    "hint": "插件侧并发闸，避免一台机器人瞬间打满宿主。建议与宿主 queue.concurrency 保持一致。"
+  },
+  "max_pending": {
+    "description": "排队上限",
+    "type": "int",
+    "default": 20,
+    "slider": { "min": 1, "max": 200, "step": 1 },
+    "hint": "在途与等待中的任务总数达到上限后，新请求直接拒绝，避免无限堆积。"
+  },
+  "pipeline": {
+    "description": "宿主生成流水线",
+    "type": "string",
+    "default": "auto",
+    "options": ["auto", "single", "staged"],
+    "hint": "auto 跟随宿主配置；single 为单段生成（更快、更省）；staged 为选角、台词、表演分段生成（更稳、更长）。视频对话始终使用 single。"
   },
   "max_prompt_chars": {
     "description": "场景描述长度上限",
     "type": "int",
     "default": 500,
-    "slider": { "min": 20, "max": 2000, "step": 10 },
-    "hint": "超过上限的输入会直接拒绝，避免把整段聊天记录发进提示词。"
+    "slider": { "min": 20, "max": 4000, "step": 10 },
+    "hint": "超过上限的输入直接拒绝，避免把整段聊天记录发进提示词。"
   },
-  "preview_lines": {
-    "description": "聊天预览的台词条数",
+  "history_rounds": {
+    "description": "视频对话保留轮数",
     "type": "int",
-    "default": 20,
-    "slider": { "min": 0, "max": 100, "step": 1 },
-    "hint": "只限制聊天里显示的台词条数，0 表示全部；完整剧本始终在 JSON 附件里。"
+    "default": 3,
+    "slider": { "min": 1, "max": 20, "step": 1 },
+    "hint": "每次 /视频对话 带上最近几轮历史；宿主侧最多读取最近 12 条消息。"
   },
-  "max_text_chars": {
-    "description": "聊天预览的字符上限",
+  "session_timeout_minutes": {
+    "description": "会话历史保留时长（分钟）",
     "type": "int",
-    "default": 1800,
-    "slider": { "min": 200, "max": 6000, "step": 100 },
-    "hint": "适配不同平台的单条消息长度；超出后截断并提示查看附件。"
+    "default": 60,
+    "slider": { "min": 5, "max": 1440, "step": 5 },
+    "hint": "超过这么久没有新消息的会话历史会被清理，避免长期占用磁盘。"
   },
-  "send_json_file": {
-    "description": "发送 JSON 附件",
-    "type": "bool",
-    "default": true,
-    "hint": "关闭后只发送可读预览。部分平台不支持文件消息，插件会自动回退为文本。"
+  "poll_interval_seconds": {
+    "description": "渲染进度轮询间隔（秒）",
+    "type": "float",
+    "default": 3.0,
+    "slider": { "min": 0.5, "max": 30, "step": 0.5 },
+    "hint": "每隔多久查询一次宿主渲染任务的阶段与进度。"
   },
-  "include_directions": {
-    "description": "预览中显示动作/表情/镜头",
-    "type": "bool",
-    "default": true,
-    "hint": "关闭后预览只显示场景、站位、台词和旁白；JSON 附件仍然包含完整演出。"
+  "progress_interval_seconds": {
+    "description": "进度消息间隔（秒）",
+    "type": "int",
+    "default": 60,
+    "slider": { "min": 0, "max": 300, "step": 10 },
+    "hint": "阶段变化时会立即发一条进度；同一阶段内至少间隔这么久再发。0 表示只发阶段变化。"
   },
-  "max_files": {
-    "description": "保留的最近剧本文件数",
+  "temp_dir": {
+    "description": "产物目录（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "视频与剧本的本地存放位置；留空使用插件数据目录。"
+  },
+  "callback_api_base": {
+    "description": "文件服务外部地址（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "Docker 部署 AstrBot 时填外部可达的地址，例如 http://192.168.1.10:6185；留空自动探测。"
+  },
+  "max_video_mb": {
+    "description": "视频大小提醒阈值（MB）",
     "type": "int",
     "default": 50,
     "slider": { "min": 1, "max": 500, "step": 1 },
-    "hint": "插件数据目录 scripts/ 下按时间保留最近若干份 JSON，旧的会自动删除。"
+    "hint": "超过时仍会发送，但会在说明里提示平台可能拒收。"
+  },
+  "max_video_files": {
+    "description": "保留的最近视频数",
+    "type": "int",
+    "default": 20,
+    "slider": { "min": 1, "max": 200, "step": 1 },
+    "hint": "按时间保留最近若干份 MP4，旧的自动删除；超过 2 小时的产物也会定期清理。"
   }
 }

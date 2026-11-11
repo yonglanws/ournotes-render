@@ -6,6 +6,7 @@ import { motionStems, nearest } from "../../scripts/lib/story-author/script.js";
 import { budgetCount, dialogueBudgetFor, directionBudgetFor, gazeBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
 import { dialoguePersonaPrompt } from "./personas.js";
 import { MAX_PROMPT_MODELS, expressionListFor, motionListFor, officialDenominatorNote, personaEntryFor, stagingRules, voiceStyleFor } from "./prompt.js";
+import { musicLine, soundLine, stageLine } from "./resourceLines.js";
 
 const MAX_CAST = 3;
 
@@ -19,6 +20,7 @@ const perEpisode = (rate) =>
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const s = (v) => String(v ?? "").trim();
 const lower = (s) => String(s || "").trim().toLowerCase();
+
 // The cast list shows "name（group）" to help the model choose across bands; models often copy the whole label as
 // the display name, which then shows in the talk window. Strip a trailing group suffix equal to the model's group.
 const cleanCastName = (name, group) => {
@@ -60,6 +62,23 @@ const castableModels = (catalog) => {
     if (out.some((x) => (x.character || x.name) === key)) continue;
     out.push(m);
     if (out.length >= MAX_PROMPT_MODELS) break;
+  }
+  return out;
+};
+
+// The cast prompt groups every costume under its character, but the prompt budget still caps characters (not
+// costumes) and excludes models the storyboard has no action names for (a product catalog appends those).
+const castableCharacters = (catalog) => {
+  const out = new Map();
+  for (const m of catalog.models || []) {
+    if (m.actionsKnown === false) continue;
+    const key = m.character || m.name;
+    if (!key) continue;
+    if (!out.has(key)) {
+      if (out.size >= MAX_PROMPT_MODELS) break;
+      out.set(key, []);
+    }
+    out.get(key).push(m);
   }
   return out;
 };
@@ -133,17 +152,19 @@ export const buildCastMessages = ({ catalog, request, config }) => {
   const language = request.language || catalog.language;
   const budget = lineBudgetFor(request, config);
   const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
-  const models = castableModels(catalog);
-  const modelLines = models
-    .map((m) => {
-      const p = personaEntryFor(config.story?.personas, m);
-      const group = p?.group || m.group || "";
-      const summary = p?.summary || "";
-      return `- ${m.id} — ${m.name}${group ? `（${group}）` : ""}${summary ? `：${summary}` : ""}`;
-    })
-    .join("\n") || "(none)";
-  const stages = catalog.stages.slice(0, 40)
-    .map((st) => `- ${st.id}${st.caption ? ` — ${st.caption}` : ""}`).join("\n") || "(none)";
+  // One line per character with every costume the site ships, so the cast pass can pick a consistent outfit instead
+  // of receiving one arbitrary costume (the old base-story order put 爱音 in her stage outfit next to 灯's school one).
+  const byCharacter = castableCharacters(catalog);
+  const modelLines = [...byCharacter.entries()].map(([name, choices]) => {
+    const first = choices[0];
+    const p = personaEntryFor(config.story?.personas, first);
+    const group = first.band || p?.group || first.group || "";
+    const summary = p?.summary || "";
+    const costumes = choices.map((m) => `${m.id}（${m.costumeLabel || m.costume || "默认"}）`).join("、");
+    return `- ${name}${group ? `（${group}）` : ""}${summary ? `：${summary}` : ""}\n  服装：${costumes}`;
+  }).join("\n") || "(none)";
+  const stages = catalog.stages.slice(0, 40).map(stageLine).join("\n") || "(none)";
+  const musicLines = catalog.music.slice(0, 40).map(musicLine).join("\n") || "(none)";
   const fixed = config.story?.cast?.length
     ? "\n本单只允许从清单里的角色选（配置的 story.cast 已限定可用角色）。" : "";
 
@@ -165,19 +186,28 @@ ${request.prompt || "写一段安静的日常对话。"}
 - 目标时长：约 ${minutes(request, config)} 分钟，约 ${budget} 句台词（按官方有文本 Talk 行计；单集常见 ${OFFICIAL_TARGETS.textLinesPerEpisodeMin}~${OFFICIAL_TARGETS.textLinesPerEpisodeMax} 条，本场按时长换算）
 - 底本：${catalog.manifest}
 
-## 可选角色（model id — 显示名）
+## 可选角色（每个角色列出全部服装；model 必须写完整 id）
 ${modelLines}
 ${fixed}
 ## 可选场景
 ${stages}
 
+## 可选音乐（可选；必须来自这里，也可以省略）
+${musicLines}
+
 ## 要求
-- 选 ${maxOnStage === 2 ? "2 名" : "2~3 名"}角色（用户明确要求独白时才可以 1 人）。同一角色的不同服装只能选一个模型。${maxOnStage === 2 ? "同台最多 2 人，所以不要选第三个人。" : "同台最多 3 人；三人同台时用 far-left / center / far-right，群像 focus 5、track 0。"}
+- 选 ${maxOnStage === 2 ? "2 名" : "2~3 名"}角色（用户明确要求独白时才可以 1 人）。同一角色的不同服装只能选一个模型，model 写完整 id（含服装后缀），不要只写角色名。两人同台用 left / right；${maxOnStage === 2 ? "同台最多 2 人，所以不要选第三个人。" : "三人同台时用 far-left / center / far-right，群像 focus 5、track 0。"}
+- 服装按乐队尽量统一：同一支乐队同台的角色优先穿同一类服装（队服 / 校服 / 便服 / 虚拟舞台服 / 打工服；校服的不同年级算同一类）。先选覆盖出场角色最多的一类；个别角色没有这一类时可以例外，但不要让一个例外角色把全队带偏（例如不要为了一个便服角色让其他人全换便服）。**避免一个人穿队服、另一个人穿初中校服这种强烈冲突。**
 - 两位角色的说话量要有反差：至少一位话多、愿意解释或吐槽，另一位可以寡言；不要两位都只会 2~5 字的短句。
 - 选的角色要能自然演完一个日常小事件：拍照、找东西、等人、收拾器材、分零食、试新曲、发消息之类。
 - 给每个角色一个本场功能（谁发起、谁回应、谁吐槽/拆台、谁收尾），第三轮分镜会按这个安排反应。
-- 只用一个舞台就能演完；不要比赛结果、生离死别、世界观解说。
+- 先看「可选场景」，选定一个地点，再写能在这个地点里发生的小事件；event 和大纲不要出现清单外的地点，也不要写这个地点里做不到的事（卧室里不会有操场，家庭餐厅里不会有练习室的鼓架）。
+- 舞台名里带具体学校/店铺（如水濑女子学园、RiNG、千石家）时，只有选中的角色属于那里才选它；不确定就选不带专名的通用地点。
+- 地点的时间、天气、道具必须和场景描述一致；台词里不要出现和场景矛盾的“夕阳/清晨/下雨”。
+- setting.music 可选：按 tone 和括号里的情绪选一首最贴合的；认真谈心/道歉/安慰/伤感时不要选轻巧、调侃、喜剧的曲子。没有合适的就省略，不要硬选。
+- 整场只用一个舞台（就是 setting.stage），不要中途换地点；不要比赛结果、生离死别、世界观解说。
 - 大纲 4~6 条，每条一句话，写“发生什么”，不要写镜头，也不要写台词。
+- tone 是整场的整体情绪，只能从「温暖日常 / 认真谈心 / 轻松搞笑 / 安静内省 / 紧张不安 / 明亮庆祝 / 伤感离别」里选一个；必须和事件、大纲一致，不能因为开头一两句轻松就选成喜剧。
 - title 是短标题（不超过 12 个字），logline 一句话，event 是这一场的小事件。
 
 ## 输出 JSON
@@ -185,6 +215,7 @@ ${stages}
   "title": "短标题",
   "logline": "一句话概括",
   "event": "这一场的小事件",
+  "tone": "认真谈心",
   "setting": { "stage": "舞台 id", "location": "地点字幕", "music": "可选 BGM cue" },
   "cast": [
     { "id": "anon", "model": "模型 id", "name": "显示名", "role": "本场功能" }
@@ -202,12 +233,13 @@ export const normalizeCastPlan = (raw, { catalog, request, config }) => {
   if (!isObj(raw)) return null;
   const doc = unwrap(raw);
   if (!isObj(doc)) return null;
-  const allowed = new Set(castableModels(catalog).map((m) => m.id));
+  const allowed = new Set((catalog.models || []).filter((m) => m.actionsKnown !== false).map((m) => m.id));
   const index = modelIndex(catalog);
   const entries = Array.isArray(doc.cast) ? doc.cast
     : isObj(doc.cast) ? Object.entries(doc.cast).map(([id, v]) => (typeof v === "string" ? { id, model: v } : { id, ...v }))
       : [];
   const used = new Set();
+  const usedCharacters = new Set();
   const cast = [];
   const limit = Math.max(2, Math.min(MAX_CAST, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
   for (const e of entries) {
@@ -217,10 +249,13 @@ export const normalizeCastPlan = (raw, { catalog, request, config }) => {
     const model = resolveModel(index, c.model || c.id || c.name);
     if (!model || !allowed.has(model.id)) continue;
     if (cast.some((x) => x.model === model.id)) continue;
+    const character = model.key || model.character || model.name;
+    if (usedCharacters.has(character)) continue;
+    usedCharacters.add(character);
     let id = sanitizeId(c.id || c.castId);
     if (!id || used.has(id)) id = castIdFor(model, used);
     used.add(id);
-    const group = personaEntryFor(config.story?.personas, model)?.group || model.group || "";
+    const group = model.band || personaEntryFor(config.story?.personas, model)?.group || model.group || "";
     cast.push({
       id,
       model: model.id,
@@ -236,10 +271,12 @@ export const normalizeCastPlan = (raw, { catalog, request, config }) => {
   const setting = isObj(doc.setting) ? doc.setting : {};
   const outline = Array.isArray(doc.outline)
     ? doc.outline.map((x) => s(x).slice(0, 200)).filter(Boolean).slice(0, 8) : [];
+  const tone = s(doc.tone ?? doc.mood).slice(0, 24);
   return {
     title: (s(doc.title) || s(request.title) || s(config.story?.title) || "").slice(0, 64),
     logline: s(doc.logline).slice(0, 300),
     event: s(doc.event || doc.logline).slice(0, 300),
+    tone,
     setting: {
       stage: stageIds.has(s(setting.stage)) ? s(setting.stage) : "",
       location: s(setting.location).slice(0, 40),
@@ -258,11 +295,12 @@ export const fallbackCastPlan = ({ catalog, request, config }) => {
     const id = castIdFor(m, used);
     used.add(id);
     return { id, model: m.id, name: m.name || m.id,
-             group: personaEntryFor(config.story?.personas, m)?.group || m.group || "", role: "" };
+             group: m.band || personaEntryFor(config.story?.personas, m)?.group || m.group || "", role: "" };
   });
   return {
     title: (s(request.title) || s(config.story?.title) || "").slice(0, 64),
     logline: "", event: s(request.prompt).slice(0, 300),
+    tone: "",
     setting: { stage: "", location: "", music: "" },
     cast,
     outline: [],
@@ -340,6 +378,7 @@ export const buildDialogueMessages = ({ plan, catalog, request, config }) => {
       content: `## 这一场
 小事件：${plan.event || request.prompt || "一段安静的日常对话。"}
 ${plan.logline ? `一句话：${plan.logline}` : ""}
+整体情绪：${plan.tone || "温暖日常"}
 ${plan.setting?.location ? `地点：${plan.setting.location}` : ""}
 出场角色：
 ${castBlock(plan)}
@@ -569,14 +608,14 @@ const storyboardExample = ({ plan, dialogue, catalog }) => {
   const firstSpeaker = dialogue.lines.find((l) => l.say)?.say;
   if (!firstSpeaker) return null;
   const listener = plan.cast.find((c) => c.id !== firstSpeaker);
-  // Only the first two speakers appear: the snippet is a valid opening (one person at far-left, the second enters
-  // at far-right), and the two of them do not overlap.
+  // Only the first two speakers appear: the snippet is a valid opening (one person at left, the second enters at
+  // right), and the two of them do not overlap.
   const lines = dialogue.lines
     .filter((l) => l.say && (l.say === firstSpeaker || l.say === listener?.id))
     .slice(0, 3);
   if (!lines.length) return null;
   const stage = plan.setting?.stage || catalog.stages[0]?.id || "stage_id";
-  const root = { scene: stage, camera: "middle", focus: "far-left", positions: { [firstSpeaker]: "far-left" } };
+  const root = { scene: stage, camera: "middle", focus: "left", positions: { [firstSpeaker]: "left" } };
   if (plan.setting?.location) root.location = plan.setting.location;
   if (plan.setting?.music) root.music = plan.setting.music;
   const beats = [root];
@@ -584,7 +623,7 @@ const storyboardExample = ({ plan, dialogue, catalog }) => {
 
   lines.forEach((line, i) => {
     if (!placed.has(line.say) && placed.size < 2) {
-      beats.push({ positions: { [firstSpeaker]: "far-left", [line.say]: "far-right" }, focus: 5, camera: "middle" });
+      beats.push({ positions: { [firstSpeaker]: "left", [line.say]: "right" }, focus: 5, camera: "middle" });
       placed.add(line.say);
     }
     const cast = plan.cast.find((c) => c.id === line.say);
@@ -608,13 +647,10 @@ const storyboardExample = ({ plan, dialogue, catalog }) => {
 export const buildStoryboardMessages = ({ plan, dialogue, catalog, request, config, planNotes = "" }) => {
   const index = modelIndex(catalog);
   const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
-  const stageLines = catalog.stages.slice(0, 80)
-    .map((x) => `- ${x.id}${x.caption ? ` — ${x.caption}` : ""}`).join("\n") || "(none)";
-  const musicLines = catalog.music.slice(0, 40)
-    .map((x) => `- ${x.cue}${x.label ? ` — ${x.label}` : ""}`).join("\n") || "(none)";
+  const stageLines = catalog.stages.slice(0, 80).map(stageLine).join("\n") || "(none)";
+  const musicLines = catalog.music.slice(0, 40).map(musicLine).join("\n") || "(none)";
   const soundChoices = (catalog.sounds || []).slice(0, 40);
-  const soundLines = soundChoices
-    .map((x) => `- ${x.cue}${x.label ? ` — ${x.label}` : ""}`).join("\n") || "(none)";
+  const soundLines = soundChoices.map(soundLine).join("\n") || "(none)";
   const exampleSe = soundChoices[0]?.cue || "";
   const modelLines = plan.cast.map((c) => {
     const m = index.byId.get(c.model);
@@ -653,6 +689,7 @@ export const buildStoryboardMessages = ({ plan, dialogue, catalog, request, conf
       content: `## 这一场
 小事件：${plan.event || request.prompt || "一段日常对话。"}
 ${plan.logline ? `一句话：${plan.logline}` : ""}
+整体情绪：${plan.tone || "温暖日常"}
 出场角色：
 ${castBlock(plan)}
 
@@ -665,13 +702,16 @@ ${castBlock(plan)}
 ## 台词稿（逐字定稿，按顺序）
 ${lineList}
 
-## 可用舞台
+## 可用舞台（scene 只能从这里选）
+第一个 scene 必须和上面「这一场」的地点一致；不要为了换镜头而换背景。只有明确的时间/地点变化才换第二张，并且必须换成清单里描述吻合的一张。台词里的时间、天气和道具不能和舞台描述矛盾。舞台名里带具体学校/店铺（如水濑女子学园、RiNG、千石家）时，只有出场角色属于那里才选。
 ${stageLines}
 
-## 可用音乐
+## 可用音乐（music 只能从这里选）
+按整体情绪「${plan.tone || "温暖日常"}」、括号里的情绪和冒号后的用途选；只在场景或情绪转折处换曲，整场最多两次；没有合适的就省略，不要为了有 BGM 而硬选。认真谈心、道歉、安慰、自我怀疑或伤感时，不要选轻巧、调侃、喜剧的曲子；轻松玩笑时也不要选安静、伤感的曲子。
 ${musicLines}
 
 ## 可用音效（se 只能从这里选；没有合适的就省略）
+只在台词里真的发生对应动作时使用（敲门、拿起手机、脚步、写字……），不要用 se 代替动作，也不要在同一句叠两个。
 ${soundLines}
 
 ## 可用动作与表情（只能给对应的 cast）
@@ -681,10 +721,10 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
 ## 输出 JSON
 {
   "beats": [
-    { "scene": "舞台 id", "location": "地点", "music": "可选 BGM", "camera": "middle", "focus": "far-left",
-      "positions": { "${plan.cast[0]?.id || "a"}": "far-left" } },
-    { "line": "l1", "motion": "动作名", "expression": "表情名", "focus": "far-left", "camera": "middle" },
-    { "positions": { "${plan.cast[0]?.id || "a"}": "far-left", "${plan.cast[1]?.id || "b"}": "far-right" }, "focus": 5 },
+    { "scene": "舞台 id", "location": "地点", "music": "可选 BGM", "camera": "middle", "focus": "left",
+      "positions": { "${plan.cast[0]?.id || "a"}": "left" } },
+    { "line": "l1", "motion": "动作名", "expression": "表情名", "focus": "left", "camera": "middle" },
+    { "positions": { "${plan.cast[0]?.id || "a"}": "left", "${plan.cast[1]?.id || "b"}": "right" }, "focus": 5 },
     { "line": "l2", "lookAt": "${plan.cast[0]?.id || "a"}", "focus": "${plan.cast[0]?.id || "a"}", "camera": "close",
       "zoom": 1.06, "zoomDuration": 4,
       "actions": [{ "at": 0, "cast": "${plan.cast[0]?.id || "a"}", "expression": "表情名" }] },
@@ -702,7 +742,7 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
 - 非 line beat 只有 scene / positions / camera / fade / pause / action，插在合适的台词之间；不要为每一句新开 scene，也不要反复 fade。
 - line beat 只写演出字段：motion、expression、lookAt、focus、camera、track、zoom、zoomDuration、actions，以及可选的 focusDuration、trackDuration、pedestal、pedestalDuration、pan、panDuration、panFocusSlide、dof、dofDuration、dofLayers、look、lookY、lookDuration、se、seDuration、seDelay、seStop、motionFadeIn、motionWait。不写 focus/camera/track 就保持当前镜头。trackDuration 只在写了 track 时有效，focusDuration 只在写了 focus/camera 时有效。
 - narrate 台词（[narrate]）没有说话者，不能写 motion、expression、lookAt、look、lookY、lookDuration、se、seDuration、seDelay、seStop、motionFadeIn、motionWait；只写 focus/camera/track/zoom/运镜字段和 actions（actions 必须带 cast）。
-- 每个说话者开口前必须已经在台上；用 positions 让他进场。**两人同台必须 far-left / far-right**；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0）" : "同台最多 2 人，第 3 人必须等一人退场后再进场"}；不要用 center+right、center+left 或 left+right（会重叠）。
+- 每个说话者开口前必须已经在台上；用 positions 让他进场。**两人同台用 left / right**（不要用 far-left / far-right，间隔太开）；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0）" : "同台最多 2 人，第 3 人必须等一人退场后再进场"}；不要用 center+right 或 center+left（会重叠）。
 - **镜头预算**：全场约 ${budget.focusChanges} 个 focus（含 scene/positions 上的；官方 Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句），其中 close 近景约 ${budget.closeUps} 次（距离 4 约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行），near 全景 0~1 次。close 停 1~2 句（偶尔 3 句），下一句用 middle + focus 5 回到二人/群像；不要连续两句 close，也不要停在同一个 close 上直到结尾。
   大部分 line beat 不要写 focus/camera/track，只有真的换机位时才写；同一机位保持 3~4 句，连续两句都写 focus 通常就是切太碎。推近（middle/far → close）是硬切，拉回（close → middle/far）会自动缓推，不需要写 duration。
 - **换机位上限**：整场只有 ${Math.max(0, budget.focusChanges - 2)} 句 line beat 可以写 focus/camera/track（scene/positions 的 Focus 另计）；请把镜头字段集中到真正的剪辑句，其余 line beat 一个镜头字段都不要写；多写的会在合并时删除。
@@ -845,12 +885,13 @@ const focusedCast = (focus, positions) => {
   return Object.keys(positions).find((id) => positionNumber(positions[id]) === n) || "";
 };
 
-// The published slots are 1.6 world units apart and a character is about that wide, so two people at
-// center+right (or left+right) overlap. Normalize every position snapshot in a scene:
-//   2 people -> far-left / far-right (3.2 apart, a clear gap)
-//   3 people -> far-left / far-right for the first two and center for the third (maxOnStage 3 only)
-// A solo opening is put at far-left and its camera focus follows, so the first person does not have to
-// move when the second enters.
+// The published slots are 1.6 world units apart, so two people at center+right touch. The official base story puts a
+// two-person scene at left / right (slots 3/7) in 76 of its two-person frames; far-left/far-right (1/9) is a wider
+// variant and leaves too much empty space for a conversation. Normalize every position snapshot in a scene:
+//   2 people -> left / right (the official two-shot pair)
+//   3 people -> far-left / center / far-right (the official group framing)
+// A solo opening is put at left and its camera focus follows, so the first person does not have to move when the
+// second enters at right.
 export const spreadPositions = (beats, maxOnStage = 3, warnings = []) => {
   const limit = Math.max(2, Math.min(3, Math.round(Number(maxOnStage) || 3)));
   let start = 0;
@@ -869,7 +910,7 @@ export const spreadPositions = (beats, maxOnStage = 3, warnings = []) => {
       for (const id of sorted) if (!order.includes(id)) order.push(id);
     }
     if (maxCount >= 2) {
-      const layout = maxCount === 2 ? ["far-left", "far-right"]
+      const layout = maxCount === 2 ? ["left", "right"]
         : firstSize >= 3 ? ["far-left", "center", "far-right"] : ["far-left", "far-right", "center"];
       const slotOf = new Map(order.map((id, i) => [id, layout[i] || "center"]));
       for (const beat of section) {
@@ -934,7 +975,7 @@ export const spreadPositions = (beats, maxOnStage = 3, warnings = []) => {
 };
 
 // The AI path treats too many people on stage as a repair problem: with maxOnStage 2 the third person has to wait
-// until someone leaves, which is the only way to keep every pair far-left / far-right and non-overlapping.
+// until someone leaves, which is the only way to keep the official two-person left / right framing.
 export const onStageProblems = (beats, maxOnStage = 3) => {
   const limit = Math.max(2, Math.min(3, Math.round(Number(maxOnStage) || 3)));
   const out = [];
@@ -954,10 +995,13 @@ const defaultScene = ({ plan, catalog, maxOnStage = 3 }) => {
   const limit = Math.max(2, Math.min(3, Math.round(Number(maxOnStage) || 3)));
   const positions = {};
   if (plan.cast.length === 1) positions[plan.cast[0].id] = "center";
-  else if (plan.cast.length >= 2) {
+  else if (limit >= 3 && plan.cast.length >= 3) {
     positions[plan.cast[0].id] = "far-left";
-    positions[plan.cast[1].id] = "far-right";
-    if (limit >= 3 && plan.cast[2]) positions[plan.cast[2].id] = "center";
+    positions[plan.cast[1].id] = "center";
+    positions[plan.cast[2].id] = "far-right";
+  } else {
+    positions[plan.cast[0].id] = "left";
+    positions[plan.cast[1].id] = "right";
   }
   return {
     scene: plan.setting?.stage || catalog.stages[0]?.id || "",

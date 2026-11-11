@@ -3,8 +3,8 @@
 // config.yaml (`tts.voices`) or in a separate YAML/JSON file (`tts.voicesFile`); inline entries override file entries
 // with the same name field by field.
 //
-// Paths (refAudioPath, gptWeightsPath, sovitsWeightsPath) are paths on the GPT-SoVITS server, not on this machine.
-// They are never fetched by the host, so no URL check applies; only the TTS base URL is a service endpoint.
+// Paths (refAudioPath(s), gptWeightsPath, sovitsWeightsPath, loraAdapter) are paths on the TTS server, not on this
+// machine. They are never fetched by the host, so no URL check applies; only the TTS base URL is a service endpoint.
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const str = (v) => String(v ?? "").replace(/^\uFEFF/, "").trim();
 
@@ -20,16 +20,20 @@ export const normName = (value) => foldName(String(value || "").normalize("NFKC"
   .replace(/[\s·・]+/g, "").toLowerCase();
 
 export const VOICE_KEYS = Object.freeze([
-  "name", "aliases", "refAudioPath", "promptText", "promptLang", "gptWeightsPath", "sovitsWeightsPath",
+  "name", "characterName", "aliases", "refAudioPath", "refAudioPaths", "promptText", "promptLang",
+  "gptWeightsPath", "sovitsWeightsPath", "loraAdapter", "caption", "speed", "numSteps",
   "speedFactor", "temperature", "topK", "topP", "repetitionPenalty", "fragmentInterval", "emotions",
 ]);
 export const EMOTION_KEYS = Object.freeze([
-  "label", "refAudioPath", "promptText", "promptLang", "speedFactor", "temperature", "topK", "topP",
-  "repetitionPenalty", "fragmentInterval",
+  "label", "emotion", "refAudioPath", "refAudioPaths", "promptText", "promptLang", "loraAdapter", "caption",
+  "speed", "numSteps", "speedFactor", "temperature", "topK", "topP", "repetitionPenalty", "fragmentInterval",
 ]);
-const PATH_KEYS = ["refAudioPath", "promptText", "promptLang", "gptWeightsPath", "sovitsWeightsPath"];
+// `name`/`characterName` and `label`/`emotion` are synonyms so an MSST character block can be pasted as-is.
+const PATH_KEYS = ["refAudioPath", "promptText", "promptLang", "gptWeightsPath", "sovitsWeightsPath",
+                   "loraAdapter", "caption"];
 const NUMBER_KEYS = {
-  speedFactor: [0.5, 2, false], temperature: [0, 2, false], topK: [1, 100, true], topP: [0, 1, false],
+  speedFactor: [0.5, 2, false], speed: [0.25, 4, false], numSteps: [1, 200, true],
+  temperature: [0, 2, false], topK: [1, 100, true], topP: [0, 1, false],
   repetitionPenalty: [0.5, 2, false], fragmentInterval: [0, 2, false],
 };
 
@@ -82,13 +86,28 @@ const cleanNumber = (raw, key, path, issues) => {
   return integer ? Math.round(n) : n;
 };
 
+// Irodori accepts several reference clips per request (`ref_wavs`); GPT-SoVITS ignores the field. A bare string is
+// accepted so a one-clip setup does not need list syntax.
+const cleanPaths = (raw, key, path, issues) => {
+  if (raw[key] === undefined || raw[key] === null || raw[key] === "") return undefined;
+  const value = Array.isArray(raw[key]) ? raw[key] : typeof raw[key] === "string" ? [raw[key]] : null;
+  if (!value) {
+    warn(issues, `${path}.${key}`, "expected a list of server-side paths; ignored");
+    return undefined;
+  }
+  const list = unique(value.map(str).filter(Boolean));
+  return list.length ? list : undefined;
+};
+
 const cleanEmotion = (raw, path, issues) => {
   if (!isObj(raw)) { warn(issues, path, "an emotion entry must be a mapping; ignored"); return null; }
   unknownKeys(raw, EMOTION_KEYS, path, issues);
-  const label = str(raw.label);
+  const label = str(raw.label || raw.emotion);
   if (!label) { warn(issues, path, "an emotion entry needs a label; ignored"); return null; }
   const out = { label };
   for (const key of PATH_KEYS) if (str(raw[key])) out[key] = str(raw[key]);
+  const refs = cleanPaths(raw, "refAudioPaths", path, issues);
+  if (refs) out.refAudioPaths = refs;
   for (const key of Object.keys(NUMBER_KEYS)) {
     const value = cleanNumber(raw, key, path, issues);
     if (value !== undefined) out[key] = value;
@@ -99,12 +118,14 @@ const cleanEmotion = (raw, path, issues) => {
 export const normalizeVoiceEntry = (raw, path, issues) => {
   if (!isObj(raw)) { fail(issues, path, "a voice entry must be a mapping"); return null; }
   unknownKeys(raw, VOICE_KEYS, path, issues);
-  const name = str(raw.name);
+  const name = str(raw.name || raw.characterName);
   if (!name) { fail(issues, path, "a voice entry needs a name"); return null; }
   const voice = { name, aliases: [], emotions: [] };
   voice.aliases = unique(Array.isArray(raw.aliases) ? raw.aliases : raw.aliases ? [raw.aliases] : [])
     .filter((a) => a !== name);
   for (const key of PATH_KEYS) if (str(raw[key])) voice[key] = str(raw[key]);
+  const refs = cleanPaths(raw, "refAudioPaths", path, issues);
+  if (refs) voice.refAudioPaths = refs;
   for (const key of Object.keys(NUMBER_KEYS)) {
     const value = cleanNumber(raw, key, path, issues);
     if (value !== undefined) voice[key] = value;
@@ -187,14 +208,19 @@ export const enrichVoiceAliases = (voices, personas) => {
   return voices;
 };
 
+// A voice can speak with a single reference clip (GPT-SoVITS and Irodori) or several (Irodori `ref_wavs`).
+export const hasVoiceReference = (voice) => !!(voice && (str(voice.refAudioPath) ||
+  (Array.isArray(voice.refAudioPaths) && voice.refAudioPaths.some((p) => str(p)))));
+
 export const voiceSummary = (tts) => {
   const voices = tts.voices || [];
-  const fallback = !!(tts.defaultVoice && tts.defaultVoice.refAudioPath);
+  const fallback = hasVoiceReference(tts.defaultVoice);
   return {
     count: voices.length,
     defaultVoice: fallback,
-    withOwnReference: voices.filter((v) => !!v.refAudioPath).length,
-    missingReference: voices.filter((v) => !v.refAudioPath && !fallback).map((v) => v.name),
+    withOwnReference: voices.filter(hasVoiceReference).length,
+    withLora: voices.filter((v) => !!v.loraAdapter).length,
+    missingReference: voices.filter((v) => !hasVoiceReference(v) && !fallback).map((v) => v.name),
     emotions: voices.reduce((n, v) => n + (v.emotions || []).length, 0),
   };
 };
@@ -214,7 +240,7 @@ export const validateVoices = (tts, issues) => {
   if (summary.count && !summary.defaultVoice) {
     const missing = summary.missingReference;
     if (missing.length) {
-      const message = `${missing.length} voice(s) have no refAudioPath and there is no defaultVoice: ` +
+      const message = `${missing.length} voice(s) have no reference audio and there is no defaultVoice: ` +
         `${missing.slice(0, 8).join(", ")}${missing.length > 8 ? ", ..." : ""}; their lines will be silent`;
       if (tts.required) fail(issues, "tts.defaultVoice", message);
       else warn(issues, "tts.defaultVoice", message);
@@ -243,10 +269,17 @@ export const validateVoices = (tts, issues) => {
     warn(issues, "tts.voices", `aliases shared by ${owners}: ${aliases.join(", ")}; the first matching voice wins. ` +
       "Remove an alias from one voice or make the names distinct");
   }
-  const weighted = (tts.voices || []).filter((v) => v.gptWeightsPath || v.sovitsWeightsPath);
+  const weighted = tts.provider === "irodori" ? [] : (tts.voices || []).filter((v) => v.gptWeightsPath || v.sovitsWeightsPath);
   if (weighted.length && weighted.length < (tts.voices || []).length) {
     warn(issues, "tts.voices", `${weighted.length}/${tts.voices.length} voice(s) name GPT/SoVITS weights; a voice without ` +
       "weights uses whatever the GPT-SoVITS server loaded last. Configure weights for every voice, or for none");
+  }
+  if (tts.provider !== "irodori") {
+    const multiOnly = (tts.voices || []).filter((v) => !v.refAudioPath && (v.refAudioPaths || []).length);
+    if (multiOnly.length) {
+      warn(issues, "tts.voices", `${multiOnly.length} voice(s) only set refAudioPaths, which GPT-SoVITS ignores; ` +
+        "set refAudioPath or switch tts.provider to irodori");
+    }
   }
   return summary;
 };

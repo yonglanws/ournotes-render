@@ -1,7 +1,7 @@
 # host
 
 无头、纯 API 的 Our Notes 风格 Live2D 视频渲染后端。它运行本仓库的 `StorySession`（游戏剧情 UI、Live2D
-着色器、13:6 舞台），并在后端完成队列、AI 分镜/剧本、GPT-SoVITS TTS、逐帧渲染、混音和 MP4 编码。
+着色器、13:6 舞台），并在后端完成队列、AI 分镜/剧本、GPT-SoVITS / Irodori TTS、逐帧渲染、混音和 MP4 编码。
 
 完整说明见 [../docs/host.md](../docs/host.md)，导演脚本格式见 [../docs/story-director.md](../docs/story-director.md)，
 TTS 配置与试音见 [../docs/tts.md](../docs/tts.md)。

@@ -9,7 +9,7 @@ import { LLMClient } from "../ai/llm.js";
 import { generateScript, prepareScript } from "../ai/storyWriter.js";
 import { loadConfig } from "../config.js";
 import { configureFfmpeg } from "../render/ffmpeg.js";
-import { GptSovitsClient, synthesizeStory, VoiceBook } from "../tts/tts.js";
+import { createTtsClient, synthesizeStory, VoiceBook } from "../tts/tts.js";
 import { buildSiteStory } from "./site-story.mjs";
 import { catalogFromSite } from "../story/siteFormat.js";
 
@@ -64,7 +64,7 @@ const main = async () => {
   let voices = new Map();
   if (o.tts && cfg.tts.enabled) {
     configureFfmpeg();
-    const ttsClient = new GptSovitsClient(cfg.tts, { apiKey: cfg.secrets.ttsApiKey, logger: console,
+    const ttsClient = createTtsClient(cfg.tts, { apiKey: cfg.secrets.ttsApiKey, logger: console,
       allowPrivate: cfg.security.allowPrivateServiceEndpoints });
     ttsClient.setCacheDir(path.join(cfg.paths.cache, "tts"));
     voices = await synthesizeStory({

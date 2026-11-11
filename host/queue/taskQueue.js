@@ -143,17 +143,14 @@ export class TaskQueue {
         const result = await task.run(ctx);
         if (task.cancelRequested) throw new TaskCancelledError();
         this._settle(task, "completed", result, null);
-        this.stats.completed++;
         return result;
       } catch (e) {
         const err = task.cancelRequested && !(e instanceof TaskCancelledError)
           ? new TaskCancelledError("task cancelled") : e;
         if (err instanceof TaskCancelledError) {
           this._settle(task, "cancelled", null, err);
-          this.stats.cancelled++;
         } else {
           this._settle(task, "failed", null, err);
-          this.stats.failed++;
         }
         throw err;
       } finally {
@@ -174,6 +171,8 @@ export class TaskQueue {
     task.error = error || null;
     task.phase = status;
     if (status === "completed") task.progress = 1;
+    // All terminal transitions go through here: a queued cancel and a timeout-aborted run must count too.
+    if (status === "completed" || status === "failed" || status === "cancelled") this.stats[status]++;
     if (this.running.get(task.id) === task) this.running.delete(task.id);
     if (status === "completed") task.resolve?.(result);
     else task.reject?.(error || new Error(status));

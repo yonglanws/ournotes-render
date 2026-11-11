@@ -7,8 +7,8 @@ dialogue, directs the shots, synthesizes GPT-SoVITS voices, compiles the episode
 Chrome with the game's own `StorySession`, rebuilds the audio timeline and encodes an MP4. The queue, AI director, TTS
 and renderer all live in the backend; a bot or any other client only calls the HTTP API.
 
-This repository keeps only the video rendering framework. The chart player, UI preview, browser player and AstrBot
-plugin have been removed.
+This repository keeps only the video rendering framework. The chart player, UI preview and browser player have been
+removed. A bot or any other client only calls the HTTP API; `astrbot_plugin_ournotes_script/` is the official adapter.
 
 ## Features
 
@@ -21,8 +21,9 @@ plugin have been removed.
   encoding are all in `host/`. The default `staged` pipeline gives the full character personas only to the dialogue
   pass; after that the storyboard references `line` ids and cannot rewrite a line. TTS voices are this project's own
   format (`tts.defaultVoice` + `tts.voices` / `voices.yaml`); no AstrBot or other bot config is read at runtime.
-- **AstrBot plugin**: `astrbot_plugin_ournotes_script/` adds `/剧本生成` (aliases `/写剧本`, `/storygen`), which calls
-  the host's `/api/v1/script/generate` and returns a readable script preview plus the complete JSON attachment.
+- **AstrBot plugin**: `astrbot_plugin_ournotes_script/` adds `/视频对话` and `/剧本生成` (aliases `/写剧本`,
+  `/storygen`), which call the host's script and render endpoints, report phase progress and send the finished MP4
+  back to the chat; it also ships `/统计` and the `/ournotesadmin` operations group.
 - **Deterministic frames**: a fixed 1/30 s virtual clock; audio is rebuilt from the page's playback events on the same
   timeline, so render speed never changes the result.
 - **Two data sources**: nnnotes product sites (`nnnotes.product/1`) for the AI queue + TTS, and published bdon.moe
@@ -50,8 +51,8 @@ larger cast (see `voices.example.yaml`). [TTS guide](docs/tts.md) covers referen
 `npm run tts:check`.
 
 Without an nnnotes product site, point `paths.siteFormat` at a downloaded bdon site such as `resources/site`:
-`/api/v1/script/generate` still writes scripts from it. Full rendering continues to need `paths.site`, or the
-`render-story` / `site-story` tools.
+`/api/v1/generate` writes the script, voices it, compiles it into the site and renders the MP4. The separate
+`/api/v1/script/generate` endpoint still returns only the script JSON.
 
 ```sh
 curl -sS -X POST http://127.0.0.1:9881/api/v1/generate \
@@ -91,7 +92,7 @@ Assets stay in `resources/` (ignored); the repository redistributes no game data
 | --- | --- |
 | API, queue, AI, TTS, deployment, security | [Render host](docs/host.md) |
 | TTS voice table, reference audio, weights, emotions, voice test | [TTS guide](docs/tts.md) |
-| AstrBot plugin: the `/剧本生成` command | [Plugin README](astrbot_plugin_ournotes_script/README.md) |
+| AstrBot plugin: `/视频对话`, `/剧本生成` and `/ournotesadmin` | [Plugin README](astrbot_plugin_ournotes_script/README.md) |
 | Director script, camera/acting, AI direction rules | [Story director](docs/story-director.md) |
 | CLI authoring, checks, builds, shot sheets | [Story author](docs/story-author.md) |
 | Story data, fonts, audio, models | [Story data format](docs/story-data-format.md) |

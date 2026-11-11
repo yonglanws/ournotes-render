@@ -29,7 +29,7 @@ export class Renderer {
     const files = new Map(story.files);
     files.set(story.manifestPath, Buffer.from(JSON.stringify(story.manifest), "utf8"));
     const pageServer = await createPageServer({
-      site: cfg.paths.site, files, core: cfg.render.core || undefined, motionsync: cfg.render.motionsync || "",
+      site: story.site || cfg.paths.site, files, core: cfg.render.core || undefined, motionsync: cfg.render.motionsync || "",
       outputDir: cfg.paths.output, logger: this.logger,
     });
     const job = pageServer.createJob({
@@ -52,6 +52,7 @@ export class Renderer {
       browser = await Browser.launch({
         executable: cfg.render.chrome || undefined,
         gpu: !!cfg.render.gpu,
+        extraArgs: cfg.render.chromeArgs || [],
         width: cfg.video.width + 80,
         height: cfg.video.height + 80,
         onConsole: (type, text) => {
@@ -111,6 +112,7 @@ export class Renderer {
       onProgress("rendering", 0.05, "启动无头浏览器");
       browser = await Browser.launch({
         executable: cfg.render.chrome || undefined, gpu: !!cfg.render.gpu,
+        extraArgs: cfg.render.chromeArgs || [],
         width: job.config.width + 80, height: job.config.height + 80,
         onConsole: (type, text) => this.logger[type === "error" ? "warn" : "debug"]?.(`page: ${text}`),
       });

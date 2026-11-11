@@ -5,9 +5,12 @@
 #   tts:
 #     voicesFile: "voices.yaml"
 #
-# 路径都是 GPT-SoVITS 服务端看到的路径（例如 /srv/gpt-sovits/...），不是本机路径。
+# 路径都是 TTS 服务端看到的路径（例如 /srv/gpt-sovits/...），不是本机路径。
+# provider 可以是 gpt-sovits 或 irodori，同一份表通用：GPT-SoVITS 忽略 loraAdapter / caption /
+# refAudioPaths / speed / numSteps，Irodori 忽略 gptWeightsPath / sovitsWeightsPath / promptText。
 # 先用 `npm run tts:check` 检查列表，再 `npm run tts:check -- --synthesize` 逐角色试音。
-# 参考音频要求：干净人声、5~15 秒、与 promptText 逐字一致；promptText 错了会明显影响音色。
+# GPT-SoVITS 的参考音频要求：干净人声、5~15 秒、与 promptText 逐字一致；promptText 错了会明显影响音色。
+# Irodori 只读日文；caption 是表演描述（日语），不是参考音频的逐字文本。
 # 完整说明见 docs/tts.md。
 
 # 没有单独配置的角色使用这个音色。可以只写 refAudioPath；promptText 建议写。
@@ -52,3 +55,18 @@ voices:
         refAudioPath: /srv/gpt-sovits/refs/soyo-kind.wav
         promptText: 大丈夫よ、ゆっくりでいいから
         promptLang: ja
+
+  # Irodori 示例：LoRA adapter + 多参考音频 + 表演描述。characterName 是 name 的别名，
+  # emotions 里的 emotion 是 label 的别名，所以 MSST 的角色块可以基本原样粘过来。
+  - characterName: 晓山瑞希
+    aliases: [瑞希, 暁山瑞希, mizuki]
+    loraAdapter: /srv/Irodori-TTS/models/LoRA/PJSK/晓山瑞希/lora_adapter
+    refAudioPath: /srv/Irodori-TTS/models/LoRA/PJSK/晓山瑞希/emotion_refs/main.wav
+    # refAudioPaths: [/srv/refs/mizuki-1.wav, /srv/refs/mizuki-2.wav]   # 多参考时优先于 refAudioPath
+    caption: 落ち着いた、穏やかな口調で話している。
+    speed: 1.0
+    numSteps: 32
+    emotions:
+      - emotion: 开心
+        refAudioPath: /srv/Irodori-TTS/models/LoRA/PJSK/晓山瑞希/emotion_refs/happy.wav
+        caption: 明るく、優しい口調で話している。

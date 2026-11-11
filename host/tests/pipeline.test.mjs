@@ -187,3 +187,62 @@ test("the AI stage can return a script without rendering", async () => {
   assert.equal(out.script.cast.a.model, "m_a");
   assert.equal(out.script.beats.length, 3);
 });
+
+test("history and pipeline request fields are validated before the LLM is called", async () => {
+  const output = tmpDir();
+  let calls = 0;
+  const llm = { available: true, async json() { calls++; return { content: JSON.stringify(SCRIPT) }; } };
+  const pipeline = new Pipeline({
+    config: configFor(output), catalog: stubCatalog(), llm, tts: null,
+    renderer: { async render() { throw new Error("must not render"); } }, logger: quietLogger(),
+  });
+  const badHistory = (e) => e.status === 400 && e.code === "bad_request" && /history/.test(e.message);
+  await assert.rejects(() => pipeline.generateScriptOnly({ prompt: "写一场对话", history: "nope" }), badHistory);
+  await assert.rejects(
+    () => pipeline.generateScriptOnly({ prompt: "写一场对话", history: [{ role: "user" }] }), badHistory);
+  await assert.rejects(
+    () => pipeline.generateScriptOnly({ prompt: "写一场对话", pipeline: "auto" }),
+    (e) => e.status === 400 && /pipeline/.test(e.message));
+  assert.equal(calls, 0);
+});
+
+test("chat mode clamps the target length and puts the history into the story prompt", async () => {
+  const output = tmpDir();
+  const prompts = [];
+  const doc = { ...SCRIPT, beats: [...SCRIPT.beats, { say: "a", text: "今天也练习吧。" }] };
+  const llm = { available: true, async json(messages) {
+    prompts.push(messages.map((m) => m.content).join("\n"));
+    return { content: JSON.stringify(doc) };
+  } };
+  const pipeline = new Pipeline({
+    config: configFor(output), catalog: stubCatalog(), llm, tts: null,
+    renderer: { async render() { throw new Error("must not render"); } }, logger: quietLogger(),
+  });
+  const out = await pipeline.generateScriptOnly({
+    prompt: "在吗？", mode: "chat", targetMinutes: 8, maxLines: 2,
+    history: [{ role: "用户", content: "昨天练到很晚" }],
+  });
+  assert.equal(out.ok, true);
+  assert.equal(prompts.length, 1, "one open model needs no quick-cast call");
+  assert.match(prompts[0], /写一小段约 1\.5 分钟/);
+  assert.match(prompts[0], /昨天练到很晚/);
+  assert.match(prompts[0], /即时对话回复/);
+});
+
+test("site index writes are serialized across concurrent jobs", async () => {
+  const output = tmpDir();
+  const pipeline = new Pipeline({
+    config: configFor(output), catalog: null, llm: null, tts: null, renderer: null, logger: quietLogger(),
+  });
+  const order = [];
+  const step = (name, ms) => async () => {
+    order.push(`${name}:start`);
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    order.push(`${name}:end`);
+    return name;
+  };
+  const first = pipeline._withSiteWrite(step("a", 20));
+  const second = pipeline._withSiteWrite(step("b", 1));
+  assert.deepEqual(await Promise.all([first, second]), ["a", "b"]);
+  assert.deepEqual(order, ["a:start", "a:end", "b:start", "b:end"]);
+});

@@ -2,8 +2,8 @@
 
 本仓库只保留**视频渲染框架**：无头、纯 API 的 Our Notes 风格剧情视频渲染器。它接收一句场景描述或一份
 `ournotes.story-script/1` 导演脚本，在后端完成 **AI 分镜与剧本 → TTS 配音 → 编译 Our Notes 剧情 → 无头浏览器
-逐帧渲染 → 音频混合 → MP4**，通过 HTTP 返回视频。浏览器播放器、谱面播放、UI 预览、AstrBot 插件等无关功能已移除；
-任何机器人或客户端只需要调用 HTTP API。
+逐帧渲染 → 音频混合 → MP4**，通过 HTTP 返回视频。浏览器播放器、谱面播放与 UI 预览等无关功能已移除；
+任何机器人或客户端只需要调用 HTTP API；仓库内的 `astrbot_plugin_ournotes_script/` 是官方对接插件。
 
 与 [MySekaiStoryteller-API](https://github.com/yuntian/MySekaiStoryteller-API) 的对应关系：
 
@@ -27,7 +27,7 @@
 - `host/tools/ai-site-story.mjs`：让 AI 直接为站点格式写导演脚本、合成 TTS 并编译
 - `host/tools/check.mjs`：`npm run check`，检查配置、站点、ffmpeg、Chrome、音色
 - `host/tools/tts-check.mjs`：`npm run tts:check`，列出音色并逐角色试音
-- `astrbot_plugin_ournotes_script/`：AstrBot 插件，`/剧本生成` 调用宿主的剧本接口并返回预览 + JSON
+- `astrbot_plugin_ournotes_script/`：AstrBot 插件，`/视频对话` 与 `/剧本生成` 调用宿主的剧本 / 渲染接口并回传 MP4
 - `src/story/`、`src/live2d/`、`src/engine/`：剧情引擎、Live2D 运行时与渲染内核
 - `scripts/story-author.mjs`：命令行编写/校验/构建/预览分镜图
 - `config.example.yaml`：配置示例（标了必须修改的几处）
@@ -42,18 +42,18 @@
 | Node.js 22+ | 宿主 | 与引擎一致 |
 | Chrome / Chromium / Edge | 无头渲染 | 宿主自动查找；`render.chrome` 可指定 |
 | ffmpeg | 编码/解码 | 根目录 `npm install` 安装 `ffmpeg-static` 即自带；也可 `video.ffmpegPath` 指定 |
-| 剧情站点 | 游戏资源 | `paths.site` 指向 nnnotes 的 `nnnotes.product/1` 站点（完整渲染）；只有 bdon 站点时用 `paths.siteFormat` 提供剧本生成 |
+| 剧情站点 | 游戏资源 | `paths.site` 指向 nnnotes 的 `nnnotes.product/1` 站点；只有 bdon 站点时用 `paths.siteFormat` 也能生成完整视频 |
 | Live2D Cubism Core | Live2D | `render.core` 指向本地 `live2dcubismcore.min.js` 或 URL |
 | OpenAI 兼容 LLM | AI 剧本 | `llm.baseUrl` / `llm.model`，密钥只从环境变量读取 |
-| GPT-SoVITS 兼容 TTS | 配音 | `tts.baseUrl`；没有 TTS 也能渲染无声/仅有 BGM 的视频 |
+| GPT-SoVITS / Irodori TTS | 配音 | `tts.provider` + `tts.baseUrl`；没有 TTS 也能渲染无声/仅有 BGM 的视频 |
 
 **仓库不附带游戏资源。** 站点有两种格式，用途不同：
 
 - **AI 队列/剧本生成的站点**：用你自己的游戏文件通过 [nnnotes](https://github.com/MetaSekaiLab/nnnotes) 构建，
   产物格式 `nnnotes.product/1`，由本仓库 0.2 引擎读取；`paths.site` 指向它，`/api/v1/generate` 才能工作。
-- **没有产品站点时仍可生成剧本**：把 `paths.siteFormat` 指向 `fetch-story` 下载的 bdon 站点（如
-  `resources/site`），`/api/v1/script/generate` 会从该站点的舞台、BGM、模型和角色卡生成导演脚本；完整渲染仍走
-  `render-story` / `site-story`，或另外配置 `paths.site`。
+- **没有产品站点时也能出片**：把 `paths.siteFormat` 指向 `fetch-story` 下载的 bdon 站点（如 `resources/site`），
+  `/api/v1/generate` 会从该站点的舞台、BGM、模型和角色卡生成剧本、合成 TTS、把新剧情编译回站点，再用站点引擎
+  渲染 MP4。`/api/v1/script/generate` 仍然只生成剧本 JSON。
 - **现成剧情/站点格式的站点**：[bdon.moe 剧情播放器](https://bdon.moe/tools/story-player)发布的公开站点
   （`ournotes.story-manifest/2`）。`fetch-story` 下载一集剧情、UI/字体/音频与 Live2D 模型；
   `render-story` 用 `ournotes-player@0.1.8`（bdon.moe 播放器使用的同一引擎）直接渲染；
@@ -148,12 +148,15 @@ node host/tools/site-story.mjs --site resources/site --base stories/10610.json -
 如果只有下载好的 bdon 站点、没有 nnnotes 产品站点，可以用 `ai-site-story`：它把站点的舞台、BGM、模型、动作、
 表情（带语义说明）做成 AI 目录，让模型直接写导演脚本，然后用内置 TTS 逐句合成，把 WAV、cue sheet 和
 `VoiceIDs`/`voiceCues` 写回站点，最后用 `site-story` 编译。`llm.pipeline` 默认 `staged`：先选角，再只带选中角色的
-完整人格写台词，最后单独写分镜/动作/BGM；台词逐字保留，修复轮只重写分镜。`llm.directorPlan` 只对
-`pipeline: single` 有效。`tts.emotion` 打开时，LLM 会先给每句选情绪标签，再按角色的 `emotions` 参考音频或全局
+核心人格段落写台词，最后单独写分镜/动作/BGM；台词逐字保留，修复轮只重写分镜。台词轮用 `turns` 结构
+（一个角色的一次发言为一个 turn），并有长度闸：句数或总字数明显低于目标时长时自动请求补写。`llm.directorPlan` 只对
+`pipeline: single` 有效。`pipeline: single` 在角色池大于同台人数时先做一次快速选角（场景点名 → 短选角调用），
+主提示词只带入选角色的紧凑人格。`tts.emotion` 打开时，LLM 会先给每句选情绪标签，再按角色的 `emotions` 参考音频或全局
 `speedFactor`/`temperature` 预设合成。
 
-站点格式的 AI 目录按 `story.personaDirs` 的角色卡列出全部可用模型（每个角色一套服装，底本用过的优先），所以
-可以写跨乐队剧情；`story.cast` 仍可限定只从某个乐队选。跨乐队角色如果没有在 `tts.voices`/`voicesFile` 里配参考
+站点格式的 AI 目录按 `story.personaDirs` 的角色卡列出全部可用模型，并把每个角色的全部服装放在同一行；选角提示词
+要求同一支乐队尽量统一到同一类服装（校服不同年级算同一类，优先覆盖人数最多的一类，个别没有该类的角色可以例外），
+避免一个人穿队服、另一个人穿初中校服，所以可以写跨乐队剧情；`story.cast` 仍可限定只从某个乐队选。跨乐队角色如果没有在 `tts.voices`/`voicesFile` 里配参考
 音频/权重，会落回 `tts.defaultVoice`，听起来会是同一个默认音色；API 结果的 `tts.fallbackSpeakers` 会列出这些角色。
 
 ```sh
@@ -286,7 +289,10 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
 | POST | `/api/v1/cleanup` | 立即清理超过 `queue.outputMaxAgeHours` 的产物 |
 | GET | `/api/v1/cleanup/stats` | 清理策略与累计统计 |
 
-### 请求字段（generate / render）
+### 请求字段（generate / render / script/generate）
+
+`/api/v1/script/generate` 使用同一组 AI 字段（`prompt`、`base`、`language`、`mode`、`history`、`pipeline`、
+`targetMinutes`、`maxLines`），但不接受 `script`、`tts`、`wait` 与队列字段。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -294,6 +300,9 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
 | `script` | object | 完整的 `ournotes.story-script/1`；优先于 `prompt` |
 | `base` | string | 底本 manifest，如 `stories/10002.json`；默认 `story.base` 或站点第一篇 Normal |
 | `language` | string | `ja` / `en` / `zh-Hant` / `zh-Hans` / `ko` |
+| `mode` | string | `story`（默认）或 `chat`；`chat` 始终走 single、目标时长最多 1.5 分钟，并在提示词里带上最近对话 |
+| `history` | array | `[{role, content}]`，最多读取最近 12 条；用于 chat 的选角与台词上下文 |
+| `pipeline` | string | `single` / `staged`，覆盖本次任务的 `llm.pipeline`；`chat` 模式强制 single |
 | `title` | string | 标题；留空由 AI 取 |
 | `targetMinutes` | number | 目标时长，默认 `story.targetMinutes` |
 | `maxLines` | number | 台词条数上限，默认 `story.maxLines` |
@@ -310,20 +319,22 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
 | 配置 | 说明 |
 | --- | --- |
 | `paths.site` | nnnotes 产品站点目录（`/api/v1/generate` 完整渲染必需） |
-| `paths.siteFormat` | bdon 站点格式目录；没有产品站点时让 `/api/v1/script/generate` 仍可生成剧本 |
+| `paths.siteFormat` | bdon 站点格式目录；没有产品站点时用同一套 `/api/v1/generate` 生成完整视频 |
 | `paths.output` / `paths.cache` | 成片、故事 JSON、TTS 缓存 |
 | `story.base` / `story.language` | 默认底本与语言；留空自动选择 |
 | `story.cast` | 提供给 AI 的角色白名单（模型 id 或 character） |
 | `story.maxOnStage` | 同台人数上限：3（默认，官方群像 `far-left/center/far-right` + `camera: far`）或 2（严格两人，第三人换组进出） |
-| `story.personaDirs` | 角色卡目录：每个 `*.md` 一位角色，按文件名/标题/日文名/罗马音匹配模型；staged 只把入选角色的完整角色卡放进台词轮 |
+| `story.personaDirs` | 角色卡目录：每个 `*.md` 一位角色，按文件名/标题/日文名/罗马音匹配模型；台词轮只带入选角色卡的核心段落（核心机制/语言与风格/角色档案/核心禁忌，其余聊天协议章节裁掉） |
 | `story.personas` | 单条人格覆盖；与目录里的角色卡同名时覆盖它 |
-| `llm.pipeline` | `staged`（默认：选角 → 台词 → 分镜三轮，完整角色提示词只进台词轮）或 `single`（一次写完整剧本） |
+| `llm.pipeline` | `staged`（默认：选角 → 台词 → 分镜三轮，角色提示词只进台词轮）或 `single`（一次写完整剧本；角色池大时先快速选角） |
 | `llm.directorPlan` | 仅 `single`：先让 AI 写分镜计划再写完整剧本（默认关） |
+| `llm.reasoningEffort` | 可选思考强度 `minimal`/`low`/`medium`/`high`，作为 OpenAI 兼容的 `reasoning_effort` 发送；空 = 服务端默认 |
 | `llm.*` | OpenAI 兼容端点、模型、温度、重试；`apiKeyEnv` 只给环境变量名 |
 | `tts.defaultVoice` | 没有单独音色的角色使用的参考音频：`refAudioPath` / `promptText` / `promptLang` |
 | `tts.voicesFile` | 角色音色表文件（本项目自己的格式，模板见 `voices.example.yaml`）；路径相对仓库根目录 |
 | `tts.voices` | 内联音色条目；与 `voicesFile` 同名时按字段覆盖、`aliases` 合并 |
-| `tts.*` | GPT-SoVITS 端点、语言、语速/采样参数、`fragmentInterval`、并发、重试、失败策略 |
+| `tts.*` | provider（`gpt-sovits` / `irodori`）、端点、语言、语速/采样参数、`fragmentInterval`、并发、重试、失败策略 |
+| `tts.irodori` | Irodori 推理默认值（model / numSteps / cfg / chunking / seed / 默认 LoRA / caption / emotionLabels） |
 | `tts.required` | `true` = 任一句合成失败就让任务失败；`false`（默认）= 该句静音并写入 warnings |
 | `tts.emotion` | 情绪的标签、全局语速/温度预设；角色的情绪参考音频写在 `voices[].emotions` |
 | `video.*` | 分辨率、30fps、JPEG 中间质量、CRF、编码器、音频码率、最大时长 |
@@ -338,25 +349,34 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
 
 - `OURNOTES_LLM_API_KEY`：LLM 密钥
 - `OURNOTES_API_KEY`：API 访问令牌（可选）
-- `OURNOTES_TTS_API_KEY`：TTS 服务密钥（可选，取决于你的 GPT-SoVITS 部署）
+- `OURNOTES_TTS_API_KEY`：TTS 服务密钥（可选，取决于你的 GPT-SoVITS / Irodori 部署）
 
 这些值不会出现在 `/health`、日志或剧本 JSON 中。
 
 ## 渲染管线
 
 1. **AI 剧本**（`llm.pipeline: staged`，默认）：三次调用。① 选角：只给角色/舞台清单和用户要求，输出标题、小事件、
-   2~3 名角色及各自在本场的作用、4~6 条大纲；结果不可用时回退到站点角色顺序。② 台词：只带选中角色的完整
-   `story.personas`、句式参考和大纲，输出 `{ lines: [{ id, say, text }] }`，这一轮看不到动作/镜头/BGM 清单。
-   ③ 分镜：输入定稿台词、选中角色的动作/表情、舞台和 BGM，输出只引用 `line` id 的演出 beat。合并时台词逐字取
-   第二轮，第三轮即使写了 `say`/`text` 也只取演出字段。`pipeline: single` 退回一次整本生成；此时
-   `llm.directorPlan` 可先写一份短计划（默认关）。
+   2~3 名角色及各自在本场的作用、4~6 条大纲；结果不可用时回退到站点角色顺序。② 台词：只带选中角色的核心
+   `story.personas` 段落、句式参考和大纲，用 `turns` 结构输出（一个角色的一次发言为一个 turn，内部 1~6 条
+   `{ id, say, text }` 台词），这一轮看不到动作/镜头/BGM 清单；句数或总字数明显低于目标时长时自动请求补写
+   （最多两次，保留原事件与人物关系）。③ 分镜：输入定稿台词、选中角色的动作/表情、舞台和 BGM，输出只引用
+   `line` id 的演出 beat。合并时台词逐字取第二轮，第三轮即使写了 `say`/`text` 也只取演出字段；合并器还会把
+   全场都有动作的分镜摘回到官方比例的静止句。`pipeline: single` 退回一次整本生成；角色池大于同台人数时先做
+   一次快速选角（场景点名 → 短选角调用，失败保留完整池），此时 `llm.directorPlan` 可先写一份短计划（默认关）。
 2. **校验与修复**：两条管线都经过 JSON 提取 → 结构校验 → 已知问题自动修复 → 最多 `llm.repairRounds` 轮定向修复。
-   staged 的修复轮只重发分镜提示词，台词稿固定在上下文里，所以修几轮都不会把台词改坏。校验器与
-   [剧情编写工具](story-author.md)共用同一套规则。站点格式的 AI 目录列出所有“有角色卡或已知名字”的模型，每个角色只取
-   一套服装（底本用过的优先），因此可以写跨乐队剧情；用 `story.cast` 可以限定只从某个乐队选。staged 合并按本场
+   staged 的修复轮只重发分镜提示词，台词稿固定在上下文里，所以修几轮都不会把台词改坏；single 的修复轮在
+   同一会话里追加上一轮输出与问题清单。分镜经修复仍不可用时，staged 退回默认走位与无动作演出的可用剧本，
+   而不是让整个任务失败；结果里的 `stages` 记录每次调用的耗时与成败。校验器与
+   [剧情编写工具](story-author.md)共用同一套规则。站点格式的 AI 目录列出所有“有角色卡或已知名字”的模型，并保留每个角色的全部服装；选角提示词要求
+   同一支乐队尽量统一到同一类服装（校服不同年级算同一类），个别没有该类的角色可以例外，因此可以写跨乐队剧情；
+   用 `story.cast` 可以限定只从某个乐队选。选角轮会声明整场的 `tone`，
+   分镜提示词要求 BGM 跟 `tone`、括号里的情绪和冒号后的用途一致：认真谈心/道歉/安慰/伤感场景里不要选轻巧、调侃、
+   喜剧曲，没有合适的就省略。staged 合并按本场
    官方预算修剪过量的 focus/视线剪辑点，并把换行比例调整到官方约 38% 两行（只在现有标点后移动换行，不改字词）；
    分镜修复后仍不可用时会退回「默认走位 + 无动作演出」。
-3. **TTS**：按台词逐句调用 GPT-SoVITS（可并发、磁盘缓存、可重试、失败降级；切换角色权重时串行）。角色音色来自
+3. **TTS**：按台词逐句调用 GPT-SoVITS 或 Irodori（可并发、磁盘缓存、可重试、失败降级；切换角色权重时串行）。
+   Irodori 每个请求自带参考音频/LoRA/caption，没有权重状态；它只读日文，没有日文的句子会静音并记入
+   `nonJapaneseLines`。角色音色来自
    `tts.defaultVoice` / `tts.voices` / `voicesFile`，不再读取 AstrBot 或其它外部配置；完整字段、匹配规则和试音步骤
    见 [TTS 配置与试音](tts.md)。`tts.textLang` 默认 `auto`（跟随剧本语言）；设为具体语言（如 `ja`）且与剧本语言不同
    时，先用 LLM 批量翻译。`tts.emotion.enabled` 打开时，一次 LLM 调用给每句选情绪标签，角色的 `emotions` 参考音频
@@ -391,11 +411,14 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
 
 - API 默认只监听 `127.0.0.1:9881`，且**默认没有鉴权**。需要对外提供服务时，设置 `security.apiKeyEnv` 指向一个
   令牌环境变量，或只让反向代理访问；`npm run check` 会在监听非回环地址且没有令牌时给出警告。
+- 无头 Chrome 在 Linux/NVIDIA 上默认可能落到 SwiftShader（表现为渲染只有 1~2 fps）。`render.gpu: true` 时把
+  `render.chromeArgs` 设为 `["--use-angle=vulkan"]`，让 ANGLE 走 Vulkan；可用
+  `chrome --headless=new --use-angle=vulkan --dump-dom` 的 WebGL renderer 字符串确认是否命中显卡。
 - 渲染页面服务器只绑定 `127.0.0.1`，随机端口，任务 id 随机；页面只能读取 `/src`、`/host/render`、UI 测试模块、
   `/site-engine/`（按 Node 解析到的 `ournotes-player-site` 包）与当前站点，路径经过规范化，拒绝 `..`。
 - CORS 默认关闭；需要浏览器直连时设 `server.cors: true`，并在 `server.corsOrigins` 写精确来源，不支持通配符。
 - 宿主对**调用方提供的 URL**执行严格 SSRF 校验（仅 http/https、拒绝 localhost/环回/私有/保留地址，并校验 DNS
-  解析结果）。LLM/TTS 属于运维配置，默认也拒绝私有地址；本地/内网 GPT-SoVITS 需要在
+  解析结果）。LLM/TTS 属于运维配置，默认也拒绝私有地址；本地/内网的 GPT-SoVITS 或 Irodori 需要在
   `security.allowPrivateServiceEndpoints: true` 显式打开。
 - 产物按 `queue.outputMaxAgeHours` 清理；下载文件名只允许单段安全字符，目录查询基于目录列表而非拼接路径。
 - 游戏资源、Live2D Cubism Core、LLM 与 TTS 服务的使用分别受各自许可约束；本宿主不附带这些资源。
@@ -551,9 +574,9 @@ npm run audit:stories -- --episode output/phase1/episode.json \
 
 ## 已知限制
 
-- **HTTP AI 队列需要产品站点**（`nnnotes.product/1`）。站点格式（`ournotes.story-manifest/2`）可以用
-  `host/tools/ai-site-story.mjs` 让 AI 写导演脚本、合成 TTS 并编译，或用 `site-story` 编译手写脚本，再用
-  `render-story` 直接渲染。站点格式的 TTS 会写成真实 WAV cue，渲染时由页面解码给 MotionSync；不再静音。
+- **AI 队列可以用产品站点或站点格式**：`paths.site` 指向 `nnnotes.product/1` 时走产品编译；`paths.siteFormat`
+  指向 `ournotes.story-manifest/2` 时，剧本会先编译成新剧情写入该站点，再由站点引擎渲染。两者都支持
+  `/api/v1/generate`；`ai-site-story` / `site-story` / `render-story` 仍是可单独调用的命令行工具。
 - 导演脚本只覆盖 `scene` / `positions` / `say` / `narrate` / `camera` / `fade` / `pause` / `action`。底本
   finalize 行里的淡出等仍会执行，但作者不能逐条写任意 ADV 命令；只暴露经命令审计与抽帧验证的白名单
   （`Focus` / `Track` / `Zoom` / `Pedestal` / `PanV2` / `DoF` / `Look` / `LookTarget` / `Se` 等），
@@ -571,12 +594,13 @@ npm run audit:stories -- --episode output/phase1/episode.json \
 
 | 现象 | 检查 |
 | --- | --- |
-| `/generate` 返回 503 `site_missing` | `paths.site` 是否指向含 `stories.json`/`models.json` 的产品站点；只想生成剧本时用 `paths.siteFormat` 和 `/script/generate` |
+| `/generate` 返回 503 `site_missing` | `paths.site`（产品站点）或 `paths.siteFormat`（bdon 站点）是否配置；只想要剧本时用 `/script/generate` |
 | 页面报 `Live2D Cubism MotionSync Core is not loaded` | 本管线用 `airlipsync_voice`，不需要 MotionSync；若底本模型强制要求，配置 `render.motionsync` |
 | 页面报 WebGL2 不可用 | Chrome 是否支持 SwiftShader；尝试 `render.gpu: true` 或更新浏览器 |
 | 渲染很慢 | 软件渲染正常；可降低 `video.width/height`、提高 `render.gpu`，或增加 `queue.concurrency` 但注意内存 |
-| 视频没有声音 | `tts.enabled`、`tts.voices`/`tts.defaultVoice` 是否配置、GPT-SoVITS 是否可达；`npm run tts:check -- --synthesize`；BGM 需要底本有 `sound_bgm*` cue |
+| 视频没有声音 | `tts.enabled`、`tts.provider`、`tts.voices`/`tts.defaultVoice` 是否配置、TTS 服务是否可达；`npm run tts:check -- --synthesize`；BGM 需要底本有 `sound_bgm*` cue |
 | 部分台词静音 | API 结果的 `tts.silentSpeakers` / `tts.failedSpeakers`；角色缺参考音频或服务端失败 |
+| Irodori 下部分台词没有声音 | 看 `tts.nonJapaneseLines` / `tts.nonJapaneseSpeakers`；这几句没有日文，检查 `translateForTts` |
 | 所有角色同一个声音 | `tts.fallbackSpeakers` 列出的角色没有匹配到命名音色，落到了 `defaultVoice`；补 `aliases` |
 | 配置改了没生效 | `npm run check` 会报告未知配置项（含拼写建议）和旧字段迁移提示 |
 | 编码失败 | `health.ffmpeg`；`video.encoder` 先设 `libx264` 排查硬件编码器 |

@@ -180,6 +180,12 @@ const withModels = (catalog, models) => ({ ...catalog, models });
 
 const maxOnStageOf = (config) => Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
 
+const characterKeyOf = (model) => model.key || model.character || model.name;
+// A character has several costumes now; the fast cast picks characters, then hands the writer every costume of the
+// selected ones so the prompt can still keep a band in one outfit.
+const modelsForCharacters = (catalog, keys) =>
+  (catalog.models || []).filter((m) => keys.has(characterKeyOf(m)));
+
 /**
  * single 的前置快速选角：把大角色池缩到这场戏需要的 1~maxOnStage 人，
  * 主提示词只带入选角色的紧凑人设，而不是几十份完整表格。
@@ -187,7 +193,13 @@ const maxOnStageOf = (config) => Math.max(2, Math.min(3, Math.round(Number(confi
  */
 const resolveFastCast = async ({ catalog, request, config, llm, logger, signal }) => {
   const maxOnStage = maxOnStageOf(config);
-  const pool = (catalog.models || []).slice(0, MAX_PROMPT_MODELS);
+  const pool = [];
+  for (const m of catalog.models || []) {
+    const key = characterKeyOf(m);
+    if (!key || pool.some((x) => characterKeyOf(x) === key)) continue;
+    pool.push(m);
+    if (pool.length >= MAX_PROMPT_MODELS) break;
+  }
   if (pool.length <= maxOnStage) return catalog;
 
   const prompt = String(request.prompt || "");
@@ -195,13 +207,17 @@ const resolveFastCast = async ({ catalog, request, config, llm, logger, signal }
     .filter((n) => n && String(n).length >= 2)
     .some((n) => prompt.includes(n)));
   if (mentioned.length) {
-    logger.info?.(`场景点名角色：${mentioned.slice(0, maxOnStage).map((m) => m.name).join("、")}`);
-    return withModels(catalog, mentioned.slice(0, maxOnStage));
+    const picked = mentioned.slice(0, maxOnStage);
+    logger.info?.(`场景点名角色：${picked.map((m) => m.name).join("、")}`);
+    return withModels(catalog, modelsForCharacters(catalog, new Set(picked.map(characterKeyOf))));
   }
 
   if (!llm.available) return catalog;
   try {
-    const answer = await llm.json(buildQuickCastMessages({ catalog, request, config }), { signal, label: "quick-cast" });
+    const answer = await llm.json(
+      buildQuickCastMessages({ catalog, request, config, history: request.history }),
+      { signal, label: "quick-cast" },
+    );
     const data = extractJson(answer.content);
     const raw = Array.isArray(data) ? data
       : isObj(data) && Array.isArray(data.cast) ? data.cast
@@ -210,11 +226,12 @@ const resolveFastCast = async ({ catalog, request, config, llm, logger, signal }
     const cast = [];
     for (const item of raw) {
       const model = resolveModel(index, String(item ?? "").trim());
-      if (model && !cast.some((m) => m.id === model.id)) cast.push(model);
+      if (model && !cast.some((m) => characterKeyOf(m) === characterKeyOf(model))) cast.push(model);
     }
     if (cast.length) {
-      logger.info?.(`快速选角：${cast.map((m) => m.name).join("、")}`);
-      return withModels(catalog, cast.slice(0, maxOnStage));
+      const picked = cast.slice(0, maxOnStage);
+      logger.info?.(`快速选角：${picked.map((m) => m.name).join("、")}`);
+      return withModels(catalog, modelsForCharacters(catalog, new Set(picked.map(characterKeyOf))));
     }
   } catch (e) {
     if (signal?.aborted) throw signal.reason || e;
@@ -716,6 +733,10 @@ export const generateScript = async (args) => {
     });
   }
   const startedAt = Date.now();
-  const out = args.config.llm?.pipeline === "single" ? await generateSingle(args) : await generateStaged(args);
+  // A chat reply is one short scene: the staged cast/dialogue/storyboard passes would only slow it down.
+  const pipeline = args.request?.mode === "chat"
+    ? "single"
+    : args.request?.pipeline ?? args.config.llm?.pipeline;
+  const out = pipeline === "single" ? await generateSingle(args) : await generateStaged(args);
   return { ...out, durationMs: Date.now() - startedAt };
 };

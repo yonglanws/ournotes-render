@@ -293,3 +293,16 @@ test("short-scene prompts never print an inverted range or an unreachable look/S
   assert.match(user.content, /独立 look 最多 2/);
   assert.match(user.content, /Se 约 1 条/);
 });
+
+test("the staged prompts carry the scene tone and the BGM tone rule", () => {
+  const [, cast] = buildCastMessages({ catalog: CATALOG, request: { prompt: "认真谈心" }, config: CONFIG });
+  assert.match(cast.content, /温暖日常 \/ 认真谈心 \/ 轻松搞笑/);
+  assert.match(cast.content, /"tone": "认真谈心"/);
+
+  const plan = { ...PLAN, tone: "认真谈心" };
+  const dialogue = { lines: [{ id: "l1", say: "a", text: "……其实，我一直很不安。" },
+                             { id: "l2", say: "b", text: "……我知道。" }] };
+  const [, storyboard] = buildStoryboardMessages({ plan, dialogue, catalog: CATALOG, request: {}, config: CONFIG });
+  assert.match(storyboard.content, /整体情绪：认真谈心/);
+  assert.match(storyboard.content, /不要选轻巧、调侃、喜剧的曲子/);
+});

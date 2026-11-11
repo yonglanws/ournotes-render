@@ -2,17 +2,40 @@
 
 All notable changes to this package. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### AstrBot plugin 0.3.0
+
+- The plugin is now a pure adapter like the MySekaiStoryteller plugin: `POST /api/v1/script/generate` returns the
+  script, then `POST /api/v1/render` with `wait: false` queues the render while the plugin polls phase progress.
+  Scripts and export statistics are persisted, and the final MP4 is delivered through local file, URL variants,
+  file-service token and path fallbacks.
+- Add `/视频对话` with per-session history, `/统计`, and the admin-only `/ournotesadmin` group (status, queue, cancel,
+  resources, cleanup, setapi). The plugin side adds a health preflight, a concurrency gate, a pending limit, message
+  deduplication and 429 retry; cancelling a local task also cancels the host render task.
+- The HTTP client uses `httpx` instead of `aiohttp`; `timeout_seconds` is split into `script_timeout` and
+  `export_timeout`, and `tts`, `pipeline`, polling and progress options are configurable.
+
+### Host AI
+
+- `POST /api/v1/generate`, `/render` and `/script/generate` accept `mode` (`story` / `chat`), `history`
+  (`[{role, content}]`) and `pipeline` (`single` / `staged`). Chat mode always uses the single pass, caps the target at
+  1.5 minutes, passes the recent conversation to the quick-cast and story prompts, and asks for a short reply instead
+  of a complete short play.
+- A request-level `pipeline` overrides `llm.pipeline` for that job.
+
 ## [0.4.0](https://github.com/empty-sekai/ournotes-player/compare/v0.2.0...v0.4.0) - 2026-11-01
 
 ### Configuration and TTS
 
-- Add `paths.siteFormat`: when no nnnotes product site is configured, a downloaded bdon site (`resources/site`) still
-  provides the stages, BGM, models and character sheets for `POST /api/v1/script/generate`. Full rendering keeps using
-  `paths.site` or the `render-story` / `site-story` tools, and `/api/v1/generate` reports a clear error on this path.
-- Add `astrbot_plugin_ournotes_script`: the `/剧本生成` AstrBot command (aliases `/写剧本`, `/storygen`) calls
-  `POST /api/v1/script/generate`, sends a readable scene/dialogue/camera preview and attaches the complete
-  `ournotes.story-script/1` JSON. Configuration covers the host URL, API key, language, base story, duration, line
-  limit, timeout, preview length and attachment mode; the plugin keeps the latest scripts in its data directory.
+- Add `paths.siteFormat`: when no nnnotes product site is configured, a downloaded bdon site (`resources/site`)
+  provides the stages, BGM, models and character sheets for the full `POST /api/v1/generate` pipeline. The script is
+  compiled into a new story on that site, then rendered with the site engine; `POST /api/v1/script/generate` still
+  returns only the script.
+- Add `astrbot_plugin_ournotes_script`: the `/剧本生成` AstrBot command (aliases `/写剧本`, `/storygen`) submits
+  `POST /api/v1/generate` with `wait: false`, reports phase progress, downloads the finished MP4 and sends it. It
+  configures the host URL/API key, language, base story, duration, line limit, timeout, polling and progress intervals,
+  video size warning and retained video count; a timeout cancels the host task.
 - TTS is now configured in the host's own format: `tts.defaultVoice` (fallback reference) plus `tts.voices` inline or
   `tts.voicesFile: voices.yaml` for a large cast. `tts.astrbotConfig` was removed, `tts.characters` was renamed to
   `tts.voices`, and the flat `defaultRefAudioPath`/`defaultPromptText` fields are grouped under `tts.defaultVoice`.

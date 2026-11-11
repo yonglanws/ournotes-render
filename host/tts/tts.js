@@ -1,13 +1,15 @@
-// Integrated TTS: GPT-SoVITS api_v2 compatible synthesis, per-character reference voices, WAV normalization, a disk
-// cache, and line-by-line text selection (with optional LLM translation when the story language differs from the
-// TTS language). The renderer later turns these files into a story cue sheet.
+// Integrated TTS: two providers behind one line-oriented API. `gpt-sovits` speaks the api_v2 `/tts` endpoint and
+// switches server-wide weights; `irodori` speaks the OpenAI-compatible `/v1/audio/speech` endpoint and carries its
+// reference audio / LoRA adapter / caption in every request. Both share the voice table, the disk cache, WAV
+// normalization and line-by-line text selection (with optional LLM translation). The renderer later turns these files
+// into a story cue sheet.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { assertServiceHttpUrl } from "../net/urlGuard.js";
 import { extractJson } from "../ai/json.js";
 import { normalizeWav, probeWav } from "../render/ffmpeg.js";
-import { normName } from "./voices.js";
+import { hasVoiceReference, normName } from "./voices.js";
 
 const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
 
@@ -67,6 +69,7 @@ export class VoiceBook {
       ...((v && v.emotions) || []).map((e) => e && e.label),
       ...((this.config.emotion && this.config.emotion.presets) || []).map((e) => e && e.label),
       ...((this.config.emotion && this.config.emotion.labels) || []),
+      ...((this.config.provider === "irodori" && this.config.irodori && this.config.irodori.emotionLabels) || []),
     ];
     return [...new Set(labels.map((x) => String(x || "").trim()).filter(Boolean))];
   }
@@ -89,9 +92,20 @@ export class VoiceBook {
     };
     const fallback = cfg.defaultVoice || {};
     const refAudioPath = pick("refAudioPath", v?.refAudioPath || fallback.refAudioPath || "");
+    // Irodori extras: several reference clips, a LoRA adapter directory and a performance caption. An emotion entry
+    // overrides only the fields it actually names, so a caption-only emotion keeps the character's LoRA.
+    const baseRefs = (v?.refAudioPaths || fallback.refAudioPaths || [])
+      .map((p) => String(p || "").trim()).filter(Boolean);
+    const hitRefs = (entry?.refAudioPaths || []).map((p) => String(p || "").trim()).filter(Boolean);
+    const refAudioPaths = hitRefs.length ? hitRefs : baseRefs;
+    const loraAdapter = String(pick("loraAdapter", v?.loraAdapter || cfg.irodori?.defaultLoraAdapter || "") || "");
+    const caption = String(pick("caption", v?.caption || v?.promptText || cfg.irodori?.defaultCaption || "") || "");
+    // `speed` is Irodori's own field; a preset's speedFactor also drives it so the existing pacing presets keep working.
+    const speed = Number(pick("speed", pick("speedFactor", v?.speed ?? v?.speedFactor ?? cfg.speedFactor ?? 1)));
+    const numSteps = Number(pick("numSteps", v?.numSteps ?? 0));
     const promptText = pick("promptText", v?.promptText || fallback.promptText || "");
     const promptLang = pick("promptLang", v?.promptLang || fallback.promptLang || cfg.promptLang || "ja");
-    const speedFactor = Number(pick("speedFactor", v?.speedFactor ?? cfg.speedFactor ?? 1));
+    const speedFactor = Number(pick("speedFactor", v?.speedFactor ?? speed ?? 1));
     const temperature = Number(pick("temperature", v?.temperature ?? cfg.temperature ?? 1));
     const topK = Number(pick("topK", v?.topK ?? cfg.topK ?? 5));
     const topP = Number(pick("topP", v?.topP ?? cfg.topP ?? 1));
@@ -104,6 +118,11 @@ export class VoiceBook {
       matched: !!v,
       emotion: lab,
       refAudioPath,
+      refAudioPaths,
+      loraAdapter,
+      caption,
+      speed,
+      numSteps,
       promptText,
       promptLang,
       gptWeightsPath,
@@ -114,7 +133,8 @@ export class VoiceBook {
       topP,
       repetitionPenalty,
       fragmentInterval,
-      key: `${v?.name || "default"}|${lab}|${refAudioPath}|${promptText}|${promptLang}|` +
+      key: `${v?.name || "default"}|${lab}|${refAudioPath}|${refAudioPaths.join(",")}|${loraAdapter}|${caption}|` +
+           `${speed}|${numSteps}|${promptText}|${promptLang}|` +
            `${gptWeightsPath}|${sovitsWeightsPath}|${speedFactor}|${temperature}|${topK}|${topP}|${repetitionPenalty}|` +
            `${fragmentInterval}`,
     };
@@ -122,6 +142,42 @@ export class VoiceBook {
 }
 
 export const ttsAvailable = (config) => !!(config.enabled && config.baseUrl);
+
+// Irodori reads Japanese only. A line without kana or CJK would be read with the wrong phonemes, so it is never
+// sent; the caller skips it (or fails when tts.required is set). Kanji-only lines such as 「了解」 are valid
+// Japanese, so the check accepts CJK ideographs too; the source-language guard in synthesizeStory still keeps
+// untranslated Chinese out of Irodori.
+export const hasKana = (text) => /[\u3040-\u30ff\u31f0-\u31ff]/.test(String(text || ""));
+export const isJapaneseSpeechText = (text) => hasKana(text) || /[\u3400-\u9fff]/.test(String(text || ""));
+
+const cachedAudio = (cacheDir, key) => {
+  const file = path.join(cacheDir, `${key}.wav`);
+  try { return { file, ...probeWav(file) }; } catch { return null; }
+};
+
+// Both providers return WAV in practice; anything else (mp3/ogg from Irodori) is normalized through ffmpeg.
+const storeAudio = async (cacheDir, key, raw, signal) => {
+  const wav = path.join(cacheDir, `${key}.wav`);
+  const tmp = path.join(cacheDir, `${key}.raw`);
+  const norm = path.join(cacheDir, `${key}.norm.wav`);
+  fs.writeFileSync(tmp, raw);
+  const looksWav = raw.length > 12 && raw.toString("latin1", 0, 4) === "RIFF" &&
+    raw.toString("latin1", 8, 12) === "WAVE";
+  try {
+    if (looksWav) fs.renameSync(tmp, wav);
+    else {
+      // Normalize to a side file and rename only on success: a killed ffmpeg must not leave a header-only .wav
+      // that the next run mistakes for a cache hit.
+      await normalizeWav({ input: tmp, output: norm, sampleRate: 48000, signal });
+      fs.renameSync(norm, wav);
+    }
+  } finally {
+    for (const file of [tmp, norm]) {
+      try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch { /* gone */ }
+    }
+  }
+  return { file: wav, ...probeWav(wav) };
+};
 
 export class GptSovitsClient {
   constructor(config, { apiKey = "", logger = console, allowPrivate = true } = {}) {
@@ -177,23 +233,11 @@ export class GptSovitsClient {
   }
 
   async _synthesize(key, text, voice, signal, textLang) {
-    const wav = path.join(this.cacheDir, `${key}.wav`);
-    if (fs.existsSync(wav)) {
-      try { return { file: wav, ...probeWav(wav) }; } catch { /* rebuild */ }
-    }
+    const hit = cachedAudio(this.cacheDir, key);
+    if (hit) return hit;
     await this._ensureWeights(voice, signal);
     const raw = await this._fetch(text, voice, signal, textLang);
-    // GPT-SoVITS usually returns WAV; anything else is normalized through ffmpeg.
-    const tmp = path.join(this.cacheDir, `${key}.raw`);
-    fs.writeFileSync(tmp, raw);
-    const looksWav = raw.length > 12 && raw.toString("latin1", 0, 4) === "RIFF" && raw.toString("latin1", 8, 12) === "WAVE";
-    try {
-      if (looksWav) fs.renameSync(tmp, wav);
-      else await normalizeWav({ input: tmp, output: wav, sampleRate: 48000, signal });
-    } finally {
-      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* gone */ }
-    }
-    return { file: wav, ...probeWav(wav) };
+    return storeAudio(this.cacheDir, key, raw, signal);
   }
 
   // GPT-SoVITS loads one GPT/SoVITS weight pair at a time; switch it before a line that names different weights.
@@ -268,6 +312,118 @@ export class GptSovitsClient {
   }
 }
 
+// Irodori-TTS-Server: OpenAI-compatible `POST /v1/audio/speech`. Every request names its own reference audio, LoRA
+// adapter and caption, so there is no server-side weight state and lines may run concurrently.
+export class IrodoriClient {
+  constructor(config, { apiKey = "", logger = console, allowPrivate = true } = {}) {
+    this.config = config;
+    this.apiKey = apiKey;
+    this.logger = logger;
+    this.base = String(config.baseUrl || "").replace(/\/+$/, "");
+    if (this.base) assertServiceHttpUrl(this.base, { allowPrivate, what: "tts.baseUrl" });
+    this.cacheDir = "";
+  }
+
+  setCacheDir(dir) { this.cacheDir = dir; fs.mkdirSync(dir, { recursive: true }); }
+
+  // Top level is the OpenAI speech shape; inference parameters live under `irodori`. `ref_wavs` and `ref_wav` are
+  // mutually exclusive (several clips win); blank values and a random seed are omitted so the server keeps its
+  // defaults. `speed` follows the character/emotion override, then the global speedFactor.
+  requestBody(text, voice) {
+    const d = this.config.irodori || {};
+    const refs = (voice.refAudioPaths || []).map((p) => String(p || "").trim()).filter(Boolean);
+    const body = {
+      model: String(d.model || "irodori-tts"),
+      input: text,
+      response_format: String(d.responseFormat || "wav"),
+    };
+    const speed = Number(voice.speed ?? this.config.speedFactor ?? 1);
+    if (Number.isFinite(speed)) body.speed = speed;
+    const irodori = {};
+    if (refs.length) irodori.ref_wavs = refs;
+    else if (voice.refAudioPath) irodori.ref_wav = voice.refAudioPath;
+    if (voice.loraAdapter) irodori.lora_adapter = voice.loraAdapter;
+    if (voice.caption) irodori.caption = voice.caption;
+    const numSteps = Number(voice.numSteps || d.numSteps || 0);
+    if (Number.isFinite(numSteps) && numSteps > 0) irodori.num_steps = numSteps;
+    for (const [key, value] of [["cfg_scale_text", d.cfgScaleText], ["cfg_scale_caption", d.cfgScaleCaption],
+                                ["cfg_scale_speaker", d.cfgScaleSpeaker], ["duration_scale", d.durationScale]]) {
+      if (Number.isFinite(value)) irodori[key] = value;
+    }
+    irodori.chunking_enabled = d.chunkingEnabled !== false;
+    if (Number.isFinite(d.chunkMinChars) && d.chunkMinChars > 0) irodori.chunk_min_chars = d.chunkMinChars;
+    if (Number.isInteger(d.seed) && d.seed >= 0) irodori.seed = d.seed;
+    if (Object.keys(irodori).length) body.irodori = irodori;
+    return body;
+  }
+
+  async synthesize(text, voice, { signal = null } = {}) {
+    if (!this.config.enabled) throw new TTSError("TTS is disabled");
+    if (!hasVoiceReference(voice)) throw new TTSError(`no reference audio for ${voice.name || "the default voice"}`);
+    // Last line of defense; synthesizeStory checks the language first so it can skip the line and keep the report.
+    if (!isJapaneseSpeechText(text))
+      throw new TTSError(`Irodori reads Japanese only; refusing "${String(text).slice(0, 30)}"`);
+    return this._cached(text, voice, signal);
+  }
+
+  async _cached(text, voice, signal) {
+    const key = sha256(JSON.stringify({ provider: "irodori", text, voice: voice.key, irodori: this.config.irodori || {} }));
+    // Do not merge calls from different jobs: the in-flight promise would inherit the first caller's abort signal,
+    // so cancelling one job would cancel an identical line another job is waiting for. The disk cache still covers
+    // repeated lines once the first synthesis completes.
+    return this._synthesize(key, text, voice, signal);
+  }
+
+  async _synthesize(key, text, voice, signal) {
+    const hit = cachedAudio(this.cacheDir, key);
+    if (hit) return hit;
+    const raw = await this._fetch(text, voice, signal);
+    return storeAudio(this.cacheDir, key, raw, signal);
+  }
+
+  async _fetch(text, voice, signal) {
+    const c = this.config;
+    const timeout = Math.max(1000, Number(c.timeoutMs || 60000));
+    const controller = new AbortController();
+    const onAbort = () => controller.abort(signal.reason || new Error("aborted"));
+    if (signal) {
+      if (signal.aborted) throw signal.reason || new Error("aborted");
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    const timer = setTimeout(() => controller.abort(new TTSError(`TTS timed out after ${Math.round(timeout / 1000)} s`,
+                                                              { retryable: true })), timeout);
+    const headers = { "content-type": "application/json", accept: "audio/*,application/octet-stream" };
+    if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+    let response;
+    try {
+      response = await fetch(`${this.base}/v1/audio/speech`, { method: "POST", headers,
+        body: JSON.stringify(this.requestBody(text, voice)),
+                                                             signal: controller.signal });
+    } catch (e) {
+      if (controller.signal.aborted) throw controller.signal.reason || e;
+      throw new TTSError(`TTS connection failed: ${e.message}`, { retryable: true });
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
+    }
+    const type = response.headers.get("content-type") || "";
+    if (!response.ok || type.includes("application/json")) {
+      const body = Buffer.from(await response.arrayBuffer()).toString("utf8").slice(0, 500);
+      const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+      throw new TTSError(`TTS HTTP ${response.status}: ${body}`, { status: response.status, retryable });
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (!bytes.length) throw new TTSError("TTS returned empty audio", { retryable: true });
+    return bytes;
+  }
+}
+
+// The provider switch lives here so the host, tts:check and tests construct the same client.
+export const createTtsClient = (config, options = {}) =>
+  (String(config.provider || "gpt-sovits").toLowerCase() === "irodori"
+    ? new IrodoriClient(config, options)
+    : new GptSovitsClient(config, options));
+
 const mapLimit = async (items, limit, fn, signal) => {
   const out = new Array(items.length);
   let next = 0;
@@ -313,7 +469,7 @@ const judgeEmotions = async ({ llm, lines, labels, signal, logger }) => {
   const system = [
     "你是配音情绪标注员。为每一句台词挑选最合适的语气标签。",
     "只能从下面的标签中选：", list,
-    "情绪平淡、普通陈述时选“日常平静”，不要过度表演。",
+    "情绪平淡、普通陈述时，选列表里最接近“平静”的标签，不要过度表演。",
     '只输出一个 JSON 对象：{"emotions":["标签1","标签2",...]}，数量必须与台词条数一致。',
   ].join("\n");
   try {
@@ -359,25 +515,43 @@ export const synthesizeStory = async ({ script, catalog, config, client, voiceBo
   const result = new Map();
   const report = {
     lines: lines.length, voiced: 0, voices: {}, fallbackLines: 0, silentLines: 0, failedLines: 0,
-    fallbackSpeakers: [], silentSpeakers: [], failedSpeakers: [],
+    nonJapaneseLines: 0, fallbackSpeakers: [], silentSpeakers: [], failedSpeakers: [], nonJapaneseSpeakers: [],
   };
   result.report = report;
   if (!lines.length || !config.enabled) {
     report.silentLines = lines.length;
     return result;
   }
+  const provider = String(config.provider || "gpt-sovits").toLowerCase();
   const from = langBase(script.language || catalog.language) || "ja";
   const configured = langBase(config.textLang);
-  // "auto" (the default) synthesizes the story's own language; a concrete code translates the lines for that voice
-  const to = !configured || configured === "auto" ? from : configured;
+  // "auto" (the default) synthesizes the story's own language; a concrete code translates the lines for that voice.
+  // Irodori speaks Japanese only, so its target is always ja.
+  const to = provider === "irodori" ? "ja" : (!configured || configured === "auto" ? from : configured);
   let texts = lines.map((l) => l.text.replace(/\r\n?/g, "\n"));
-  if (config.translateForTts !== false && from !== to) {
+  const translated = config.translateForTts !== false && from !== to;
+  if (translated) {
     onProgress(0, "翻译 TTS 台词");
     texts = await translateLines({ llm, texts, from, to, signal, logger });
   }
+  // A line only goes to Irodori when the story is Japanese or the translation step produced Japanese.
+  const speaksJapanese = to === "ja" && (from === "ja" || translated);
   let emotions = lines.map(() => "");
   if (config.emotion?.enabled) {
-    const labels = [...new Set(lines.flatMap((l) => voiceBook.labelsFor(l.voiceName, l.speakerName, l.castId)))];
+    const offered = [...new Set(lines.flatMap((l) => voiceBook.labelsFor(l.voiceName, l.speakerName, l.castId)))];
+    let labels = offered;
+    if (provider === "irodori") {
+      // Only offer labels that some voice can turn into Irodori audio. Otherwise the judge picks a global label
+      // (日常平静 / 开心喜悦 …) that resolves to no caption/reference and the line loses its emotional timbre.
+      const usable = new Set();
+      for (const voice of config.voices || []) {
+        for (const entry of voice.emotions || []) {
+          if (entry && (entry.caption || (entry.refAudioPaths || []).length))
+            usable.add(String(entry.label || "").trim());
+        }
+      }
+      if (usable.size) labels = offered.filter((label) => usable.has(label));
+    }
     if (labels.length) {
       onProgress(0, "判断台词情绪");
       emotions = await judgeEmotions({ llm, lines, labels, signal, logger });
@@ -390,8 +564,11 @@ export const synthesizeStory = async ({ script, catalog, config, client, voiceBo
   const fallbackSpeakers = new Set();
   const silentSpeakers = new Set();
   const failedSpeakers = new Set();
+  const nonJapaneseSpeakers = new Set();
   // GPT-SoVITS switches GPT/SoVITS weights as global server state: do not parallelize when any voice names weights.
-  const switchesWeights = (config.voices || []).some((c) => c.gptWeightsPath || c.sovitsWeightsPath);
+  // Irodori keeps no server-side state, so it always runs at the configured concurrency.
+  const switchesWeights = provider !== "irodori" &&
+    (config.voices || []).some((c) => c.gptWeightsPath || c.sovitsWeightsPath);
   const limit = switchesWeights ? 1 : (config.concurrency || 2);
   await mapLimit(lines, limit, async (line, i) => {
     if (signal?.aborted) throw signal.reason || new Error("aborted");
@@ -400,7 +577,19 @@ export const synthesizeStory = async ({ script, catalog, config, client, voiceBo
       report.fallbackLines++;
       fallbackSpeakers.add(line.speakerName);
     }
-    if (!voice.refAudioPath) {
+    // Irodori cannot read a line without Japanese text. A line that already carries kana is Japanese even inside a
+    // Chinese story (mixed lines are common); a kanji-only line is only trusted when the story is Japanese or the
+    // translation step produced it. Skipping is better than synthesizing Chinese phonemes; tts.required is fatal.
+    const japaneseLine = hasKana(texts[i]) || (speaksJapanese && isJapaneseSpeechText(texts[i]));
+    if (provider === "irodori" && !japaneseLine) {
+      if (config.required)
+        throw new TTSError(`Irodori reads Japanese only; ${line.speakerName} line ${line.beat} has no Japanese text: ` +
+          `"${String(texts[i]).slice(0, 30)}"`);
+      report.nonJapaneseLines++;
+      nonJapaneseSpeakers.add(line.speakerName);
+      logger.warn?.(`TTS: Irodori reads Japanese only; ${line.speakerName} line ${line.beat} has no Japanese text ` +
+        "and is silent (enable tts.translateForTts or write the story in Japanese)");
+    } else if (!hasVoiceReference(voice)) {
       if (config.required)
         throw new TTSError(`no reference audio for ${line.speakerName}: set tts.defaultVoice or add a voice entry`);
       report.silentLines++;
@@ -435,9 +624,13 @@ export const synthesizeStory = async ({ script, catalog, config, client, voiceBo
   report.fallbackSpeakers = [...fallbackSpeakers];
   report.silentSpeakers = [...silentSpeakers];
   report.failedSpeakers = [...failedSpeakers];
+  report.nonJapaneseSpeakers = [...nonJapaneseSpeakers];
   if (report.silentLines)
     logger.warn?.(`TTS: ${report.silentLines} line(s) have no reference audio and are silent: ` +
       report.silentSpeakers.join("、"));
+  if (report.nonJapaneseLines)
+    logger.warn?.(`TTS: ${report.nonJapaneseLines} line(s) had no Japanese text for Irodori and are silent: ` +
+      report.nonJapaneseSpeakers.join("、"));
   if (report.failedLines)
     logger.warn?.(`TTS: ${report.failedLines} line(s) failed after retries and are silent: ` +
       report.failedSpeakers.join("、"));

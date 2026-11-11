@@ -1,0 +1,165 @@
+# Semantic catalogue of a site's resources for the AI writer.
+#
+# The official bdon site identifies everything by opaque asset ids (adv_bkg_stage_000164, sound_bgm_adv_f6b483), and
+# the only caption a story carries is the chapter title that happens to sit next to a Stage row. A model cannot choose
+# from that: it picked a black title-card backdrop and a family restaurant for a rehearsal scene. This file supplies
+# the missing layer — a human name, what the picture/audio actually is, and tags the prompt can reason about.
+#
+# A site may ship its own <site>/story-resources.yaml; this bundled copy describes the official Our Notes site and is
+# used otherwise. Unknown ids simply fall back to the story's caption.
+#
+# stages:
+#   name         display name (what the place is)
+#   description  what is visible: time of day, indoors/outdoors, mood, what fits here
+#   tags         short facets, shown in the prompt
+#   kind: title  a title-card backdrop (black/blank); never offered as a scene
+# music:
+#   name / mood / use
+# sounds:
+#   name / use
+format: ournotes.site-resources/1
+
+stages:
+  adv_bkg_stage_000017:
+    name: 水濑女子学园 天台连廊
+    tags: [白天, 室外, 学校, 开阔]
+    description: 水濑女子学园的天台连廊，两侧玻璃护栏，远处是城市高楼和晴空。适合放学前后、谈心、看风景；角色不属于这所学校时不要选。
+  adv_bkg_stage_000084:
+    name: 夜晚的住宅街路口
+    tags: [夜晚, 室外, 街道, 安静]
+    description: 夜里的住宅区斑马线路口，路灯、行道树和亮着窗的公寓。适合回家路上、等人、夜谈。
+  adv_bkg_stage_000101:
+    name: 夜间停车场
+    tags: [夜晚, 室外, 街道, 冷清]
+    description: 夜晚的室外停车场，绿色 PARKING SPACE 灯牌和空车位，四周是树与建筑阴影。适合分别、偶遇、短暂停留。
+  adv_bkg_stage_000152:
+    name: RiNG 入口大厅
+    tags: [傍晚, 室内, 公共空间, 暖光]
+    description: RiNG 的入口大厅，木色墙面，有沙发、自动贩卖机、楼梯和暖色吊灯。适合等人、休息、演出前后碰面。
+  adv_bkg_stage_000153:
+    name: RiNG 咖啡厅
+    tags: [白天, 室内, 餐饮, 明亮]
+    description: RiNG 的咖啡厅，白天采光很好，绿植、木桌和高脚吧台，窗外明亮。适合吃饭、闲聊、庆祝。
+  adv_bkg_stage_000164:
+    name: 傍晚的家庭餐厅
+    tags: [傍晚, 夜晚, 室内, 餐饮, 暖光]
+    description: 暖色灯光的家庭餐厅内景，木地板、成排桌椅和吊灯，窗边偏暖。适合久坐聊天、复盘、说心里话。
+  adv_bkg_stage_000180:
+    name: 夜晚的卧室
+    tags: [夜晚, 室内, 房间, 安静]
+    description: 只开着一盏台灯的卧室，深蓝窗帘、床、书桌和书架，整体偏暗。适合独处、打电话、回忆、睡前。
+  adv_bkg_stage_000189:
+    name: 夜间的空旷走廊
+    tags: [夜晚, 室内, 走廊, 冷清]
+    description: 昏暗的空走廊，有楼梯、电梯和冷白灯，没有人。适合演出散场后、迷路、低声交谈。
+  adv_bkg_stage_000218:
+    name: 章节标题黑底
+    kind: title
+    tags: [黑底, 标题]
+    description: 纯黑画面，只用于章节标题字幕，不能当作场景背景。
+  adv_bkg_stage_000257:
+    name: VR Floor 虚拟舞台
+    tags: [虚拟, 室外, 奇幻, 明亮]
+    description: 粉色与青色的虚拟空间，网格地面、星球和光环，像 VR 舞台。只适合明确的 VR/游戏内场景；不属于 VR 剧情时不要选。
+  adv_bkg_stage_000262:
+    name: 千石家 由乃的房间
+    tags: [夜晚, 室内, 房间, 霓虹]
+    description: 千石由乃的房间，暗房里亮着紫色与青色霓虹，有全套电脑、显示器和直播设备。适合夜间直播、打游戏、独自上网；角色不是由乃或她的家人时不要选。
+  adv_bkg_stage_000294:
+    name: 白天的校园操场
+    tags: [白天, 室外, 学校, 开阔]
+    description: 白天的学校操场，有滑梯、攀爬架、绿树和校舍，阳光明亮。适合课间、放学后、散步聊天。
+
+music:
+  sound_bgm_adv_380000km_away:
+    name: 380000km Away
+    mood: 安静、释然、余韵
+    use: 演出结束后的回味、并肩走路、轻声总结
+  sound_bgm_adv_contrail:
+    name: Contrail
+    mood: 轻快、专注、带一点期待
+    use: 练习、作曲、准备演出、尝试新东西
+  sound_bgm_adv_f6b483:
+    name: 拍照嬉闹（原曲名未公开）
+    mood: 明快、日常、活泼
+    use: 拍照、发消息、朋友间的打闹
+  sound_bgm_adv_liminal:
+    name: Liminal
+    mood: 安静、悬浮、欲言又止
+    use: 夜晚独处、犹豫、说不出口的话
+  sound_bgm_adv_nows_the_time:
+    name: Now's the Time
+    mood: 明亮、满足、收束
+    use: 演出成功后的庆祝、干劲、结尾收束（官方最常用）
+  sound_bgm_adv_on_the_same_road:
+    name: On the Same Road
+    mood: 认真、温和、坚定
+    use: 正经谈话、表明决心、朋友间的支持
+  sound_bgm_adv_texture_of_the_unseen:
+    name: Texture of the Unseen
+    mood: 内省、怀旧、微微不安
+    use: 回忆、自我怀疑、提到过去
+  sound_bgm_adv_the_tender_light:
+    name: The Tender Light
+    mood: 温柔、暖、亲近
+    use: 关心、安慰、关系变近的瞬间
+  sound_bgm_adv_what_was_it_again:
+    name: What Was It Again?
+    mood: 轻巧、调侃、日常喜剧
+    use: 吐槽、突然的闯入、轻松玩笑
+
+sounds:
+  sound_se_adv_breeze_loop:
+    name: 风声（循环）
+    use: 室外或窗边的环境底噪
+  sound_se_adv_cat:
+    name: 猫叫
+    use: 猫出现或回应
+  sound_se_adv_clap_cheers_loop_room:
+    name: 室内掌声与欢呼（循环）
+    use: 小型演出结束、室内观众反应
+  sound_se_adv_door_knock:
+    name: 敲门
+    use: 有人敲门
+  sound_se_adv_door_normal_close:
+    name: 普通关门
+    use: 离开房间、关门
+  sound_se_adv_electric_guitar_phrase:
+    name: 电吉他短句
+    use: 试音、随手弹一段
+  sound_se_adv_pen_write:
+    name: 笔写字
+    use: 写字、记笔记
+  sound_se_adv_reminiscence_in:
+    name: 回忆闪回
+    use: 进入回忆或心理画面的提示音
+  sound_se_adv_run:
+    name: 跑步
+    use: 有人跑过来或跑开
+  sound_se_adv_rustle_cloth:
+    name: 衣物摩擦
+    use: 坐下、起身、换姿势
+  sound_se_adv_smartphone_camera:
+    name: 手机快门
+    use: 拍照
+  sound_se_adv_smartphone_message_receive:
+    name: 手机收到消息
+    use: 收到消息
+  sound_se_adv_smartphone_pick:
+    name: 拿起手机
+    use: 从口袋或桌上拿起手机
+  sound_se_adv_smartphone_put_away:
+    name: 收起手机
+    use: 把手机放回口袋或包里
+  sound_se_adv_spill_glass_water:
+    name: 打翻水杯
+    use: 水洒出来、手忙脚乱
+  sound_se_adv_vrfloor_logout:
+    name: VR 退出
+    use: 只用于 VR 场景退出
+  sound_se_adv_vrfloor_windows:
+    name: VR 窗口
+    use: 只用于 VR 场景里的界面操作
+  sound_se_adv_walk:
+    name: 脚步声
+    use: 走近或走远

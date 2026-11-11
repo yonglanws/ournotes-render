@@ -7,7 +7,7 @@ import { Logger } from "./util/logger.js";
 import { StoryCatalog } from "./story/catalog.js";
 import { SiteFormatCatalog } from "./story/siteFormat.js";
 import { LLMClient } from "./ai/llm.js";
-import { GptSovitsClient, VoiceBook } from "./tts/tts.js";
+import { VoiceBook, createTtsClient } from "./tts/tts.js";
 import { Renderer } from "./render/renderer.js";
 import { configureFfmpeg, validateFfmpeg } from "./render/ffmpeg.js";
 import { Pipeline } from "./pipeline.js";
@@ -60,13 +60,12 @@ const main = async () => {
     try {
       catalog = new SiteFormatCatalog({ dir: config.paths.siteFormat, language: config.story.language,
         personas: config.story.personas, base: config.story.base, logger: logger.child("site") });
-      logger.info(`site-format: ${config.paths.siteFormat} (${catalog.bases().length} story/stories; ` +
-        "script generation only)");
+      logger.info(`site-format: ${config.paths.siteFormat} (${catalog.bases().length} story/stories)`);
     } catch (e) {
       logger.error(`site-format: ${e.message}`);
     }
   } else {
-    logger.warn("paths.site and paths.siteFormat are empty: AI script generation cannot run until a site is configured");
+    logger.warn("paths.site and paths.siteFormat are empty: AI video generation cannot run until a site is configured");
   }
 
   let llm = null;
@@ -81,12 +80,12 @@ const main = async () => {
 
   let tts = null;
   try {
-    const client = new GptSovitsClient(config.tts,
+    const client = createTtsClient(config.tts,
       { apiKey: config.secrets.ttsApiKey, logger: logger.child("tts"), allowPrivate: config.security.allowPrivateServiceEndpoints });
     client.setCacheDir(path.join(config.paths.cache, "tts"));
     tts = { client, voiceBook: new VoiceBook(config.tts) };
     const summary = config.voiceSummary;
-    logger.info(`tts: ${config.tts.enabled ? config.tts.baseUrl : "disabled"}` +
+    logger.info(`tts: ${config.tts.enabled ? `${config.tts.provider} @ ${config.tts.baseUrl}` : "disabled"}` +
       (config.tts.enabled ? ` (${summary.count} voice(s), ${summary.defaultVoice ? "default voice set" : "no default voice"})` : ""));
     if (config.tts.enabled && !summary.count && !summary.defaultVoice)
       logger.warn("tts: no voice is configured; every line will be silent (see voices.example.yaml)");
@@ -107,7 +106,7 @@ const main = async () => {
     taskTimeoutMs: config.queue.taskTimeoutMs, retentionMs: config.queue.retentionMs,
     cleanupIntervalMs: config.queue.cleanupIntervalMs, logger: logger.child("queue"),
   });
-  const api = new ApiServer({ config, queue, pipeline, catalog, logger: logger.child("api") });
+  const api = new ApiServer({ config, queue, pipeline, catalog, llm, logger: logger.child("api") });
 
   const shutdown = async (sig) => {
     logger.info(`${sig}: shutting down`);

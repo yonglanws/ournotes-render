@@ -32,6 +32,11 @@ export class LLMClient {
     this.config = config;
     this.logger = logger;
     this.url = endpoint(config.baseUrl);
+    // The gateway is shared by every job. A small admission window keeps a burst of /script/generate calls from
+    // overwhelming it (one request per job would otherwise all leave at once); waiters are FIFO and abort-aware.
+    this.concurrency = Math.max(1, Number(config.concurrency ?? 2));
+    this._active = 0;
+    this._waiters = [];
     try {
       assertServiceHttpUrl(this.url, { allowPrivate, what: "llm.baseUrl" });
     } catch (e) {
@@ -40,17 +45,60 @@ export class LLMClient {
   }
 
   get available() { return !!(this.config.enabled && this.config.model); }
+  get activeRequests() { return this._active; }
+  get waitingRequests() { return this._waiters.length; }
+
+  _acquire(signal) {
+    if (signal?.aborted) return Promise.reject(signal.reason || new Error("aborted"));
+    if (this._active < this.concurrency) { this._active++; return Promise.resolve(); }
+    return new Promise((resolve, reject) => {
+      const waiter = { resolve, reject, signal, onAbort: null };
+      if (signal) {
+        waiter.onAbort = () => {
+          const at = this._waiters.indexOf(waiter);
+          if (at >= 0) this._waiters.splice(at, 1);
+          reject(signal.reason || new Error("aborted"));
+        };
+        signal.addEventListener("abort", waiter.onAbort, { once: true });
+      }
+      this._waiters.push(waiter);
+    });
+  }
+
+  _release() {
+    const next = this._waiters.shift();
+    if (next) {
+      next.signal?.removeEventListener?.("abort", next.onAbort);
+      next.resolve();  // the slot is handed over; _active stays the same
+    } else {
+      this._active = Math.max(0, this._active - 1);
+    }
+  }
 
   // messages: [{role, content}]; opts: {temperature, maxTokens, json, timeoutMs, signal, label}
   async chat(messages, opts = {}) {
     if (!this.available) throw new LLMError("LLM is not configured (llm.enabled / llm.model)");
+    await this._acquire(opts.signal);
+    try {
+      return await this._chat(messages, opts);
+    } finally {
+      this._release();
+    }
+  }
+
+  async _chat(messages, opts) {
     const retries = Math.max(0, Number(opts.retries ?? this.config.retries ?? 2));
+    const maxTokens = Math.max(256, Number(opts.maxTokens ?? this.config.maxTokens ?? 8192));
     let last = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
       if (opts.signal?.aborted) throw opts.signal.reason || new Error("aborted");
       if (attempt) await sleep(Math.min(8000, 700 * 2 ** (attempt - 1)), opts.signal);
       try {
-        return await this._once(messages, opts);
+        // A truncated answer (finish_reason=length) is retried with a bigger budget; the cap is only a guard
+        // against an operator setting an absurd value, not a provider limit.
+        return await this._once(messages, attempt
+          ? { ...opts, maxTokens: Math.min(131072, Math.round(maxTokens * (1 + attempt * 0.5))) }
+          : opts);
       } catch (e) {
         last = e;
         if (opts.signal?.aborted) throw opts.signal.reason || e;
@@ -79,6 +127,9 @@ export class LLMClient {
       stream: false,
     };
     if (opts.json) body.response_format = { type: "json_object" };
+    // OpenAI-compatible thinking control; new-api maps it to the provider's own reasoning budget.
+    const effort = String(opts.reasoningEffort ?? this.config.reasoningEffort ?? "").trim();
+    if (effort) body.reasoning_effort = effort;
     const headers = { "content-type": "application/json", accept: "application/json" };
     if (this.config.apiKey) headers.authorization = `Bearer ${this.config.apiKey}`;
     let response;
@@ -102,8 +153,8 @@ export class LLMClient {
     let data;
     try { data = JSON.parse(text); } catch { throw new LLMError(`LLM returned non-JSON: ${text.slice(0, 200)}`, { retryable: true }); }
     if (data?.choices?.[0]?.finish_reason === "length")
-      throw new LLMError("LLM answer was truncated (finish_reason=length); raise llm.maxTokens", {
-        retryable: false, usage: data.usage || null,
+      throw new LLMError("LLM answer was truncated (finish_reason=length); retrying with a larger maxTokens", {
+        retryable: true, usage: data.usage || null,
         content: String(data?.choices?.[0]?.message?.content || "").slice(0, 20_000),
       });
     const content = data?.choices?.[0]?.message?.content;

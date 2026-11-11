@@ -5,6 +5,7 @@
 import { motionStems } from "../../scripts/lib/story-author/script.js";
 import { budgetCount, dialogueBudgetFor, directionBudgetFor, gazeBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
 import { dialoguePersonaPrompt } from "./personas.js";
+import { musicLine, soundLine, stageLine } from "./resourceLines.js";
 
 const pct = (value) => Math.round(value * 100);
 const pct1 = (value) => (Math.round(value * 1000) / 10).toFixed(1);
@@ -151,7 +152,13 @@ export const buildPlanMessages = ({ catalog, request, config }) => {
   const language = request.language || catalog.language;
   const minutes = Number(request.targetMinutes ?? config.story.targetMinutes ?? 3);
   const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
-  const models = catalog.models.slice(0, MAX_PROMPT_MODELS);
+  const models = [];
+  for (const m of catalog.models || []) {
+    const key = m.key || m.character || m.name;
+    if (!key || models.some((x) => (x.key || x.character || x.name) === key)) continue;
+    models.push(m);
+    if (models.length >= MAX_PROMPT_MODELS) break;
+  }
   const cast = models.map((m) => `- ${m.name}${m.character && m.character !== m.name ? ` (${m.character})` : ""}`).join("\n");
   const stages = catalog.stages.slice(0, 40).map((s) => `- ${s.id}${s.caption ? ` — ${s.caption}` : ""}`).join("\n");
   return [
@@ -200,7 +207,7 @@ ${stages || "(none)"}
 
 // The staging prose both pipelines share: the single call carries it in its system prompt, the storyboard pass in its
 // system prompt too, so a change to the measured rules reaches both. maxOnStage 3 is the official group layout: two
-// people stand at far-left / far-right, a third at center. maxOnStage 2 keeps only the far pair and has the third wait
+// people stand at left / right, a third at center. maxOnStage 2 keeps only the pair and has the third wait
 // outside, for operators who want no adjacent slots at all. `budget` is the actual direction budget for this scene, so
 // the shared system rules and the per-scene user block cannot state different counts.
 export const stagingRules = (maxOnStage = 3, budget = null) => {
@@ -224,8 +231,8 @@ export const stagingRules = (maxOnStage = 3, budget = null) => {
       ? "同一场最多 2 人同台；开场先 1 人，2~4 句后用 positions 让下一人进场；第 3 人必须等一人退场后再进场；换组时已有人保持原位，只让 1 人进出。"
       : "同一场最多 3 人同台；开场先 1 人，2~4 句后用 positions 让下一人进场；换组时已有人保持原位，只让 1 人进出。",
     limit === 3
-      ? "两人同台必须站在 far-left / far-right；三人同台用 far-left / center / far-right（camera far，focus 5，track 0）。不要用 center+right、center+left 或 left+right，两个角色会叠在一起。"
-      : "两人同台必须站在 far-left / far-right；不要用 center+right、center+left 或 left+right，两个角色会叠在一起。",
+      ? "两人同台用 left / right（间隔自然，不要用 far-left / far-right）；三人同台用 far-left / center / far-right（camera far，focus 5，track 0）。不要用 center+right 或 center+left，两个角色会叠在一起。"
+      : "两人同台用 left / right（间隔自然，不要用 far-left / far-right）；不要用 center+right 或 center+left，两个角色会叠在一起。",
     "镜头档位：near 1.2× 是最广的全景（只在开场/收尾用，全场 0~1 次）；middle 1.4× 是双人中景（默认）；far 1.8× 是群像/紧中景；close 2.8× 是情绪近景；very-close 4× 是大特写（最多 1 次）。不要把 near 当近景。",
     "镜头每 3~4 句换一次：双人戏用二人同框（middle，focus 5）和说话者近景（close，focus 该角色）交替；三人群像用 far + focus 5，偶尔用两人构图（middle，focus 4/6）。不要每句切，也不要只在一个机位站桩。近景停 1~2 句（偶尔 3 句），随后回到二人/群像；不要连续两句都切 close。",
     budgetLine,
@@ -275,6 +282,7 @@ export const buildStoryMessages = ({ catalog, request, config, plan = null }) =>
     return [
       `- model: ${m.id}`,
       `  name: ${m.name}${m.character && m.character !== m.name ? ` (character: ${m.character})` : ""}`,
+      `  costume: ${m.costumeLabel || m.costume || "默认服装"}`,
       `  motions: ${motionListFor(m.motions) || "(none)"}`,
       `  expressions: ${expressionListFor(m.expressions) || "(none)"}`,
       m.defaultMotion ? `  default motion: ${m.defaultMotion}` : "",
@@ -286,11 +294,18 @@ export const buildStoryMessages = ({ catalog, request, config, plan = null }) =>
 
   const stages = catalog.stages.slice(0, 80), music = catalog.music.slice(0, 40);
   const soundChoices = catalog.sounds || [];
-  const stageLines = stages.map((s) => `- ${s.id}${s.caption ? ` — ${s.caption}` : ""}`).join("\n") || "(none)";
-  const musicLines = music.map((m) => `- ${m.cue}${m.label ? ` — ${m.label}` : ""}`).join("\n") || "(none)";
-  const soundLines = soundChoices.slice(0, 40)
-    .map((s) => `- ${s.cue}${s.label ? ` — ${s.label}` : ""}`).join("\n") || "(none)";
+  const stageLines = stages.map(stageLine).join("\n") || "(none)";
+  const musicLines = music.map(musicLine).join("\n") || "(none)";
+  const soundLines = soundChoices.slice(0, 40).map(soundLine).join("\n") || "(none)";
   const exampleSe = soundChoices[0]?.cue || "";
+  const history = Array.isArray(request.history) ? request.history.slice(-6) : [];
+  const historyBlock = history.length
+    ? `\n## 最近对话（只用于保持称呼、关系和语气，不要复述）\n${
+      history.map((item) => `${item.role}：${item.content}`).join("\n")}\n`
+    : "";
+  const chatNote = request.mode === "chat"
+    ? "\n这是一次即时对话回复：围绕用户最后这句话写一小段互动，比完整短剧更短、更直接；不要展开完整起承转合。\n"
+    : "";
 
   const system = [
     "你是《BanG Dream! Our Notes》的 ADV 分镜演出家，不是小说作者。",
@@ -331,15 +346,15 @@ export const buildStoryMessages = ({ catalog, request, config, plan = null }) =>
 
   const cast = { a: { model: a.id, name: a.name }, b: { model: b.id, name: b.name } };
   const beats = [
-    // one character opens alone at far-left; the second enters at far-right after three lines
-    { scene: stage0, location: "地点", focus: "far-left", camera: "middle", positions: { a: "far-left" } },
+    // one character opens alone at left; the second enters at right after three lines
+    { scene: stage0, location: "地点", focus: "left", camera: "middle", positions: { a: "left" } },
     { say: "a", text: "今天也……顺利练完了呢。",
       ...(aMotion ? { motion: aMotion } : {}), ...(aExp ? { expression: aExp } : {}) },
     { say: "a", text: "……嗯。" },
     { say: "a", text: "下次……再慢一点吧。", ...(aMotion2 ? { motion: aMotion2 } : {}),
       ...(aIdle ? { expression: aIdle } : {}) },
     // the second character enters; the two-shot uses focus 5 and one small track pan
-    { positions: { a: "far-left", b: "far-right" }, focus: 5, camera: "middle", track: 0.2 },
+    { positions: { a: "left", b: "right" }, focus: 5, camera: "middle", track: 0.2 },
     { say: "b", text: "嗯。刚开始还担心会来不及。\n不过今天总算跟上了！", ...(bMotion ? { motion: bMotion } : {}),
       ...(bExp ? { expression: bExp } : {}), lookAt: "a" },
     { say: "a", text: "你也会……担心吗？", ...(aMotion2 ? { motion: aMotion2 } : {}),
@@ -373,10 +388,12 @@ export const buildStoryMessages = ({ catalog, request, config, plan = null }) =>
     : "";
 
   const user = `## 任务
-写一场约 ${minutes} 分钟的 Our Notes 风格短剧。用户给出的场景/要求是：
+${request.mode === "chat"
+    ? `写一小段约 ${minutes} 分钟的 Our Notes 对话回复。用户最后说的是：`
+    : `写一场约 ${minutes} 分钟的 Our Notes 风格短剧。用户给出的场景/要求是：`}
 
 ${request.prompt || "写一段安静的日常对话。"}
-
+${chatNote}${historyBlock}
 - 语言：${language}（台词用该语言写；示例台词只是演示节奏）
 - 标题：${title || "由你取一个贴合场景的短标题"}
 - 台词总量 ${lineRange} 条（目标约 ${lineBudget} 条，按有文本 Talk 行计）；一场戏只推进一个事件或一个情绪转折。
@@ -401,14 +418,14 @@ ${JSON.stringify(example, null, 2)}
 
 ## beat 规则
 - 第一个 beat 必须是 scene。scene beat：{"scene": 舞台 id, "location": 地点文字, "camera": "near|middle|far|close|very-close" 或 {"distance","focus","track"}, "focus": 可选, "track": 可选, "music": 可选, "positions": {角色: 位置}, "id": 可选}。scene 的 positions 只放 1 人，其余角色 2~4 句后再进场。
-- positions beat：{"positions": {角色: 位置}, "camera": 可选, "focus": 可选, "track": 可选}。位置只能是 far-left, left, center, right, far-right；两个角色不能占同一位置。省略的角色退场，新角色进场。**两人同台必须用 far-left / far-right**；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0）" : `同台最多 ${maxOnStage} 人，第 3 人必须等一人退场后再进场`}；不要用 center+right、center+left 或 left+right（会重叠）。一场最多 2 次 positions 变化；换组时让已有人物保持原位，只让 1 人进出；不要把同一角色从 left 移到 center（会重新进出场并可能闪一下）。
+- positions beat：{"positions": {角色: 位置}, "camera": 可选, "focus": 可选, "track": 可选}。位置只能是 far-left, left, center, right, far-right；两个角色不能占同一位置。省略的角色退场，新角色进场。**两人同台用 left / right**（不要用 far-left / far-right，间隔太开）；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0）" : `同台最多 ${maxOnStage} 人，第 3 人必须等一人退场后再进场`}；不要用 center+right 或 center+left（会重叠）。一场最多 2 次 positions 变化；换组时让已有人物保持原位，只让 1 人进出；不要把同一角色从 left 移到 center（会重新进出场并可能闪一下）。
 - say beat：{"say": 角色 cast id, "text": 台词, "motion": 可选说话者动作, "expression": 可选说话者表情, "lookAt": 可选, "focus": 可选, "camera": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "actions": 可选, "id": 可选}。说话者必须已经站在舞台上。**不写 focus/camera/track 就保持当前镜头**；同一组连续对话不要每句都写镜头字段。表情尽量和 motion 一起写；没有 motion 就尽量不改表情。
 - narrate beat：{"narrate": 旁白文字, "focus": 可选, "camera": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "actions": 可选}。旁白的 actions 必须写 cast。narrate 全场 0~2 句，放在开场、沉默反应或收尾，用「（……）」这种短句，不要小说式描写。
 - camera beat：{"camera": "near|middle|far|close|very-close" 或 {"distance","focus","track"}, "focus": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "duration": 可选秒}。只移动镜头，不改变站位。只改距离时保持同一个 focus；near 是全景，全场最多 1 次；close 近景约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行（本场约 ${direction.closeUps} 次），每次 1~2 句（偶尔 3 句）。
 - fade beat：{"fade": "out" 或 "in", "duration": 可选秒}。只用于时间/地点跳跃，连续对话里不要用。
 - pause beat：{"pause": 秒数}。只用于 0.1~0.5 秒的呼吸，不要每个场景都放。
 - action beat：{"action": 角色 cast id, "motion": 可选, "expression": 可选, "lookAt": 可选, "duration": 可选秒}。没有台词的反应镜头。
-- focus：优先写位置名；两人同框用 focus: 5，单人近景用角色 id 或该角色的位置名；角色 focus 只给情绪最重的 1~2 句。不要用 2/4/6/8 去框 far-left/far-right 的两个人。close / very-close **必须**给角色 id 或该角色的位置名，不要用 focus 5。
+- focus：优先写位置名；两人同框用 focus: 5，单人近景用角色 id 或该角色的位置名；角色 focus 只给情绪最重的 1~2 句。不要用 2/4/6/8 去框 left/right 的两个人。close / very-close **必须**给角色 id 或该角色的位置名，不要用 focus 5。
 - 近景节奏：close 只切给情绪最重的 1~2 句；下一句用 middle + focus 5 回到二人/群像，不要连续两句 close，也不要从 close 直接切到另一个 close；三人同台时 close 只给一个人的反应，另一人留在画外。
 - track：镜头相对焦点的横向偏移，-4~4；0 是正对焦点。两人对话用 ±0.2~0.8，群像横移可用 ±1.2~2。一场 0~${direction.track} 次，双人通常 0~1 次；只在换组/群像横移时写，不要每句微调。
 - zoom：镜头缓慢推近/拉远，1.03~1.10 推近、0.92~0.98 拉远；zoomDuration 3~5 秒。一场 ${direction.zoomMin}~${direction.zoomMax} 次，只给情绪句、近景或结尾，一个机位最多 1 次；不写就静止。
@@ -459,16 +476,20 @@ ${JSON.stringify(example, null, 2)}
 - 动作/表情必须服务台词；想不出合适的动作就省略，让镜头和表情承担演出。
 - 不要用旁白代替画面；不要写“镜头缓缓推进”这类文字，镜头只能用字段表达。
 
-## 可用舞台
+## 可用舞台（scene 只能从这里选）
+先选舞台，再写能在这个舞台里发生的事件；台词里的地点、时间、天气和道具必须和舞台描述一致。清单外的地点不要写；用户指定的地点不在清单里时，选最接近的一张并改写事件。舞台名里带具体学校/店铺（如水濑女子学园、RiNG、千石家）时，只有出场角色属于那里才选；否则选不带专名的通用地点。
 ${stageLines}
 
-## 可用音乐
+## 可用音乐（music 只能从这里选）
+按括号里的情绪和冒号后的用途选；只在场景或情绪转折处换曲，整场最多两次；没有合适的就省略，不要为了有 BGM 而硬选。认真谈心、道歉、安慰、自我怀疑或伤感时，不要选轻巧、调侃、喜剧的曲子；轻松玩笑时也不要选安静、伤感的曲子。
 ${musicLines}
 
 ## 可用音效（se 只能从这里选；列表为 (none) 时不写 se/seStop）
+只在台词里真的发生对应动作时使用（敲门、拿起手机、脚步、写字……），不要用 se 代替动作，也不要在同一句叠两个。
 ${soundLines}
 
 ## 可用角色与模型（model 必须从这里选）
+每个角色只能选一个模型。同一支乐队同台时尽量统一到同一类服装（队服 / 校服 / 便服 / 虚拟舞台服 / 打工服；校服不同年级算同一类）：先选覆盖人数最多的一类，个别没有该类的角色可以例外，但避免一个人穿队服、另一个人穿初中校服这种强烈冲突。
 ${modelLines}
 
 ## 再次强调
@@ -484,7 +505,14 @@ ${modelLines}
 // carries 1~3 compact personas instead of every sheet. The staged pipeline does the same with its cast pass.
 export const buildQuickCastMessages = ({ catalog, request, config, history = [] }) => {
   const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
-  const roster = catalog.models.slice(0, MAX_PROMPT_MODELS)
+  const rosterModels = [];
+  for (const m of catalog.models || []) {
+    const key = m.key || m.character || m.name;
+    if (!key || rosterModels.some((x) => (x.key || x.character || x.name) === key)) continue;
+    rosterModels.push(m);
+    if (rosterModels.length >= MAX_PROMPT_MODELS) break;
+  }
+  const roster = rosterModels
     .map((m) => {
       const entry = personaEntryFor(config.story?.personas, m);
       const summary = entry?.summary || "";

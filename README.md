@@ -6,8 +6,8 @@
 剧情编译 → 无头 Chrome 逐帧渲染 → 混音 → MP4**，通过 HTTP 返回视频。画面使用本仓库的剧情引擎
 （游戏自己的 13:6 对话框、Live2D 着色器、舞台与相机），不是另画一套 UI。
 
-本仓库只保留视频渲染框架：谱面播放、UI 预览、浏览器播放器与 AstrBot 插件等无关功能已移除。机器人或任何客户端
-只需调用 HTTP API。
+本仓库只保留视频渲染框架：谱面播放、UI 预览与浏览器播放器等无关功能已移除。机器人或任何客户端
+只需调用 HTTP API；仓库内的 `astrbot_plugin_ournotes_script/` 是官方对接插件。
 
 ## 特性
 
@@ -18,8 +18,8 @@
   格式与规则见[导演脚本](docs/story-director.md)。
 - **后端一体化**：队列、AI 选角/台词/分镜、TTS、校验/修复、渲染、混音、编码全部在 `host/`；客户端只提交和取结果。
   默认 `staged` 管线把完整角色提示词只放进台词轮，台词定稿后分镜只能引用 `line` id，改不动台词。
-- **AstrBot 插件**：`astrbot_plugin_ournotes_script/` 提供 `/剧本生成`（别名 `/写剧本`、`/storygen`），调用后端
-  `/api/v1/script/generate`，返回可读剧本预览和完整 JSON 附件。
+- **AstrBot 插件**：`astrbot_plugin_ournotes_script/` 提供 `/视频对话` 与 `/剧本生成`（别名 `/写剧本`、`/storygen`），
+  调用后端的剧本与渲染接口、汇报阶段进度，完成后把 MP4 发回聊天；另带统计与 `/ournotesadmin` 运维指令。
 - **确定性渲染**：固定 1/30 秒虚拟时钟步进，音频由页面上报的事件在虚拟时间轴重建，渲染速度不影响成片节奏。
 - **两种数据源**：nnnotes 产品站点（`nnnotes.product/1`）用于 AI 队列 + TTS；bdon.moe 公开站点
   （`ournotes.story-manifest/2`）可下载后直接渲染，或用 `ai-site-story` 让 AI 写脚本、合成 TTS 并编译回站点。
@@ -41,12 +41,13 @@ npm start                      # API: http://127.0.0.1:9881
 curl -sS http://127.0.0.1:9881/api/v1/health
 ```
 
-TTS 音色表是本项目自己的格式：角色少时写在 `tts.voices`，角色多时用 `tts.voicesFile: voices.yaml`
-（模板见 `voices.example.yaml`）。不再读取 AstrBot 等外部机器人的配置；配置与试音步骤见
-[TTS 配置与试音](docs/tts.md)。
+TTS 支持 GPT-SoVITS（`api_v2`）与 Irodori-TTS（OpenAI 兼容 `/v1/audio/speech`），用 `tts.provider` 切换；字段与
+MSST 的 `tts` 节一致。音色表是本项目自己的格式：角色少时写在 `tts.voices`，角色多时用
+`tts.voicesFile: voices.yaml`（模板见 `voices.example.yaml`）。不再读取 AstrBot 等外部机器人的配置；配置与试音
+步骤见 [TTS 配置与试音](docs/tts.md)。
 
-没有 nnnotes 产品站点时，可把 `paths.siteFormat` 指向 `resources/site`：`/api/v1/script/generate` 仍能基于
-bdon 站点生成剧本；完整渲染仍需要 `paths.site` 或使用 `render-story` / `site-story`。
+没有 nnnotes 产品站点时，可把 `paths.siteFormat` 指向 `resources/site`：`/api/v1/generate` 会从 bdon 站点生成
+剧本、配音、编译剧情并渲染 MP4。`/api/v1/script/generate` 仍然只返回剧本 JSON。
 
 ```sh
 npm run tts:check                          # 列出音色表
@@ -97,8 +98,8 @@ node host/tools/render-story.mjs --site resources/site --story stories/90001.jso
 | 主题 | 文档 |
 | --- | --- |
 | 无头 API、队列、AI、TTS、部署、安全 | [渲染宿主](docs/host.md) |
-| TTS 音色表、参考音频、权重、情绪、试音 | [TTS 配置与试音](docs/tts.md) |
-| AstrBot 插件：`/剧本生成` 指令 | [插件 README](astrbot_plugin_ournotes_script/README.md) |
+| TTS 音色表、GPT-SoVITS/Irodori、参考音频、权重/LoRA、情绪、试音 | [TTS 配置与试音](docs/tts.md) |
+| AstrBot 插件：`/视频对话`、`/剧本生成` 与 `/ournotesadmin` | [插件 README](astrbot_plugin_ournotes_script/README.md) |
 | 导演脚本、镜头/动作/听者反应、AI 分镜规则 | [导演脚本](docs/story-director.md) |
 | 命令行编写、校验、构建、分镜图 | [剧情编写工具](docs/story-author.md) |
 | 剧情数据结构、字体、音频、模型 | [剧情数据格式](docs/story-data-format.md) |

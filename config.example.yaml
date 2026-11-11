@@ -35,10 +35,10 @@ security:
 # ---------------------------------------------------------------------------
 paths:
   site: ""                   # ← nnnotes.product/1 产品站点（含 stories.json / models.json / assets/）
-                             #   只有产品站点才能用 /api/v1/generate 完整渲染；见下方 siteFormat
+                             #   与 paths.siteFormat 二选一；产品站点走产品编译
                              # env: OURNOTES_SITE
   siteFormat: ""             # 可选：bdon 站点格式目录（fetch-story 下载的 resources/site）。没有产品站点时，
-                             #   它让 /api/v1/script/generate 仍能生成剧本；完整渲染仍需要 paths.site
+                             #   /api/v1/generate 会生成剧本、配音、把新剧情编译回站点并渲染 MP4
                              # env: OURNOTES_SITE_FORMAT
   output: output             # 成片 MP4、故事 JSON、渲染帧（env: OURNOTES_OUTPUT）
   cache: cache               # TTS / 资源缓存（env: OURNOTES_CACHE）
@@ -72,10 +72,13 @@ llm:
   baseUrl: https://api.openai.com/v1    # ← env: OURNOTES_LLM_BASE_URL
   apiKeyEnv: OURNOTES_LLM_API_KEY       # ← 只从该环境变量读取密钥
   model: gpt-4.1-mini                   # ← env: OURNOTES_LLM_MODEL
+  reasoningEffort: ""                   # 可选思考强度：minimal / low / medium / high；空 = 服务端默认
+                                        # env: OURNOTES_LLM_REASONING_EFFORT
   temperature: 0.85
   maxTokens: 8192
   timeoutMs: 120000
   retries: 2
+  concurrency: 2                        # 同时发往 LLM 的请求上限；超出的请求 FIFO 等待（env: OURNOTES_LLM_CONCURRENCY）
   repairRounds: 2            # 生成后自动修复的最大轮数
   # staged（默认）：选角 → 写台词（只带入选角色的完整角色卡）→ 写分镜/动作/BGM。
   # single：一次调用写完整剧本；角色提示词很短、想省调用次数时用。
@@ -85,11 +88,14 @@ llm:
   systemPrompt: ""           # 追加给 AI 的额外导演要求
 
 # ---------------------------------------------------------------------------
-# TTS（后端内置，GPT-SoVITS api_v2 兼容）
+# TTS（后端内置：GPT-SoVITS api_v2 或 Irodori-TTS）
 # ---------------------------------------------------------------------------
 tts:
   enabled: true
-  baseUrl: http://127.0.0.1:9880   # ← GPT-SoVITS 服务地址（env: OURNOTES_TTS_BASE_URL）
+  # gpt-sovits：POST /tts，权重是服务端全局状态；irodori：OpenAI 兼容 POST /v1/audio/speech，
+  # 每个请求自带参考音频 / LoRA / caption。字段与 MySekaiStoryteller 的 tts 节一致。
+  provider: gpt-sovits             # gpt-sovits | irodori（env: OURNOTES_TTS_PROVIDER）
+  baseUrl: http://127.0.0.1:9880   # GPT-SoVITS: 9880；Irodori: 服务根地址（如 :8088，不要带 /v1）
   apiKeyEnv: ""                    # 服务端需要鉴权时填写环境变量名
   textLang: ja                     # 合成语言：auto = 跟随剧本；ja / zh / en / ko 会先翻译
   promptLang: ja                   # 参考音频的语言
@@ -114,10 +120,18 @@ tts:
   #     promptLang: ja
   #     gptWeightsPath: /srv/gpt-sovits/models/tomori.ckpt    # 可选；切换权重时自动串行
   #     sovitsWeightsPath: /srv/gpt-sovits/models/tomori.pth  # 可选
+  #     # Irodori 专用字段（provider: irodori 时生效；参考音频路径同样是服务端路径）：
+  #     loraAdapter: /srv/Irodori-TTS/models/LoRA/PJSK/高松灯/lora_adapter
+  #     caption: 落ち着いた、穏やかな口調で話している。
+  #     refAudioPaths: [/srv/refs/tomori-1.wav, /srv/refs/tomori-2.wav]   # 多参考，优先于 refAudioPath
+  #     speed: 1.0                    # Irodori 语速；不填用 speedFactor
+  #     numSteps: 40                  # 角色级步数；不填用 tts.irodori.numSteps
   #     emotions:
   #       - label: 开心喜悦
   #         refAudioPath: /srv/gpt-sovits/refs/tomori-happy.wav
   #         promptText: 开心参考音频里说的话
+  #         # Irodori 情绪也可以只覆盖语气描述：caption: 明るく、優しい口調で話している。
+  #         # 字段名 emotion 与 MSST 相同，可以写 emotion: 开心喜悦。
 
   speedFactor: 1.0
   topK: 5
@@ -130,6 +144,24 @@ tts:
   concurrency: 2                   # 没有为角色配置权重时可以并发；配置了权重会自动变成 1
   retries: 1                       # 单句可重试次数（连接失败 / 5xx）
   required: false                  # true = 任一句合成失败就让整个任务失败；false = 该句静音并写入 warnings
+
+  # Irodori 推理默认值：只在 provider: irodori 时生效，字段名与 MSST 的 tts.irodori 相同。
+  # Irodori 只读日文（台词有假名才会送合成），中文剧本会先翻译；没有日文的句子会静音并记入
+  # nonJapaneseLines。它没有 GSV 那种全局权重状态，所以 concurrency 不会被强制降为 1。
+  irodori:
+    model: irodori-tts
+    responseFormat: wav            # wav / mp3 / ogg；非 wav 会用 ffmpeg 转存
+    numSteps: 40                   # env: OURNOTES_IRODORI_NUM_STEPS
+    cfgScaleText: 3.0
+    cfgScaleCaption: 3.0
+    cfgScaleSpeaker: 5.0
+    durationScale: 1.0
+    chunkingEnabled: true
+    chunkMinChars: 80
+    seed: -1                       # -1 = 每次随机
+    defaultLoraAdapter: ""         # 角色没有 loraAdapter 时使用
+    defaultCaption: ""             # 角色没有 caption 时使用
+    emotionLabels: []              # MSST 字段；非空时自动打开 emotion，并并入可选标签
 
   # 情绪：让 LLM 给每句挑一个标签，再按角色的 emotions 参考音频或下面的全局预设改变语气。
   # 没有情绪参考音频时，presets 仍会用 speedFactor / temperature 做出差异。
@@ -164,6 +196,7 @@ video:
 render:
   gpu: false                 # false = SwiftShader 软件渲染，跨机器结果一致；true 用 GPU
   chrome: ""                 # Chrome/Chromium/Edge 可执行文件；留空自动查找（env: OURNOTES_CHROME）
+  chromeArgs: []             # 额外 Chrome 启动参数；Linux + NVIDIA 无头渲染用 [--use-angle=vulkan]
   core: ""                   # Live2D Cubism Core 本地路径或 URL；留空用 Live2D 官方 CDN
                              # fetch-story 会存到 <site>/vendor/，可直接指向它
   motionsync: ""             # 可选 MotionSync Core；直接渲染站点剧情时用于语音口型

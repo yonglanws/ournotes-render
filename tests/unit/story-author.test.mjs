@@ -500,6 +500,9 @@ test("official camera rows compile in deterministic order with their durations",
       TargetName: "a", PositionType: 3 },
     { cmd: "Zoom", Parameter1: "1.2", Duration: 3, IsNoWait: 1 },
     { cmd: "Se", SeID: 12, Duration: 0.7 },
+    // the next say changes the shot, so the character DoF is cleared before it
+    { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, CanvasLayers: [2],
+      TargetName: "a", PositionType: 3 },
     // look is a say field: it follows the camera rows of the beat before it
     { cmd: "Look", TargetName: "a", Parameter1: "0.3", Parameter2: "-0.3", Duration: 0.4, IsNoWait: 1 },
     { cmd: "Talk", AdvTextID: "custom_line_2", TargetName: "a", TargetTextIDs: ["custom_name_a"],
@@ -543,12 +546,18 @@ test("character DoF rows always carry an on-stage target", () => {
   assert.deepEqual(strip(c.episode.commands).filter((r) => r.cmd === "DoF"), [
     { cmd: "DoF", Parameter1: "0.4", IsNoWait: 1, Duration: 1.5, CanvasLayers: [2],
       TargetName: "a", PositionType: 3 },
+    { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, CanvasLayers: [2],
+      TargetName: "a", PositionType: 3 },
     { cmd: "DoF", Parameter1: "0.6", IsNoWait: 1, Duration: 1.5, TargetName: "b", PositionType: 7 },
+    { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, TargetName: "b", PositionType: 7 },
     { cmd: "DoF", Parameter1: "0.5", IsNoWait: 1, Duration: 1.5, TargetName: "b", PositionType: 7 },
+    { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, TargetName: "b", PositionType: 7 },
     // no explicit focus: the nearest on-stage character to the current shot is the target
     { cmd: "DoF", Parameter1: "0.3", IsNoWait: 1, Duration: 1.5, TargetName: "a", PositionType: 3 },
+    { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, TargetName: "a", PositionType: 3 },
     // background-only DoF needs no character target
     { cmd: "DoF", Parameter1: "0.2", IsNoWait: 1, Duration: 1.5, CanvasLayers: [0] },
+    { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, CanvasLayers: [0] },
     { cmd: "DoF", Parameter1: "0.1", IsNoWait: 1, Duration: 1.5, TargetName: "a", PositionType: 3 },
   ]);
 });
@@ -837,8 +846,10 @@ test("browser fonts: every font asset drawn in the family, with room for its und
     materials: { "H (K SDF) - Shadow": { floats: { _UnderlayOffsetX: 0.5, _UnderlayOffsetY: -0.75 } } },
   };
   const out = withBrowserFonts(fonts, "Sans");
-  assert.deepEqual(out.fonts["F (G SDF)"].browser, { family: "Sans", underlayOffset: 0.4 });
-  assert.deepEqual(out.fonts["H (K SDF)"].browser, { family: "Sans", underlayOffset: 0.75 });
+  assert.deepEqual(out.fonts["F (G SDF)"].browser,
+                   { family: "Sans", pageWidth: 4096, pageHeight: 4096, underlayOffset: 0.4 });
+  assert.deepEqual(out.fonts["H (K SDF)"].browser,
+                   { family: "Sans", pageWidth: 4096, pageHeight: 4096, underlayOffset: 0.75 });
   assert.deepEqual(out.fonts["F (G SDF)"].characters, {});
   assert.deepEqual(out.fonts["F (G SDF)"].glyphs, {});
   assert.equal(out.fonts["F (G SDF)"].missingGlyph, undefined);
@@ -1014,4 +1025,21 @@ test("the commands without a browser: new, check, build; the built story loads",
     assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).beats[0].scene, "gardn");          // the script is kept
     assert.equal(run(["check", fixedFile, "--site", dir]).status, 0);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a character DoF is cleared before the next shot instead of blurring the other person", () => {
+  const c = compiled(script([
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    { say: "a", text: "One.", dof: 0.4, dofLayers: 2 },
+    { say: "b", text: "Two.", camera: "close", focus: "b" },
+  ]));
+  const rows = strip(c.episode.commands);
+  const set = rows.findIndex((r) => r.cmd === "DoF" && r.Parameter1 === "0.4");
+  const reset = rows.findIndex((r, i) => i > set && r.cmd === "DoF" && r.Parameter1 === "0");
+  const focus = rows.findIndex((r, i) => i > reset && r.cmd === "Focus");
+  assert.ok(set >= 0, "the DoF row is emitted");
+  assert.ok(reset > set, "a DoF 0 reset follows the effect");
+  assert.ok(focus > reset, "the reset comes before the next shot's Focus row");
+  assert.equal(rows[reset].TargetName, "a");
+  assert.equal(rows[reset].PositionType, 3);
 });

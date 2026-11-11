@@ -24,19 +24,33 @@ const DEFAULTS = {
            maxOnStage: 3, cast: [], personas: [], personaDirs: [] },
   llm: { enabled: true, baseUrl: "https://api.openai.com/v1", apiKeyEnv: "OURNOTES_LLM_API_KEY",
          model: "gpt-4.1-mini", temperature: 0.85, maxTokens: 8192, timeoutMs: 120000, retries: 2,
-         repairRounds: 2, pipeline: "staged", directorPlan: false, translateForTts: true, systemPrompt: "" },
+         concurrency: 2,
+         repairRounds: 2, pipeline: "staged", directorPlan: false, translateForTts: true, systemPrompt: "",
+         reasoningEffort: "" },
   tts: {
-    enabled: true, baseUrl: "http://127.0.0.1:9880", apiKeyEnv: "", textLang: "auto", promptLang: "ja",
+    enabled: true,
+    // gpt-sovits: POST /tts (api_v2) with server-side weight switching; irodori: OpenAI-compatible
+    // POST /v1/audio/speech where every request carries its own reference audio / LoRA adapter / caption.
+    provider: "gpt-sovits",
+    baseUrl: "http://127.0.0.1:9880", apiKeyEnv: "", textLang: "auto", promptLang: "ja",
     // The fallback voice of characters without their own entry. `voicesFile` points at a list like
     // voices.example.yaml; `voices` are inline entries that override file entries field by field.
     defaultVoice: { refAudioPath: "", promptText: "", promptLang: "" }, voicesFile: "", voices: [],
     speedFactor: 1, topK: 5, topP: 1, temperature: 1, repetitionPenalty: 1.35, fragmentInterval: 0.3,
     mediaType: "wav", timeoutMs: 60000, concurrency: 2, retries: 1, required: false,
+    // Irodori-TTS inference defaults; the fields mirror MySekaiStoryteller's tts.irodori block.
+    irodori: {
+      model: "irodori-tts", responseFormat: "wav", numSteps: 40,
+      cfgScaleText: 3, cfgScaleCaption: 3, cfgScaleSpeaker: 5, durationScale: 1,
+      chunkingEnabled: true, chunkMinChars: 80, seed: -1,
+      defaultLoraAdapter: "", defaultCaption: "", emotionLabels: [],
+    },
     emotion: { enabled: false, labels: [], presets: [] },
   },
   video: { width: 1300, height: 600, fps: 30, jpegQuality: 92, crf: 20, preset: "veryfast", encoder: "auto",
            audioBitrate: "192k", maxDurationSec: 600, audioSampleRate: 48000, watermark: "", ffmpegPath: "" },
-  render: { gpu: false, chrome: "", core: "", motionsync: "", taskTimeoutMs: 1800000, settleFrames: 0 },
+  render: { gpu: false, chrome: "", chromeArgs: [], core: "", motionsync: "", taskTimeoutMs: 1800000,
+            settleFrames: 0 },
   queue: { concurrency: 1, maxSize: 20, taskTimeoutMs: 3600000, retentionMs: 3600000,
            cleanupIntervalMs: 600000, outputMaxAgeHours: 24 },
   logLevel: "info",
@@ -163,9 +177,9 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   for (const [section, key] of [
     ["server", "host"], ["paths", "site"], ["paths", "siteFormat"], ["paths", "output"], ["paths", "cache"],
     ["story", "base"], ["story", "language"], ["story", "font"], ["story", "title"],
-    ["llm", "baseUrl"], ["llm", "model"], ["llm", "apiKeyEnv"],
-    ["tts", "baseUrl"], ["tts", "apiKeyEnv"], ["tts", "textLang"], ["tts", "promptLang"], ["tts", "voicesFile"],
-    ["tts", "mediaType"], ["video", "ffmpegPath"], ["video", "preset"], ["video", "encoder"],
+    ["llm", "baseUrl"], ["llm", "model"], ["llm", "apiKeyEnv"], ["llm", "reasoningEffort"],
+    ["tts", "provider"], ["tts", "baseUrl"], ["tts", "apiKeyEnv"], ["tts", "textLang"], ["tts", "promptLang"],
+    ["tts", "voicesFile"], ["tts", "mediaType"], ["video", "ffmpegPath"], ["video", "preset"], ["video", "encoder"],
     ["video", "audioBitrate"], ["video", "watermark"], ["render", "chrome"], ["render", "core"],
     ["render", "motionsync"],
   ]) {
@@ -183,6 +197,16 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   checkArray(disk.server || {}, "corsOrigins", "server.corsOrigins", { errors });
   checkObject(ttsDisk, "defaultVoice", "tts.defaultVoice", { errors });
   checkObject(ttsDisk, "emotion", "tts.emotion", { errors });
+  checkObject(ttsDisk, "irodori", "tts.irodori", { errors });
+  if (isObj(ttsDisk.irodori)) {
+    for (const key of ["model", "responseFormat", "defaultLoraAdapter", "defaultCaption"]) {
+      if (ttsDisk.irodori[key] !== undefined && typeof ttsDisk.irodori[key] !== "string") {
+        errors.push({ path: `tts.irodori.${key}`, message: "expected a string" });
+        delete ttsDisk.irodori[key];
+      }
+    }
+    checkArray(ttsDisk.irodori, "emotionLabels", "tts.irodori.emotionLabels", { errors });
+  }
   if (ttsDisk.emotion !== undefined && isObj(ttsDisk.emotion)) {
     checkArray(ttsDisk.emotion, "labels", "tts.emotion.labels", { errors });
     checkArray(ttsDisk.emotion, "presets", "tts.emotion.presets", { errors });
@@ -218,7 +242,15 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   set(cfg.paths, "cache", env("OURNOTES_CACHE"));
   set(cfg.llm, "baseUrl", env("OURNOTES_LLM_BASE_URL"));
   set(cfg.llm, "model", env("OURNOTES_LLM_MODEL"));
+  set(cfg.llm, "reasoningEffort", env("OURNOTES_LLM_REASONING_EFFORT"));
+  if (env("OURNOTES_LLM_CONCURRENCY") !== undefined)
+    cfg.llm.concurrency = num(env("OURNOTES_LLM_CONCURRENCY"), cfg.llm.concurrency);
+  set(cfg.tts, "provider", env("OURNOTES_TTS_PROVIDER"));
   set(cfg.tts, "baseUrl", env("OURNOTES_TTS_BASE_URL"));
+  set(cfg.tts.irodori, "model", env("OURNOTES_IRODORI_MODEL"));
+  if (env("OURNOTES_IRODORI_NUM_STEPS") !== undefined) {
+    cfg.tts.irodori.numSteps = num(env("OURNOTES_IRODORI_NUM_STEPS"), cfg.tts.irodori.numSteps);
+  }
   set(cfg.render, "chrome", env("OURNOTES_CHROME"));
   set(cfg.render, "core", env("OURNOTES_CORE"));
   set(cfg, "logLevel", env("OURNOTES_LOG_LEVEL"));
@@ -245,8 +277,15 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   cfg.video.crf = Math.max(0, Math.min(51, Math.round(num(cfg.video.crf, 20))));
   cfg.video.maxDurationSec = Math.max(1, num(cfg.video.maxDurationSec, 600));
   cfg.video.audioSampleRate = Math.max(8000, Math.round(num(cfg.video.audioSampleRate, 48000)));
+  cfg.llm.concurrency = Math.max(1, Math.min(16, Math.round(num(cfg.llm.concurrency, 2))));
   cfg.render.taskTimeoutMs = Math.max(1000, num(cfg.render.taskTimeoutMs, 1800000));
   cfg.render.settleFrames = Math.max(0, Math.min(120, Math.round(num(cfg.render.settleFrames, 0))));
+  checkArray(cfg.render, "chromeArgs", "render.chromeArgs", { errors });
+  cfg.render.chromeArgs = (cfg.render.chromeArgs || []).map((value, index) => {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    errors.push({ path: `render.chromeArgs[${index}]`, message: "expected a non-empty string" });
+    return null;
+  }).filter(Boolean);
   cfg.queue.concurrency = Math.max(1, Math.min(16, Math.round(num(cfg.queue.concurrency, 1))));
   cfg.queue.maxSize = Math.max(1, Math.round(num(cfg.queue.maxSize, 20)));
   cfg.queue.taskTimeoutMs = Math.max(1000, num(cfg.queue.taskTimeoutMs, 3600000));
@@ -270,10 +309,56 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   cfg.llm.repairRounds = Math.max(0, Math.min(4, Math.round(num(cfg.llm.repairRounds, 2))));
   cfg.llm.pipeline = String(cfg.llm.pipeline || "staged").toLowerCase() === "single" ? "single" : "staged";
   cfg.llm.directorPlan = cfg.llm.directorPlan === true;
+  const effort = String(cfg.llm.reasoningEffort || "").trim().toLowerCase();
+  if (effort && !["minimal", "low", "medium", "high"].includes(effort)) {
+    warnings.push({ path: "llm.reasoningEffort",
+                    message: `unknown thinking effort ${JSON.stringify(cfg.llm.reasoningEffort)}; use minimal, low, medium or high` });
+    cfg.llm.reasoningEffort = "";
+  } else {
+    cfg.llm.reasoningEffort = effort;
+  }
   cfg.tts.concurrency = Math.max(1, Math.min(16, Math.round(num(cfg.tts.concurrency, 2))));
   cfg.tts.timeoutMs = Math.max(1000, num(cfg.tts.timeoutMs, 60000));
   cfg.tts.retries = Math.max(0, Math.min(5, Math.round(num(cfg.tts.retries, 1))));
   cfg.tts.fragmentInterval = Math.max(0, Math.min(2, num(cfg.tts.fragmentInterval, 0.3)));
+  const provider = String(cfg.tts.provider || "gpt-sovits").trim().toLowerCase().replace(/_/g, "-");
+  if (!["gpt-sovits", "irodori"].includes(provider)) {
+    warnings.push({ path: "tts.provider",
+                    message: `unknown TTS provider ${JSON.stringify(cfg.tts.provider)}; use gpt-sovits or irodori` });
+    cfg.tts.provider = "gpt-sovits";
+  } else {
+    cfg.tts.provider = provider;
+  }
+  // Irodori inference defaults, in the same shape as MySekaiStoryteller's tts.irodori block.
+  cfg.tts.irodori = isObj(cfg.tts.irodori) ? cfg.tts.irodori : {};
+  const irodori = cfg.tts.irodori;
+  const stringField = (key, fallback) => {
+    const value = String(irodori[key] ?? "").trim();
+    irodori[key] = value || fallback;
+  };
+  stringField("model", "irodori-tts");
+  const format = String(irodori.responseFormat || "wav").trim().toLowerCase();
+  if (!["wav", "mp3", "ogg"].includes(format)) {
+    warnings.push({ path: "tts.irodori.responseFormat",
+                    message: `unknown response format ${JSON.stringify(irodori.responseFormat)}; use wav, mp3 or ogg` });
+    irodori.responseFormat = "wav";
+  } else {
+    irodori.responseFormat = format;
+  }
+  irodori.numSteps = Math.max(1, Math.min(200, Math.round(num(irodori.numSteps, 40))));
+  irodori.cfgScaleText = Math.max(0, num(irodori.cfgScaleText, 3));
+  irodori.cfgScaleCaption = Math.max(0, num(irodori.cfgScaleCaption, 3));
+  irodori.cfgScaleSpeaker = Math.max(0, num(irodori.cfgScaleSpeaker, 5));
+  irodori.durationScale = Math.max(0.1, Math.min(10, num(irodori.durationScale, 1)));
+  irodori.chunkingEnabled = irodori.chunkingEnabled !== false;
+  irodori.chunkMinChars = Math.max(1, Math.min(1000, Math.round(num(irodori.chunkMinChars, 80))));
+  const seed = Math.round(num(irodori.seed, -1));
+  irodori.seed = seed >= 0 ? seed : -1;
+  stringField("defaultLoraAdapter", "");
+  stringField("defaultCaption", "");
+  irodori.emotionLabels = Array.isArray(irodori.emotionLabels)
+    ? irodori.emotionLabels.map((x) => String(x || "").trim()).filter(Boolean)
+    : [];
   cfg.story.cast = Array.isArray(cfg.story.cast) ? cfg.story.cast.map(String) : [];
   cfg.story.personas = Array.isArray(cfg.story.personas) ? cfg.story.personas : [];
   // Character sheets live outside the repository (one *.md per character); the writer gets only the selected cast's
@@ -284,6 +369,9 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   cfg.story.personas = mergePersonas(loadPersonaDirs(cfg.story.personaDirs, { logger }), cfg.story.personas);
   cfg.tts.emotion = isObj(cfg.tts.emotion) ? cfg.tts.emotion : { enabled: false, labels: [], presets: [] };
   cfg.tts.emotion.enabled = !!cfg.tts.emotion.enabled;
+  // With Irodori, `irodori.emotionLabels` (the MSST field) is a complete emotion list on its own; treat it as the
+  // switch so copying an MSST irodori block also turns per-line emotion selection on.
+  if (cfg.tts.provider === "irodori" && cfg.tts.irodori.emotionLabels.length) cfg.tts.emotion.enabled = true;
   cfg.tts.emotion.labels = Array.isArray(cfg.tts.emotion.labels) ? cfg.tts.emotion.labels.map(String) : [];
   cfg.tts.emotion.presets = Array.isArray(cfg.tts.emotion.presets) ? cfg.tts.emotion.presets : [];
   cfg.server.corsOrigins = Array.isArray(cfg.server.corsOrigins) ? cfg.server.corsOrigins.map(String) : [];
@@ -340,10 +428,10 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   }
   if (!cfg.paths.site && !cfg.paths.siteFormat) {
     warnings.push({ path: "paths.site",
-      message: "not set; /api/v1/generate needs an nnnotes product site (or set paths.siteFormat for script generation)" });
+      message: "not set; set paths.site (nnnotes product site) or paths.siteFormat (downloaded bdon site)" });
   } else if (!cfg.paths.site) {
     warnings.push({ path: "paths.site",
-      message: "not set; only /api/v1/script/generate is available through paths.siteFormat" });
+      message: "not set; using paths.siteFormat (a downloaded bdon site) for the full pipeline" });
   }
   if (Math.abs(cfg.video.width / cfg.video.height - 13 / 6) > 0.01) {
     warnings.push({ path: "video.width", message: "the game's ADV viewport is 13:6; other aspect ratios letterbox or crop" });
@@ -375,7 +463,9 @@ export const publicConfig = (cfg) => {
       ...rest.tts,
       defaultVoice: { refAudioPath: !!rest.tts?.defaultVoice?.refAudioPath, promptText: !!rest.tts?.defaultVoice?.promptText },
       voices: (rest.tts?.voices || []).map((v) => ({
-        name: v.name, aliases: v.aliases, ref: !!v.refAudioPath, weights: !!(v.gptWeightsPath || v.sovitsWeightsPath),
+        name: v.name, aliases: v.aliases,
+        ref: !!(v.refAudioPath || (v.refAudioPaths || []).length),
+        weights: !!(v.gptWeightsPath || v.sovitsWeightsPath), lora: !!v.loraAdapter,
         emotions: (v.emotions || []).map((e) => e.label),
       })),
     },

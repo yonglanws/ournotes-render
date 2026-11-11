@@ -52,15 +52,18 @@ const waitFor = async (what, test, ms) => {
 };
 
 export class Browser {
-  // opts: executable, gpu, width / height (window size), onConsole(type, text): the page's console and its uncaught
-  // errors
-  static async launch({ executable = findBrowser(), gpu = false, width = 1300, height = 600, onConsole = null } = {}) {
+  // opts: executable, gpu, width / height (window size), extraArgs (operator Chrome flags, e.g. --use-angle=vulkan on
+  // a Linux host whose default ANGLE device is SwiftShader), onConsole(type, text): the page's console and its
+  // uncaught errors
+  static async launch({ executable = findBrowser(), gpu = false, width = 1300, height = 600, extraArgs = [],
+                        onConsole = null } = {}) {
     const b = new Browser();
     b.profile = fs.mkdtempSync(path.join(os.tmpdir(), "story-author-"));
     const args = ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${b.profile}`, "--no-first-run",
                   "--no-default-browser-check", "--disable-extensions", "--mute-audio", "--hide-scrollbars",
                   `--window-size=${width},${height}`,
-                  ...(gpu ? [] : ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"]), "about:blank"];
+                  ...(gpu ? [] : ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"]),
+                  ...extraArgs, "about:blank"];
     b.proc = spawn(executable, args, { stdio: "ignore" });
     b.exited = new Promise((r) => b.proc.once("exit", r));
     b.proc.once("error", () => {});

@@ -405,7 +405,10 @@ export const withBrowserFonts = (fonts, family) => {
       if (!mname.startsWith(name) || !m.floats) continue;
       underlay = Math.max(underlay, Math.abs(m.floats._UnderlayOffsetX || 0), Math.abs(m.floats._UnderlayOffsetY || 0));
     }
-    f.browser = { family, ...(underlay > 0 ? { underlayOffset: underlay } : {}) };
+    // A story's own dialogue shares this page with every UI text, so a 2048 square fills after ~200 CJK glyphs and
+    // the renderer then refuses the episode as "missing" characters. 4096 holds a full short episode's vocabulary.
+    f.browser = { family, pageWidth: 4096, pageHeight: 4096,
+                  ...(underlay > 0 ? { underlayOffset: underlay } : {}) };
     f.characters = {};
     f.glyphs = {};
     delete f.missingGlyph;
@@ -1023,6 +1026,7 @@ export const compileScript = (script, site, language) => {
 
   let on = new Map(), scenes = 0, bgm = 0, camera = CAMERAS.middle;
   let lastShot = null;                                          // the distance and focus of the last Focus row
+  let activeDof = null;                                         // the character/background blur still in effect
   const expression = new Map();                                 // cast id -> the expression it shows
   const focus = (staged) => {
     const slots = [...staged.values()].map((m) => m.slot);
@@ -1109,6 +1113,17 @@ export const compileScript = (script, site, language) => {
       .sort((a, c) => Math.abs(a.slot - current) - Math.abs(c.slot - current) || a.slot - c.slot)[0];
     return member ? { TargetName: member.cast, PositionType: member.slot } : null;
   };
+  // A DoF row sets the blur and the engine keeps it until another DoF row changes it. The official episodes always
+  // close a character DoF with DoF 0 before the next shot; without that reset the other character stays blurred for
+  // the rest of the scene. Remember the active effect and clear it when the shot changes.
+  const resetDof = () => {
+    if (!activeDof) return;
+    const fields = { Parameter1: "0", IsNoWait: 1, Duration: 1 };
+    if (activeDof.layers !== undefined) fields.CanvasLayers = [activeDof.layers];
+    if (activeDof.target) Object.assign(fields, activeDof.target);
+    row("DoF", fields);
+    activeDof = null;
+  };
   const dofRow = (b, target) => {
     if (b.dof === undefined) return;
     const background = b.dofLayers === 0;
@@ -1119,6 +1134,7 @@ export const compileScript = (script, site, language) => {
     if (b.dofLayers !== undefined) fields.CanvasLayers = [b.dofLayers];
     if (!background) Object.assign(fields, target);
     row("DoF", fields);
+    activeDof = Number(b.dof) > 0 ? { layers: b.dofLayers, target: background ? null : target } : null;
   };
   const zoomRow = (b) => {
     if (b.zoom === undefined) return;
@@ -1159,6 +1175,10 @@ export const compileScript = (script, site, language) => {
   };
 
   for (const b of script.beats) {
+    const shotChange = b.kind === "scene" || b.kind === "positions" || b.kind === "camera" ||
+      ((b.kind === "say" || b.kind === "narrate") &&
+        (b.camera !== undefined || b.focus !== undefined || b.track !== undefined));
+    if (activeDof && (shotChange || b.dof !== undefined)) resetDof();
     if (b.kind === "scene") {
       const next = new Map(b.positions.map((p) => [p.cast, p]));
       if (scenes) {

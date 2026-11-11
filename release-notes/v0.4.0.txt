@@ -5,8 +5,8 @@ ournotes-render 0.4.0 turns the headless host into an install-and-run applicatio
 - Add `npm run tts:check`: list the voice table and synthesize one short WAV per voice into `output/tts-check/`, with `--voice`, `--emotion` and `--text` filters.
 - TTS synthesis retries transient failures and reports the voices used, default-voice fallbacks, silent lines and failed lines (with the affected speakers) in the API result and `.story.json`.
 - `host/` is an npm workspace: one `npm install` at the repository root installs the host, js-yaml, ffmpeg-static and the site-format engine. The render page resolves the engine through Node and serves it at `/site-engine/`, so hoisted, pnpm and global installs work.
-- Add the AstrBot plugin `astrbot_plugin_ournotes_script` with the `/剧本生成` command (aliases `/写剧本`, `/storygen`): it calls the host's script endpoint, sends a readable preview and attaches the complete JSON script.
-- Add `paths.siteFormat`: a downloaded bdon site can provide the script-generation catalog when no nnnotes product site is configured. Full rendering still uses `paths.site` or the `render-story`/`site-story` tools.
+- Add the AstrBot plugin `astrbot_plugin_ournotes_script` with the `/剧本生成` command (aliases `/写剧本`, `/storygen`): it submits the host's video task, reports progress and sends the finished MP4.
+- Add `paths.siteFormat`: a downloaded bdon site can drive the complete `/api/v1/generate` pipeline (script, TTS, compile into the site, MP4 render) when no nnnotes product site is configured.
 - The server binds `127.0.0.1` by default; LLM/TTS service endpoints reject private addresses unless `security.allowPrivateServiceEndpoints` is explicitly enabled.
 - Add [docs/tts.md](docs/tts.md), `voices.example.yaml` and a shorter quick-start `config.example.yaml`. CI and release workflows now run the unit/host suites plus lint on a clean workspace install and create GitHub releases instead of trying to publish a private npm package.
 

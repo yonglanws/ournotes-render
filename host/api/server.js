@@ -31,11 +31,12 @@ const withTimeout = (promise, ms, onTimeout) => new Promise((resolve, reject) =>
 });
 
 export class ApiServer {
-  constructor({ config, queue, pipeline, catalog, logger }) {
+  constructor({ config, queue, pipeline, catalog, llm, logger }) {
     this.config = config;
     this.queue = queue;
     this.pipeline = pipeline;
     this.catalog = catalog;
+    this.llm = llm;
     this.logger = logger;
     this.startedAt = Date.now();
     this.cleanupStats = { lastRun: null, removed: 0, freedBytes: 0, totalRuns: 0 };
@@ -120,15 +121,17 @@ export class ApiServer {
       site: this.config.paths.site
         ? { configured: true, kind: "product", dir: this.config.paths.site }
         : this.config.paths.siteFormat
-          ? { configured: true, kind: "site-format", dir: this.config.paths.siteFormat, scriptOnly: true }
+          ? { configured: true, kind: "site-format", dir: this.config.paths.siteFormat }
           : { configured: false },
       queue: this.queue.summary(),
       render: { concurrency: this.config.queue.concurrency, gpu: this.config.render.gpu },
       ffmpeg, browser,
       llm: { configured: this.config.llm.enabled && !!this.config.llm.model, model: this.config.llm.model,
-             key: !!this.config.secrets.llmApiKey },
+             key: !!this.config.secrets.llmApiKey,
+             concurrency: this.llm?.concurrency ?? this.config.llm.concurrency ?? 1,
+             active: this.llm?.activeRequests ?? 0, waiting: this.llm?.waitingRequests ?? 0 },
       tts: {
-        enabled: this.config.tts.enabled, baseUrl: this.config.tts.baseUrl,
+        enabled: this.config.tts.enabled, provider: this.config.tts.provider, baseUrl: this.config.tts.baseUrl,
         voices: this.config.voiceSummary?.count || 0,
         defaultVoice: !!this.config.voiceSummary?.defaultVoice,
         required: !!this.config.tts.required, emotion: !!this.config.tts.emotion?.enabled,
@@ -166,12 +169,20 @@ export class ApiServer {
   async _generateScript(req, res) {
     const body = await readJson(req);
     if (!body || typeof body !== "object") throw new HttpError(400, "a JSON object is required");
+    // The script pass can hold an LLM admission slot for minutes. If the client (the AstrBot plugin cancels its
+    // httpx request on timeout) goes away, stop waiting and free the slot instead of generating for a dead socket.
+    const controller = new AbortController();
+    const onClose = () => { if (!res.writableEnded) controller.abort(new Error("client disconnected")); };
+    res.on("close", onClose);
     try {
-      const result = await this.pipeline.generateScriptOnly(body);
+      const result = await this.pipeline.generateScriptOnly(body, { signal: controller.signal });
       sendJson(res, 200, result);
     } catch (e) {
+      if (controller.signal.aborted) return;
       if (e instanceof PipelineError) throw new HttpError(e.status, e.message, { code: e.code, details: e.details });
       throw e;
+    } finally {
+      res.off("close", onClose);
     }
   }
 

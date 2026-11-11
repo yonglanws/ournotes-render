@@ -481,7 +481,7 @@ test("a cast label copied with its group suffix is cleaned for the talk window",
   assert.equal(out.doc.cast.b.name, "爽世");
 });
 
-test("two people are spread to far-left and far-right, and a solo focus follows", () => {
+test("two people are spread to left and right, and a solo focus follows", () => {
   const beats = [
     { scene: "stage_a", focus: 5, positions: { a: "center" } },
     { say: "a", text: "一。" },
@@ -489,15 +489,15 @@ test("two people are spread to far-left and far-right, and a solo focus follows"
     { say: "b", text: "二。" },
   ];
   spreadPositions(beats, 2);
-  assert.deepEqual(beats[0].positions, { a: "far-left" });
-  assert.equal(beats[0].focus, "far-left");
-  assert.deepEqual(beats[2].positions, { a: "far-left", b: "far-right" });
+  assert.deepEqual(beats[0].positions, { a: "left" });
+  assert.equal(beats[0].focus, "left");
+  assert.deepEqual(beats[2].positions, { a: "left", b: "right" });
   assert.equal(beats[2].focus, 5, "a two-shot uses the centre focus, not a composition point");
 });
 
 test("near on a single focused line becomes the official close-up, and a group close-up aims at the speaker", () => {
   const beats = [
-    { scene: "stage_a", camera: "middle", focus: 5, positions: { a: "far-left", b: "far-right" } },
+    { scene: "stage_a", camera: "middle", focus: 5, positions: { a: "left", b: "right" } },
     { say: "a", text: "一。", camera: "near", focus: "a" },
     { say: "b", text: "二。", camera: "close", focus: 5 },
     { say: "a", text: "三。", camera: "near", focus: 5 },
@@ -529,7 +529,7 @@ test("a third person on stage is a problem only when the limit is two", () => {
 
 test("the staged pipeline spreads its two-person opening", async () => {
   const out = await stagedRun(stagedLlm(STORYBOARD_DOC));
-  assert.deepEqual(out.doc.beats[0].positions, { a: "far-left", b: "far-right" });
+  assert.deepEqual(out.doc.beats[0].positions, { a: "left", b: "right" });
   assert.equal(out.doc.beats[0].focus, 5);
 });
 
@@ -751,7 +751,7 @@ const duoScript = () => ({
   format: "ournotes.story-script/1", base: "stories/1.json", language: "zh-Hans", title: "测试",
   cast: { a: { model: "m_b", name: "爽世" }, b: { model: "m_d", name: "立希" } },
   beats: [
-    { scene: "stage_a", location: "教室", camera: "middle", positions: { a: "far-left", b: "far-right" } },
+    { scene: "stage_a", location: "教室", camera: "middle", positions: { a: "left", b: "right" } },
     { say: "a", text: "今天也一起练习吧。", motion: "mtn_smile01" },
     { say: "b", text: "嗯。", expression: "exp_idle01" },
   ],
@@ -820,6 +820,44 @@ test("the quick-cast prompt asks for model ids and keeps the roster compact", ()
   assert.match(user.content, /m_a/);
   assert.match(user.content, /上次聊到练习/);
   assert.doesNotMatch(user.content, /PERSONA/, "the roster carries summaries, not persona prompts");
+});
+
+test("history reaches the cast and story prompts, and chat mode forces the single pass", async () => {
+  const calls = [];
+  const llm = { available: true,
+    async json(messages) {
+      calls.push(messages.map((m) => m.content).join("\n"));
+      if (calls.length === 1) return { content: JSON.stringify({ cast: ["m_b", "m_d"] }) };
+      return { content: JSON.stringify(duoScript()) };
+    } };
+  const out = await generateScript({
+    llm, catalog: CATALOG4,
+    request: { prompt: "最近怎么样？", language: "zh-Hans", mode: "chat", pipeline: "staged",
+      history: [{ role: "用户", content: "上次聊到练习" }] },
+    config: { ...CONFIG, llm: { ...CONFIG.llm, pipeline: "staged" } }, logger: quietLogger(),
+  });
+  assert.equal(calls.length, 2, "chat skips the staged passes even when the configuration asks for staged");
+  assert.match(calls[0], /上次聊到练习/, "the quick cast sees the conversation");
+  assert.match(calls[1], /最近对话/);
+  assert.match(calls[1], /即时对话回复/);
+  assert.ok(out.script);
+});
+
+test("a request pipeline override picks the single pass instead of the configured staged one", async () => {
+  const calls = [];
+  const llm = { available: true,
+    async json(messages) {
+      calls.push(messages.map((m) => m.content).join("\n"));
+      if (calls.length === 1) return { content: JSON.stringify({ cast: ["m_b", "m_d"] }) };
+      return { content: JSON.stringify(duoScript()) };
+    } };
+  await generateScript({
+    llm, catalog: CATALOG4,
+    request: { prompt: "写一场放学后的对话", language: "zh-Hans", pipeline: "single" },
+    config: { ...CONFIG, llm: { ...CONFIG.llm, pipeline: "staged" } }, logger: quietLogger(),
+  });
+  assert.equal(calls.length, 2, "the override writes the script in one story call");
+  assert.match(calls[1], /model: m_b/);
 });
 
 // --- staged pipeline: turns dialogue --------------------------------------------------------------------------------

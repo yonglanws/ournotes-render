@@ -54,6 +54,7 @@ test("a queued task can be cancelled; a running task is aborted", async () => {
   assert.equal(q.cancel(a.id), true);
   await assert.rejects(() => a.promise, /cancelled/);
   assert.equal(q.view(a.id).status, "cancelled");
+  assert.equal(q.summary().cancelled, 2, "queued and running cancellations are both counted");
   release();
   await q.close();
 });

@@ -76,9 +76,21 @@ from (Normal episodes; home spot talks and live result talks cannot be bases).
 ```
 
 - `stages[].id` is what a scene's `scene` names: the last segment of the stage key (the whole key where two stages
-  end alike). `caption` is the location caption the base story shows on that stage, empty when it has none.
-- `music[].cue` is what a scene's `music` names. A base story without sound files has none.
-- `sounds[].cue` is what a beat's `se` names: the SE cues of the base story's sound files (a sheet may hold several).
+  end alike). `name`, `description` and `tags` come from the site resource guide
+  ([`host/story/site-resources.yaml`](../host/story/site-resources.yaml)); `caption` is the location caption the base
+  story shows on that stage, empty when it has none. A title-card backdrop (`kind: title`, a black screen) is never
+  offered as a scene.
+- `music[].cue` is what a scene's `music` names; `name`, `mood` and `use` come from the guide. The AI writer's
+  prompt tells it to match the cue's mood and purpose to the scene's overall tone (e.g. no comedy cue under a serious
+  talk); there is no automatic replacement.
+- `sounds[].cue` is what a beat's `se` names (a sheet may hold several); `name` and `use` come from the guide.
+- The stage, music and SE lists are pooled from **every** story of the site, not just the base: a new episode can use a
+  location or sound another story brought. The base story's own entries stay first.
+- A pooled location is only offered when the first story that used it casts at least one character the base story
+  also casts. This keeps another band's school rooftop or bedroom out of a MyGO episode; sounds are pooled
+  unconditionally. Title-card backdrops (`kind: title`) are never offered.
+- A site may ship its own `<site>/story-resources.yaml` (same shape as the bundled file) to describe a different
+  site's ids; without one, unknown ids fall back to the story's caption and label.
 - `cast`: the models the base story itself uses (any model of `models.json` can be cast).
 - With `--out`: `stages.png`, the background picture of each stage with its id and caption.
 
@@ -234,7 +246,7 @@ beat may have an `id`, reported with its lines by `render`). The director fields
 
 | Beat | Keys |
 |---|---|
-| scene | `scene`: a stage id. `music`: a cue of the base story, `"stop"`, or absent to keep what plays. `location`: a caption shown at the start. `camera`: `near` (1.2x, the widest), `middle` (1.4x, default), `far` (1.8x, group), `close` (2.8x, close-up) or `very-close` (4x), or `{distance, focus, track}`. `focus`: a cast id, a position, or a focus point 1..9 the camera looks at. `track`: optional horizontal camera offset. `focusDuration`, `trackDuration`: optional seconds of the camera move. `positions`: who stands where (absent: nobody). `se`, `seDuration`, `seDelay`, `seStop`: an optional sound effect (see [Camera, gaze and sound fields](#camera-gaze-and-sound-fields)). A scene after the first fades out and in, and clears the stage. |
+| scene | `scene`: a stage id. `music`: a cue of the site, `"stop"`, or absent to keep what plays. `location`: a caption shown at the start. `camera`: `near` (1.2x, the widest), `middle` (1.4x, default), `far` (1.8x, group), `close` (2.8x, close-up) or `very-close` (4x), or `{distance, focus, track}`. `focus`: a cast id, a position, or a focus point 1..9 the camera looks at. `track`: optional horizontal camera offset. `focusDuration`, `trackDuration`: optional seconds of the camera move. `positions`: who stands where (absent: nobody). `se`, `seDuration`, `seDelay`, `seStop`: an optional sound effect (see [Camera, gaze and sound fields](#camera-gaze-and-sound-fields)). A scene after the first fades out and in, and clears the stage. |
 | positions | `positions`: who stands where from now on; characters not named leave, characters on a new position leave and enter there, each with a short fade. `camera`, `focus`, `track`: optional, as for a scene. `focusDuration`, `trackDuration`: optional camera move seconds. `motionFadeIn`, `motionWait`: optional Motion row fields. |
 | say | `say`: a cast id. `text`: the line. `motion`: optional, a motion of the speaker's model. `expression`: optional, an expression of the speaker's model. `lookAt`: optional gaze target. `focus`, `camera`, `track`: optional camera. `zoom`, `zoomDuration`: optional slow push-in/pull-out. `focusDuration`, `trackDuration`, `pedestal`, `pedestalDuration`, `pan`, `panDuration`, `panFocusSlide`, `dof`, `dofDuration`, `dofLayers`, `look`, `lookY`, `lookDuration`, `se`, `seDuration`, `seDelay`, `seStop`, `motionFadeIn`, `motionWait`: optional official camera, gaze, acting and sound fields. `actions`: optional timed acting before or during the line (speaker or listeners). |
 | narrate | `narrate`: a line without a speaker. `focus`, `camera`, `track`: optional. `zoom`, `zoomDuration`: optional slow push-in/pull-out. `focusDuration`, `trackDuration`, `pedestal`, `pedestalDuration`, `pan`, `panDuration`, `panFocusSlide`, `dof`, `dofDuration`, `dofLayers`: optional camera fields. `actions`: optional; each action names its `cast`. |
@@ -278,7 +290,7 @@ These fields compile to their own official ADV rows after the Focus/Track rows o
 | `dof` / `dofDuration` / `dofLayers` | say, narrate, camera, action | `DoF` | intensity 0..1; duration 0.5..10, default 1.5; layers 0 (background), 2 (characters) or absent; duration/layers need `dof` |
 | `zoom` / `zoomDuration` | say, narrate, camera | `Zoom` | 0.7..2.5; duration 0.2..20, default 1.5 |
 | `look` / `lookY` / `lookDuration` | say, action | `Look` | x and y `-1..1`; duration 0.2..10, default 0.5; y/duration need `look` |
-| `se` / `seDuration` / `seDelay` | scene, say, camera, action | `Se` | a cue of the base story's SE sheets; duration 0.5..10, delay 0..10; duration/delay need `se` |
+| `se` / `seDuration` / `seDelay` | scene, say, camera, action | `Se` | a cue of the site's SE sheets; duration 0.5..10, delay 0..10; duration/delay need `se` |
 | `seStop` | scene, say, camera, action | `Se` with `Parameter1: "Stop"` | boolean; cannot be combined with `se` |
 | `motionFadeIn` / `motionWait` | say, action, positions | `Motion` | fade `-1..2` (default -1); wait boolean (true/false, or the official seconds when written into an episode) |
 
@@ -288,7 +300,7 @@ when the beat has no Focus row. `look` and `lookAt` cannot be used on the same b
 `LookTarget`. Every modifier needs the field it modifies: `panDuration`/`panFocusSlide` need `pan`,
 `dofDuration`/`dofLayers` need `dof`, `lookY`/`lookDuration` need `look`, `trackDuration` needs `track`,
 `pedestalDuration` needs `pedestal`, `focusDuration` needs a `focus` or `camera` (scene/positions always have a Focus
-row), and `seDuration`/`seDelay` need `se`. A `se` that is not one of the base story's SE cues (error `unknownSe`) is
+row), and `seDuration`/`seDelay` need `se`. A `se` that is not one of the site's SE cues (error `unknownSe`) is
 refused; the cue list is what `site-story.mjs --list` prints as `sounds` and what the AI prompt shows as 可用音效.
 
 A character `DoF` row names a target: a `say` targets its speaker, an `action` its cast, and a `camera`/`narrate`
@@ -327,7 +339,7 @@ breaks the line. Keep each text line within the talk window's width; `render` re
 | `unknownBase` | The base story is missing from the site or cannot be a base. |
 | `unknownLanguage`, `unknownFont`, `unknownPosition`, `unknownCamera`, `unknownFade` | A name outside the lists above. |
 | `unknownModel`, `unknownCast`, `unknownStage`, `unknownMusic`, `unknownMotion`, `unknownExpression`, `unknownFocus`, `unknownLookAt` | A name the site, the script or the model does not have. |
-| `unknownSe` | An SE cue the base story's sound files do not have; `expected` lists the available cues. |
+| `unknownSe` | An SE cue the site's sound files do not have; `expected` lists the available cues. |
 | `exclusive` | `look` with `lookAt`, or `se` with `seStop`, on the same beat. |
 | `range` | `at` outside 0..1, `track` outside -4..4, a focus point outside 1..9, a non-positive `pause`, or a duration, zoom, pedestal, pan, DoF intensity, gaze or DoF layer outside its range above. |
 | `emptyAction`, `tooManyActions` | An action without motion/expression/lookAt, or more than 12 actions on a line. |
@@ -351,6 +363,7 @@ Look, LookTarget, Se, FadeOut, FadeIn, Location, Motion, Expression, Talk, Delay
 `story.json` naming the models, music and SE cue sheets it plays, and the base story's font product with every font
 asset drawn by the browser
 ([browser fonts](story-data-format.md#browser-fonts)): every character of the font family shows, laid out by
-TextMeshPro's rules with the base story's font settings. The other files (stages, talk window, shaders, the player
-settings, the music and SE cue sheets) are the base story's; the media of its own rows (frames, stills, effects, chat,
-videos) are left out.
+TextMeshPro's rules with the base story's font settings. A stage, music cue or SE sheet the base story never used is
+copied in as well: its prefab and texture go into the new `scene.json` and file map, its cue sheet and audio files
+into `story.json`. The other files (talk window, shaders, the player settings, the base story's own stages and cue
+sheets) come from the base story; the media of its own rows (frames, stills, effects, chat, videos) are left out.

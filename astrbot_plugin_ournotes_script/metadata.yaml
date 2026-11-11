@@ -1,13 +1,13 @@
 name: astrbot_plugin_ournotes_script
-display_name: Our Notes 剧本生成
-desc: 调用 ournotes-render 后端，根据一句场景描述生成 Our Notes 导演剧本，并发送可读预览和 JSON 附件。
-short_desc: 用 ournotes-render 生成 Our Notes 导演剧本
-version: v0.1.0
+display_name: Our Notes 剧情视频
+desc: 纯对接 ournotes-render 宿主：/视频对话 与 /剧本生成 交给宿主内置 AI 写剧本、配音、渲染，插件只负责进度回传、视频投递与运维。
+short_desc: 用 ournotes-render 生成 Our Notes 剧情视频
+version: v0.3.0
 author: 慵懒午睡
 repo: https://github.com/yonglanws/ournotes-render/tree/main/astrbot_plugin_ournotes_script
-astrbot_version: ">=4.5.0"
+astrbot_version: ">=4.10.4"
 tags:
   - ournotes
   - story
-  - script
+  - video
   - live2d

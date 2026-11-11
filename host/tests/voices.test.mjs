@@ -4,7 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { loadConfig } from "../config.js";
 import {
-  enrichVoiceAliases, mergeVoiceLists, normalizeVoiceTable, validateVoices, voiceSummary,
+  enrichVoiceAliases, hasVoiceReference, mergeVoiceLists, normalizeVoiceTable, validateVoices, voiceSummary,
 } from "../tts/voices.js";
 import { tmpDir } from "./helpers.mjs";
 
@@ -96,7 +96,7 @@ test("config.yaml loads a voices.yaml file and an inline override", () => {
   assert.deepEqual(cfg.tts.voices[0].aliases, ["灯"]);
   assert.equal(cfg.tts.defaultVoice.refAudioPath, "/refs/default.wav");
   assert.deepEqual(voiceSummary(cfg.tts), {
-    count: 2, defaultVoice: true, withOwnReference: 2, missingReference: [], emotions: 0,
+    count: 2, defaultVoice: true, withOwnReference: 2, withLora: 0, missingReference: [], emotions: 0,
   });
 });
 
@@ -129,4 +129,52 @@ test("a voice without a reference is silent unless a default voice exists; requi
   const required = issues();
   validateVoices({ ...tts, required: true }, required);
   assert.ok(required.errors.some((e) => e.path === "tts.defaultVoice"));
+});
+
+test("Irodori fields normalize, including MSST field names and several reference clips", () => {
+  const list = issues();
+  const table = normalizeVoiceTable({
+    voices: [{
+      characterName: "晓山瑞希",
+      loraAdapter: "/models/LoRA/晓山瑞希/lora_adapter",
+      refAudioPath: "/refs/main.wav",
+      refAudioPaths: ["/refs/a.wav", " /refs/b.wav ", ""],
+      caption: "落ち着いた、穏やかな口調で話している。",
+      speed: 0.95,
+      numSteps: 32,
+      emotions: [
+        { emotion: "开心", caption: "明るく話している。", speed: 1.1, refAudioPaths: "/refs/happy.wav" },
+        { emotion: "  ", caption: "no label" },
+      ],
+    }],
+  }, "voices", list);
+  assert.deepEqual(list.errors, []);
+  assert.equal(table.voices.length, 1);
+  const voice = table.voices[0];
+  assert.equal(voice.name, "晓山瑞希", "characterName is accepted as name");
+  assert.equal(voice.loraAdapter, "/models/LoRA/晓山瑞希/lora_adapter");
+  assert.deepEqual(voice.refAudioPaths, ["/refs/a.wav", "/refs/b.wav"]);
+  assert.equal(voice.caption, "落ち着いた、穏やかな口調で話している。");
+  assert.equal(voice.speed, 0.95);
+  assert.equal(voice.numSteps, 32);
+  assert.equal(voice.emotions.length, 1, "an emotion entry without a label is dropped");
+  assert.equal(voice.emotions[0].label, "开心", "emotion is accepted as label");
+  assert.deepEqual(voice.emotions[0].refAudioPaths, ["/refs/happy.wav"]);
+  assert.equal(voice.emotions[0].speed, 1.1);
+});
+
+test("refAudioPaths counts as a reference and warns only when the provider ignores it", () => {
+  const voices = [{ name: "瑞希", refAudioPaths: ["/a.wav"], emotions: [] }];
+  assert.equal(hasVoiceReference(voices[0]), true);
+  const summary = voiceSummary({ voices, defaultVoice: {} });
+  assert.equal(summary.withOwnReference, 1);
+  assert.deepEqual(summary.missingReference, []);
+  const gsv = issues();
+  validateVoices({ enabled: true, provider: "gpt-sovits", baseUrl: "http://127.0.0.1:9880", voices,
+                   defaultVoice: {} }, gsv);
+  assert.ok(gsv.warnings.some((w) => /refAudioPaths/.test(w.message)));
+  const irodori = issues();
+  validateVoices({ enabled: true, provider: "irodori", baseUrl: "http://127.0.0.1:8088", voices,
+                   defaultVoice: {} }, irodori);
+  assert.ok(!irodori.warnings.some((w) => /refAudioPaths/.test(w.message)));
 });

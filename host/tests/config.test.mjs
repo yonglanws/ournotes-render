@@ -27,10 +27,11 @@ test("environment overrides win and secrets never come from the file", async () 
     "tts: { voices: [{ name: A, refAudioPath: /a.wav }] }",
   ].join("\n"));
   await withEnv({ OURNOTES_PORT: "4321", OURNOTES_LLM_API_KEY: "env-secret", OURNOTES_SITE: site,
-                  OURNOTES_LLM_MODEL: "env-model" }, async () => {
+                  OURNOTES_LLM_MODEL: "env-model", OURNOTES_LLM_REASONING_EFFORT: "Medium" }, async () => {
     const cfg = loadConfig({ file });
     assert.equal(cfg.server.port, 4321);
     assert.equal(cfg.llm.model, "env-model");
+    assert.equal(cfg.llm.reasoningEffort, "medium", "the effort is normalized to lower case");
     assert.equal(cfg.paths.site, path.resolve(site));
     assert.equal(cfg.paths.output, path.resolve(ROOT, "out"));
     assert.equal(cfg.secrets.llmApiKey, "env-secret");
@@ -39,6 +40,14 @@ test("environment overrides win and secrets never come from the file", async () 
     assert.equal(publicConfig(cfg).secrets.apiKey, false);
     assert.equal(requireSite(cfg), path.resolve(site));
   });
+});
+
+test("an unknown thinking effort is reported and falls back to unset", () => {
+  const file = path.join(tmpDir(), "config.yaml");
+  fs.writeFileSync(file, ['llm: { reasoningEffort: turbo }'].join("\n"));
+  const cfg = loadConfig({ file });
+  assert.equal(cfg.llm.reasoningEffort, "");
+  assert.ok(cfg.issues.warnings.some((w) => w.path === "llm.reasoningEffort" && /medium/.test(w.message)));
 });
 
 test("missing config falls back to built-in defaults", () => {
@@ -50,13 +59,28 @@ test("missing config falls back to built-in defaults", () => {
   assert.equal(cfg.video.height, 600);
   assert.equal(cfg.paths.site, "");
   assert.equal(cfg.paths.siteFormat, "");
+  assert.equal(cfg.llm.concurrency, 2);
   assert.equal(cfg.tts.defaultVoice.refAudioPath, "");
   assert.deepEqual(cfg.tts.voices, []);
+  assert.deepEqual(cfg.render.chromeArgs, []);
   assert.throws(() => requireSite(cfg), /paths\.site/);
 });
 
-test("unknown settings are reported with a suggestion instead of being ignored silently", () => {
+test("render.chromeArgs keeps operator flags and rejects blank entries", () => {
   const file = path.join(tmpDir(), "config.yaml");
+  fs.writeFileSync(file, [
+    "render:",
+    "  chromeArgs:",
+    "    - --use-angle=vulkan",
+    "    - '  --disable-dev-shm-usage  '",
+    "    - ''",
+  ].join("\n"));
+  const cfg = loadConfig({ file });
+  assert.deepEqual(cfg.render.chromeArgs, ["--use-angle=vulkan", "--disable-dev-shm-usage"]);
+  assert.ok(cfg.issues.errors.some((e) => e.path === "render.chromeArgs[2]"));
+});
+
+test("unknown settings are reported with a suggestion instead of being ignored silently", () => {  const file = path.join(tmpDir(), "config.yaml");
   fs.writeFileSync(file, [
     "security: { allowPrivateServiceEndpoints: true }",
     "server: { prot: 9881 }",
@@ -118,4 +142,55 @@ test("story.maxLines below two or non-integer is reported instead of being adjus
     assert.match(issue.message, /at least 2/);
     assert.equal(cfg.story.maxLines, value, "the invalid value is not silently adjusted");
   }
+});
+
+test("tts.provider and the irodori block default like MSST and clamp bad values", async () => {
+  const defaults = loadConfig({ file: path.join(tmpDir(), "missing.yaml") });
+  assert.equal(defaults.tts.provider, "gpt-sovits");
+  assert.equal(defaults.tts.irodori.model, "irodori-tts");
+  assert.equal(defaults.tts.irodori.numSteps, 40);
+  assert.equal(defaults.tts.irodori.cfgScaleSpeaker, 5);
+  assert.equal(defaults.tts.irodori.chunkingEnabled, true);
+  assert.equal(defaults.tts.irodori.seed, -1);
+  assert.deepEqual(defaults.tts.irodori.emotionLabels, []);
+  assert.equal(defaults.tts.emotion.enabled, false);
+
+  await withEnv({ OURNOTES_TTS_PROVIDER: "Irodori", OURNOTES_IRODORI_MODEL: "test-model",
+                  OURNOTES_IRODORI_NUM_STEPS: "12" }, async () => {
+    const cfg = loadConfig({ file: path.join(tmpDir(), "missing.yaml") });
+    assert.equal(cfg.tts.provider, "irodori", "the provider is normalized to lower case");
+    assert.equal(cfg.tts.irodori.model, "test-model");
+    assert.equal(cfg.tts.irodori.numSteps, 12);
+  });
+
+  const file = path.join(tmpDir(), "config.yaml");
+  fs.writeFileSync(file, [
+    "security: { allowPrivateServiceEndpoints: true }",
+    "tts:",
+    "  provider: irodori",
+    "  baseUrl: http://192.168.1.10:8088",
+    "  irodori:",
+    "    numSteps: 0",
+    "    chunkMinChars: -5",
+    "    durationScale: 0",
+    "    seed: -9",
+    "    emotionLabels: [平静, ' ', 开心]",
+    "  voices: [{ name: 瑞希, refAudioPath: /refs/main.wav }]",
+  ].join("\n"));
+  const cfg = loadConfig({ file });
+  assert.equal(cfg.tts.provider, "irodori");
+  assert.equal(cfg.tts.irodori.numSteps, 1);
+  assert.equal(cfg.tts.irodori.chunkMinChars, 1);
+  assert.equal(cfg.tts.irodori.durationScale, 0.1);
+  assert.equal(cfg.tts.irodori.seed, -1);
+  assert.deepEqual(cfg.tts.irodori.emotionLabels, ["平静", "开心"]);
+  assert.equal(cfg.tts.emotion.enabled, true, "MSST emotionLabels turn emotion selection on");
+});
+
+test("an unknown tts.provider is reported and falls back to gpt-sovits", () => {
+  const file = path.join(tmpDir(), "config.yaml");
+  fs.writeFileSync(file, 'tts: { provider: vits }');
+  const cfg = loadConfig({ file });
+  assert.equal(cfg.tts.provider, "gpt-sovits");
+  assert.ok(cfg.issues.warnings.some((w) => w.path === "tts.provider" && /irodori/.test(w.message)));
 });

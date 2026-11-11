@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // `npm run tts:check`: inspect the voice table, and with --synthesize make one short WAV per voice so the setup can be
-// listened to before a whole episode is generated. It talks to the configured GPT-SoVITS server only; no LLM is used.
+// listened to before a whole episode is generated. It talks to the configured GPT-SoVITS or Irodori server only; no
+// LLM is used.
 //
 // examples:
 //   npm run tts:check
@@ -11,8 +12,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureDirs, loadConfig } from "../config.js";
 import { configureFfmpeg } from "../render/ffmpeg.js";
-import { GptSovitsClient, VoiceBook } from "../tts/tts.js";
-import { voiceSummary } from "../tts/voices.js";
+import { VoiceBook, createTtsClient } from "../tts/tts.js";
+import { hasVoiceReference, voiceSummary } from "../tts/voices.js";
 
 const args = process.argv.slice(2);
 const has = (name) => args.includes(name);
@@ -42,7 +43,7 @@ const failure = (message) => {
 if (!tts.enabled) {
   failure("tts.enabled is false in the configuration");
 } else if (!tts.baseUrl) {
-  failure("tts.baseUrl is empty; set it to the GPT-SoVITS api_v2 address");
+  failure("tts.baseUrl is empty; set it to the GPT-SoVITS api_v2 or Irodori server root");
 } else {
   const issues = [...config.issues.errors, ...config.issues.warnings].filter((i) => i.path.startsWith("tts."));
   if (!json && issues.length) {
@@ -59,32 +60,39 @@ if (!tts.enabled) {
     else targets.push(voice);
   } else targets.push(...tts.voices);
   const validTarget = !wanted || targets.length > 0;
+  const irodori = tts.provider === "irodori";
   if (!json) {
-    console.log(`GPT-SoVITS: ${tts.baseUrl}${tts.required ? " (required: a failed line fails the job)" : ""}`);
+    console.log(`${irodori ? "Irodori" : "GPT-SoVITS"}: ${tts.baseUrl}` +
+      `${tts.required ? " (required: a failed line fails the job)" : ""}`);
+    if (irodori) console.log(`irodori: model ${tts.irodori.model}, ${tts.irodori.numSteps} steps, ` +
+      `seed ${tts.irodori.seed < 0 ? "random" : tts.irodori.seed}; it reads Japanese only`);
     console.log(`voice table: ${tts.voicesFile || "config.yaml tts.voices"}; ${summary.count} voice(s); ` +
       `default voice: ${summary.defaultVoice ? "yes" : "no"}`);
     if (!summary.count) {
       console.log("  (no named voices; the defaultVoice is the only voice)");
     }
     console.log("");
-    console.log("name".padEnd(20) + "ref".padEnd(6) + "weights".padEnd(9) + "emotions".padEnd(10) + "aliases");
+    console.log("name".padEnd(20) + "ref".padEnd(6) + (irodori ? "lora".padEnd(9) : "weights".padEnd(9)) +
+      "emotions".padEnd(10) + "aliases");
     for (const v of (wanted ? targets : tts.voices)) {
       const aliases = (v.aliases || []).slice(0, 3).join(", ") + ((v.aliases || []).length > 3 ? ", ..." : "");
-      console.log(String(v.name).padEnd(20) + (v.refAudioPath ? "yes" : "NO").padEnd(6) +
-        ((v.gptWeightsPath || v.sovitsWeightsPath) ? "yes" : "-").padEnd(9) +
-        String((v.emotions || []).length).padEnd(10) + aliases);
+      const model = irodori
+        ? (v.loraAdapter ? "yes" : "-")
+        : ((v.gptWeightsPath || v.sovitsWeightsPath) ? "yes" : "-");
+      console.log(String(v.name).padEnd(20) + (hasVoiceReference(v) ? "yes" : "NO").padEnd(6) +
+        model.padEnd(9) + String((v.emotions || []).length).padEnd(10) + aliases);
     }
     if (!wanted) console.log("");
   }
 
   if (synthesize && validTarget) {
     if (!wanted && !targets.length && !summary.defaultVoice) {
-      failure("nothing to synthesize: configure tts.defaultVoice or a tts.voices entry with refAudioPath");
+      failure("nothing to synthesize: configure tts.defaultVoice or a tts.voices entry with reference audio");
     } else {
       configureFfmpeg(config.video.ffmpegPath || "");
       let client;
       try {
-        client = new GptSovitsClient(tts, { apiKey: config.secrets.ttsApiKey, logger: console,
+        client = createTtsClient(tts, { apiKey: config.secrets.ttsApiKey, logger: console,
           allowPrivate: config.security.allowPrivateServiceEndpoints === true });
         client.setCacheDir(path.join(config.paths.cache, "tts-check"));
       } catch (e) {
@@ -99,13 +107,15 @@ if (!tts.enabled) {
         const results = [];
         for (const [index, target] of targets.entries()) {
           const voice = book.resolveFor(emotion, [target.name]);
-          const lang = String(voice.promptLang || tts.promptLang || "ja").split("-")[0].toLowerCase();
+          // Irodori reads Japanese regardless of the reference-audio language field.
+          const lang = irodori ? "ja"
+            : String(voice.promptLang || tts.promptLang || "ja").split("-")[0].toLowerCase();
           const text = option("--text") || {
             ja: "こんにちは。これは音色の確認です。", zh: "你好，这是音色测试。",
             en: "Hello, this is a voice test.", ko: "안녕하세요. 목소리 테스트입니다.",
           }[lang] || "Hello, this is a voice test.";
-          if (!voice.refAudioPath) {
-            const message = `${target.name}: no refAudioPath and no defaultVoice`;
+          if (!hasVoiceReference(voice)) {
+            const message = `${target.name}: no reference audio and no defaultVoice`;
             results.push({ voice: target.name, ok: false, error: message });
             speak(`[!!] ${message}`);
             continue;
@@ -126,11 +136,12 @@ if (!tts.enabled) {
         }
         if (!wanted && !targets.length) {
           const voice = book.resolveFor(emotion, []);
-          if (!voice.refAudioPath) {
+          if (!hasVoiceReference(voice)) {
             results.push({ voice: "default", ok: false, error: "no defaultVoice.refAudioPath" });
           } else {
             try {
-              const lang = String(voice.promptLang || tts.promptLang || "ja").split("-")[0].toLowerCase();
+              const lang = irodori ? "ja"
+                : String(voice.promptLang || tts.promptLang || "ja").split("-")[0].toLowerCase();
               const text = option("--text") || (lang === "zh" ? "你好，这是音色测试。" : "こんにちは。これは音色の確認です。");
               const audio = await client.synthesize(text, voice, { textLang: lang });
               const file = path.join(outDir, `default${emotion ? `-${emotion}` : ""}.wav`);
@@ -143,15 +154,18 @@ if (!tts.enabled) {
             }
           }
         }
-        if (json) console.log(JSON.stringify({ ok: results.every((r) => r.ok), service: tts.baseUrl, out: outDir, results }, null, 2));
+        if (json) console.log(JSON.stringify({ ok: results.every((r) => r.ok), provider: tts.provider,
+                                                service: tts.baseUrl, out: outDir, results }, null, 2));
         if (!results.every((r) => r.ok)) process.exitCode = 1;
       }
     }
   } else if (!json && validTarget) {
     console.log("Nothing was synthesized. Add --synthesize to write one short WAV per voice into output/tts-check.");
   } else if (json && validTarget) {
-    console.log(JSON.stringify({ ok: true, service: tts.baseUrl, summary, voices: tts.voices.map((v) => ({
-      name: v.name, aliases: v.aliases, refAudioPath: !!v.refAudioPath, emotions: (v.emotions || []).map((e) => e.label),
-    })) }, null, 2));
+    console.log(JSON.stringify({ ok: true, provider: tts.provider, service: tts.baseUrl, summary,
+      voices: tts.voices.map((v) => ({
+        name: v.name, aliases: v.aliases, refAudioPath: !!v.refAudioPath, refAudioPaths: v.refAudioPaths || [],
+        loraAdapter: !!v.loraAdapter, emotions: (v.emotions || []).map((e) => e.label),
+      })) }, null, 2));
   }
 }
