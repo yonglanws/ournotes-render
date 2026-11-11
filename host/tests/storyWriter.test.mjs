@@ -578,6 +578,7 @@ test("extended camera and sound fields survive the staged merge", () => {
     { id: "l2", say: "b", text: "第二句。" },
   ] };
   const extra = {
+    focus: 5, track: 0.5,
     focusDuration: 1.5, trackDuration: 2, pedestal: -0.2, pedestalDuration: 1.5,
     pan: 12, panDuration: 2.5, panFocusSlide: 0.5, dof: 0.4, dofDuration: 1.5, dofLayers: 2,
     look: -0.4, lookY: 0.1, lookDuration: 0.5, se: "se_cue", seDuration: 2, seDelay: 0.2,
@@ -591,6 +592,27 @@ test("extended camera and sound fields survive the staged merge", () => {
   const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
   const first = merged.doc.beats.find((b) => b.text === "第一句。");
   for (const [key, value] of Object.entries(extra)) assert.equal(first[key], value, key);
+});
+
+test("orphan official modifiers are dropped with a warning instead of failing the storyboard", () => {
+  const dialogue = { lines: [
+    { id: "l1", say: "a", text: "第一句。" },
+    { id: "l2", say: "b", text: "第二句。" },
+  ] };
+  const storyboard = { beats: [
+    { scene: "stage_a", camera: "middle", positions: { a: "far-left", b: "far-right" } },
+    { line: "l1", lookY: 0.2, lookDuration: 0.5, panDuration: 1, seDuration: 1,
+      trackDuration: 1, focusDuration: 1, dofLayers: 2, pedestalDuration: 1 },
+    { line: "l2" },
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
+  const first = merged.doc.beats.find((b) => b.text === "第一句。");
+  for (const key of ["lookY", "lookDuration", "panDuration", "seDuration", "trackDuration",
+                     "focusDuration", "dofLayers", "pedestalDuration"]) {
+    assert.equal(key in first, false, key);
+  }
+  assert.ok(merged.warnings.some((w) => w.code === "orphanField"));
+  assert.deepEqual(parseScript(merged.doc).errors, []);
 });
 
 test("one invented action name is repaired or dropped instead of failing the storyboard", () => {

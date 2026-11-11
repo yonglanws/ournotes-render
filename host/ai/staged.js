@@ -709,7 +709,7 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
 - **慢推镜**：全场约 ${budget.zoomMin}~${budget.zoomMax} 次 zoom，写在情绪句/近景或结尾：推近 1.03~1.10，拉远 0.92~0.98，zoomDuration 3~5 秒。一个机位最多 1 次；不写就静止，不要每个镜头都推。
 - **视线预算**：全场总视线（lookAt + 独立 look）约 ${gaze.total} 次；双人戏每 3~4 句最多 1 个 lookAt，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名或 1~9 的构图点；不要每句都看着对方。独立 look 最多 ${gaze.independentMax} 个（计入上面的总视线，不额外增加），写成 "look": -0.4, "lookY": 0.1, "lookDuration": 0.5，与 lookAt 二选一，用来表现角色把视线移开。
 - **表演预算**：全场至少 ${budget.motionMin} 个、目标 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；低于 ${budget.motionMin} 个视为不合格。约 ${noMotionTarget} 句可以完全没有 Motion（参考上限 ${budget.maxStatic} 句；超出预算时优先修剪最短句）；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。
-- **扩展运镜与声音（官方实测频率，不是可选装饰）**：写 ${budgetCount(2, budget.pedestal)} 个 pedestal（"pedestal": -0.2, "pedestalDuration": 1.5，轻微上下移）、${budgetCount(2, budget.panV2)} 个 pan（"pan": -5 或 8, "panDuration": 2，只在换组/横移句）、${budgetCount(0, budget.dof)} 个 dof（"dof": 0.5, "dofLayers": 2, "dofDuration": 1.5，情绪特写；角色 DoF 必须有台上目标）、独立 look 最多 ${gaze.independentMax} 个（见视线预算，计入总视线）；Se 约 ${budget.se} 条（se 只能写上面音效清单里的 cue；清单为 (none) 时不写 se/seStop），Track 约 ${budget.track} 次。可选时长字段：focusDuration、trackDuration、pedestalDuration、panDuration、panFocusSlide、dofDuration、dofLayers、lookY、lookDuration、seDuration、seDelay、seStop、motionFadeIn、motionWait；不写就给默认时长。trackDuration 只在写了 track 时有效，focusDuration 只在写了 focus/camera 时有效；角色 DoF 需要台上目标（say 默认说话者，action 用动作角色；camera/narrate 的 focus 指向具体角色或有人的位置，省略 focus 时编译器选当前镜头附近的台上角色），背景 DoF（dofLayers 0）不需要。
+- **扩展运镜与声音（官方实测频率，不是可选装饰）**：写 ${budgetCount(2, budget.pedestal)} 个 pedestal（"pedestal": -0.2, "pedestalDuration": 1.5，轻微上下移）、${budgetCount(2, budget.panV2)} 个 pan（"pan": -5 或 8, "panDuration": 2，只在换组/横移句；本场至少 2 个，双人情绪转折也可轻微横移）、${budgetCount(0, budget.dof)} 个 dof（"dof": 0.5, "dofLayers": 2, "dofDuration": 1.5，情绪特写；角色 DoF 必须有台上目标）、独立 look 最多 ${gaze.independentMax} 个（见视线预算，计入总视线）；Se 约 ${budget.se} 条（se 只能写上面音效清单里的 cue；清单为 (none) 时不写 se/seStop），Track 约 ${budget.track} 次。可选时长字段：focusDuration、trackDuration、pedestalDuration、panDuration、panFocusSlide、dofDuration、dofLayers、lookY、lookDuration、seDuration、seDelay、seStop、motionFadeIn、motionWait；不写就给默认时长。trackDuration 只在写了 track 时有效，focusDuration 只在写了 focus/camera 时有效；角色 DoF 需要台上目标（say 默认说话者，action 用动作角色；camera/narrate 的 focus 指向具体角色或有人的位置，省略 focus 时编译器选当前镜头附近的台上角色），背景 DoF（dofLayers 0）不需要。
 - 听者反应写进 actions（at: 0），**每句最多 1 条**，cast 必须是台上的其他角色；不要给说话者本人写 actions，也不要一句叠两个听者。
 - focus 优先写构图点/位置，角色 focus 只给 close 近景和情绪最重的 1~2 句；close / very-close 必须 focus 到角色 id 或该角色的位置，不要用 focus 5。track 只在换组/群像横移时写，-4~4，双人通常 0~1 次。
 - 没有合适的动作/表情就省略字段，不要编清单之外的名字。
@@ -772,6 +772,37 @@ const NON_LINE_KEYS = {
            "dofLayers", "duration", "se", "seDuration", "seDelay", "seStop", "motionFadeIn", "motionWait"],
 };
 const beatKindOf = (beat) => ["scene", "positions", "camera", "fade", "pause", "action"].find((k) => k in beat) || "";
+
+// A model sometimes writes a modifier without its base field (lookY without look, seDuration without se, ...).
+// The parser correctly rejects that, but sending the whole storyboard back for repair costs a round and can end in
+// the bare-line fallback. Drop only the orphan modifier and keep the rest of the direction.
+const ORPHAN_MODIFIERS = {
+  look: ["lookY", "lookDuration"],
+  se: ["seDuration", "seDelay"],
+  pan: ["panDuration", "panFocusSlide"],
+  dof: ["dofDuration", "dofLayers"],
+  pedestal: ["pedestalDuration"],
+};
+const pruneOrphanModifiers = (beat, { allowFocusDuration = false } = {}) => {
+  const dropped = [];
+  const hasTrack = beat.track !== undefined || (isObj(beat.camera) && beat.camera.track !== undefined);
+  const hasFocus = allowFocusDuration || beat.focus !== undefined || beat.camera !== undefined;
+  for (const [base, fields] of Object.entries(ORPHAN_MODIFIERS)) {
+    if (beat[base] !== undefined && beat[base] !== null && beat[base] !== "") continue;
+    for (const field of fields) {
+      if (field in beat) { delete beat[field]; dropped.push(field); }
+    }
+  }
+  if (!hasTrack && "trackDuration" in beat) { delete beat.trackDuration; dropped.push("trackDuration"); }
+  if (!hasFocus && "focusDuration" in beat) { delete beat.focusDuration; dropped.push("focusDuration"); }
+  for (const field of EXTRA_DIRECTION_KEYS) {
+    if (field in beat && (beat[field] === null || beat[field] === "")) {
+      delete beat[field];
+      dropped.push(field);
+    }
+  }
+  return dropped;
+};
 
 const pick = (obj, keys) => {
   const out = {};
@@ -974,6 +1005,11 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
         continue;
       }
       const chosen = pick(beat, lines[at].narrate ? NARRATE_DIRECTION_KEYS : DIRECTION_KEYS);
+      const orphaned = pruneOrphanModifiers(chosen, {
+        allowFocusDuration: chosen.camera !== undefined || chosen.focus !== undefined,
+      });
+      if (orphaned.length)
+        warnings.push({ code: "orphanField", message: `${lines[at].id} 缺少基础字段，已忽略 ${orphaned.join("、")}` });
       direction[at] = Object.keys(chosen).length ? chosen : null;
       if (lines[at].narrate) {
         const dropped = DIRECTION_KEYS.filter((k) => k in beat && !NARRATE_DIRECTION_KEYS.includes(k));
@@ -986,6 +1022,11 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
     const kind = beatKindOf(beat);
     const keys = kind ? NON_LINE_KEYS[kind] : BEAT_KEYS;
     const clean = pick(beat, keys);
+    const orphaned = pruneOrphanModifiers(clean, {
+      allowFocusDuration: kind === "scene" || kind === "positions" || kind === "camera",
+    });
+    if (orphaned.length)
+      warnings.push({ code: "orphanField", message: `${kind || "分镜"} 缺少基础字段，已忽略 ${orphaned.join("、")}` });
     if (kind) {
       const dropped = BEAT_KEYS.filter((k) => k in beat && !keys.includes(k));
       if (dropped.length)
