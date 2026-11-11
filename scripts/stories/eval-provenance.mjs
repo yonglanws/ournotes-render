@@ -12,6 +12,22 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const PROVENANCE_SCHEMA = "ournotes-eval-provenance/1";
 export const FIXED_TARGET_MINUTES = 2;
 export const FIXED_MAX_LINES = 36;
+// The gate's per-scene floors are fixed here as well as checked in the config
+// fingerprint, so a report cannot silently relax them by editing one file.
+export const FIXED_MIN_LINES = 28;
+export const FIXED_MIN_CHARS = 400;
+
+// A product decision, recorded in every report: line-break balancing is a
+// deterministic renderer layout step. Raw two-line output is diagnostic; the
+// final compiled metric is the gated output. A raw two-line minimum is
+// deliberately not required because the layout step decides the rendered shape.
+export const EVAL_POLICY = Object.freeze({
+  schema: "ournotes-eval-policy/1",
+  lineBreakBalancing: "deterministic-renderer-layout",
+  gatedMetricBasis: "final-compiled",
+  rawTwoLineMinimum: null,
+  note: "Raw model line breaks are reported for diagnosis only; the host balances line breaks during layout, and the final compiled metric is gated with a normalization cap.",
+});
 
 // Files whose contents decide the generated script and its metrics. Tests and
 // docs are deliberately excluded: changing a test must not invalidate a report.
@@ -31,6 +47,8 @@ export const EVAL_SOURCE_FILES = Object.freeze([
   "scripts/stories/compiled-command-audit.mjs",
   "scripts/stories/eval-provenance.mjs",
   "scripts/stories/eval-scenes.mjs",
+  "scripts/stories/official-baseline.mjs",
+  "scripts/stories/official-corpus.mjs",
   "scripts/stories/story-metrics.mjs",
   "src/story/interfaces.js",
 ]);
@@ -125,6 +143,8 @@ export const configFingerprint = ({ config, catalog, catalogHash, pipeline, temp
   temperature,
   targetMinutes,
   maxLines: config.story.maxLines,
+  minLines: FIXED_MIN_LINES,
+  minChars: FIXED_MIN_CHARS,
   maxOnStage: config.story.maxOnStage,
   repairRounds: config.llm.repairRounds,
   translateForTts: config.llm.translateForTts,

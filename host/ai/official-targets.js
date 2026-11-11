@@ -94,3 +94,12 @@ export const directionBudgetFor = (lineCount) => {
     track: count(Math.round(lines * OFFICIAL_TARGETS.trackPerTextLine), TRACK_FLOOR),
   };
 };
+
+// The official Look + LookTarget rate is one total gaze budget. Independent
+// look/lookY offsets are a channel inside that total, not extra rows, and the
+// merge path enforces the same total. Keeping both prompt channels on this
+// helper prevents them from asking for lookAt + look separately.
+export const gazeBudgetFor = (budget = {}) => {
+  const total = Math.max(0, Math.round(Number(budget.lookAt) || 0));
+  return { total, independentMax: Math.min(2, total) };
+};

@@ -8,9 +8,21 @@ import path from "node:path";
 import { test } from "node:test";
 import { ROOT } from "../../host/config.js";
 import {
-  assertLabOutsideRepository, evaluateScene, failureRecord, parseArgs, sceneDirectionStats,
+  assertLabOutsideRepository, evaluateScene, failureRecord, fatalErrorText, parseArgs, sceneDirectionStats,
 } from "./ai-eval.mjs";
+import { EVAL_SOURCE_FILES, evalSourceDigestInfo } from "./eval-provenance.mjs";
 import { redactText, redactValue, redactingLogger } from "./redaction.mjs";
+
+test("the source digest covers the official target and corpus adapters", () => {
+  for (const file of ["scripts/stories/official-baseline.mjs", "scripts/stories/official-corpus.mjs"]) {
+    assert.ok(EVAL_SOURCE_FILES.includes(file), `${file} is part of the evaluator source digest`);
+  }
+  const info = evalSourceDigestInfo();
+  for (const file of ["scripts/stories/official-baseline.mjs", "scripts/stories/official-corpus.mjs"]) {
+    const entry = info.files.find((candidate) => candidate.path === file);
+    assert.ok(entry && /^[0-9a-f]{64}$/.test(entry.digest), `${file} has a sha256 digest`);
+  }
+});
 
 test("a scene invokes the StoryWriter once even when the answer is truncated", async () => {
   const runDir = mkdtempSync(path.join(tmpdir(), "ai-eval-"));
@@ -51,6 +63,7 @@ test("a failure record carries elapsed time, warnings, raw and stages when avail
     code: "compile",
     details: [{ path: "/beats/1", code: "unknownMotion" }],
     partial: { latencyMs: 1234, warnings: ["补写"], raw: "lost-ticket.raw.txt",
+               usage: { calls: [{ completion_tokens: 11 }], completion_tokens: 11 },
                stages: [{ stage: "storyboard", ok: true }] },
   });
   const record = failureRecord({ scene, run: 2, label: "lost-ticket", error, startedAt: Date.now() - 50,
@@ -63,6 +76,7 @@ test("a failure record carries elapsed time, warnings, raw and stages when avail
   assert.equal(record.latencyMs, 1234);
   assert.deepEqual(record.warnings, ["补写"]);
   assert.equal(record.raw, "lost-ticket.raw.txt");
+  assert.equal(record.usage.completion_tokens, 11, "usage is visible without opening partial");
   assert.equal(record.stages[0].stage, "storyboard");
 
   const plain = failureRecord({ scene, run: 1, label: "lost-ticket", error: new Error("boom"),
@@ -152,4 +166,15 @@ test("a failure record is scrubbed before it reaches a report", () => {
     startedAt: Date.now() - 5,
   });
   assert.ok(!JSON.stringify(redactValue(record, [key])).includes(key));
+});
+
+test("fatal evaluation errors are redacted before the CLI prints them", () => {
+  const key = "sk-test-secret-123456";
+  const error = Object.assign(new Error(`fatal upstream failure ${key}`), {
+    details: [{ path: "/llm", message: `Authorization: Bearer ${key}` }],
+  });
+  const text = fatalErrorText(error, [key]);
+  assert.ok(!text.includes(key));
+  assert.match(text, /\[REDACTED\]/);
+  assert.match(text, /fatal upstream failure/);
 });

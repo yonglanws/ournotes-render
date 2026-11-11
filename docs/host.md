@@ -478,8 +478,9 @@ npm run eval:stories -- --run phase1 --pipeline staged --temperature 0.8
 - `OURNOTES_SITE_FORMAT` 可以是绝对路径，因此可以在 worktree 里读取主仓库的 `resources/site`，但评估不会写入站点。
 - 单场超时、JSON 失败、编译失败或命令审计失败只记录该场，继续其余场景；回答被 `finish_reason=length` 截断时，
   staged 管线只在单个 `ask` 阶段对同一请求重试一次，single 管线没有截断重试；评估器每场只调用一次 `StoryWriter`。
-  分镜经修复仍不可用、退回「默认走位 + 无动作演出」时按失败场记录（该场没有可验收的演出）。成功场数与失败列表
-  分开写入。
+  staged 与 single 的失败记录都保留 `raw`、`stages`、`usage`、`warnings` 和 `latencyMs`（single 的
+  `StoryWriterError.partial` 由同一个记录路径写出），不会只剩一句错误信息。分镜经修复仍不可用、退回
+  「默认走位 + 无动作演出」时按失败场记录（该场没有可验收的演出）。成功场数与失败列表分开写入。
 
 报告目录：
 
@@ -495,11 +496,15 @@ runs/<run>/report.json            generatedAt、provenance、脱敏配置、逐�
 
 - `sceneList.digest` / `labels`：共享的 8 个固定场景；结果必须覆盖全部 8 个 base label（`--runs` 会重复，
   但重复次数必须等于 runs，不能少场景）。
-- `source.digest` / `gitHead`：影响生成与编译的源码文件摘要（含 `host/ai`、story-author、评测脚本）和当前 HEAD。
-- `config.digest`：pipeline、temperature、targetMinutes、maxLines、maxOnStage、repairRounds、retries、directorPlan、
-  systemPrompt 摘要、角色卡身份摘要、模型/baseUrl/密钥是否存在、catalog/scene 摘要；报告只存摘要，不存提示词或密钥。
-- `catalog.digest`：站点底本的舞台/音乐/SE/角色动作与表情清单。
+- `source.digest` / `gitHead`：影响生成与编译的源码文件摘要（含 `host/ai`、story-author、评测脚本，以及提供
+  官方目标的 `official-baseline.mjs` / `official-corpus.mjs`）和当前 HEAD。
+- `config.digest`：pipeline、temperature、targetMinutes、maxLines、minLines、minChars、maxOnStage、repairRounds、
+  retries、directorPlan、systemPrompt 摘要、角色卡身份摘要、模型/baseUrl/密钥是否存在、catalog/scene 摘要；
+  报告只存摘要，不存提示词或密钥。每场下限固定在 `FIXED_MIN_LINES = 28`、`FIXED_MIN_CHARS = 400`。
+- `catalog.digest`：站点底本的舞台/音乐/SE/角色动作与表情清单。质量门在设置了 `OURNOTES_SITE_FORMAT` 时会从该
+  站点重新构建 catalog 并重算摘要；未设置时该检查按明确原因跳过，不会假装通过。
 - `generatedAt`：报告时间；质量门默认拒绝超过 72 小时或未来的报告。
+- `policy`：固定的 line-break 产品决策（见下），报告和门禁都要求 `ournotes-eval-policy/1`。
 
 质量门读取一次命名 run 的报告；报告未设置或不存在时按明确原因 skip，不当作通过：
 
@@ -507,17 +512,26 @@ runs/<run>/report.json            generatedAt、provenance、脱敏配置、逐�
 OURNOTES_EVAL_REPORT=/path/to/ournotes-ai-lab/runs/phase1/report.json npm run test:stories
 ```
 
-门禁检查固定 scene 列表与 runs 覆盖、provenance 摘要/新鲜度、`targetMinutes: 2`、`maxLines: 36` 等固定基线，
-每场 `summary.count >= 28`、`charsTotal >= 400`、`warnings` 与 `compiled.commands` 存在，并交叉检查
-`compiled.commandCount`/`commands`/`counts` 与 `summary.count == Talk count`。聚合区间为
+门禁检查固定 scene 列表与 runs 覆盖、provenance 摘要/新鲜度、`targetMinutes: 2`、`maxLines: 36`、`minLines`、
+`minChars` 等固定基线，每场 `summary.count >= FIXED_MIN_LINES`、`charsTotal >= FIXED_MIN_CHARS`、`warnings` 与
+`compiled.commands` 存在，并交叉检查 `compiled.commandCount`/`commands`/`counts` 与
+`summary.count == Talk count`。聚合区间为
 `charsMean 12..19`、`twoLineShare 0.25..0.50`、`shortShare 0.12..0.30`、`soloRunShare 0.58..0.82`、
 `focusPerLine 0.30..0.50`、`motionsPerLine 1.0..1.5`、`lookAnyPerLine 0.20..0.42`、`zoomPerLine 0.03..0.16`、
 `pedestalPerLine 0.04..0.15`、`panV2PerLine 0.05..0.18`、`sePerLine 0.04..0.16`，并要求 `Zoom` / `Pedestal` /
 `PanV2` / `DoF` / `Look` / `Se` 至少各编译出一条。
 
-为避免宿主后处理“做完全部工作”，每场还报告 raw 模型指标与归一化统计，并限制 `lineBreakChangedShare <= 0.45`、
-`focusPruneShare <= 0.55`、`gazePruneShare <= 0.40`、`nameChangedShare <= 0.20`；raw `twoLineShare`/`focusPerLine`/
-`lookAnyPerLine` 也必须在宽松的模型区间内。聚合只统计成功场；不要为了通过而放宽区间。
+为避免宿主后处理“做完全部工作”，每场还报告 raw 模型指标与归一化统计，并限制
+`lineBreakChangedShare <= 0.45`、`focusPruneShare <= 0.55`、`gazePruneShare <= 0.40`、
+`nameChangedShare <= 0.20`；归一化的 `direction.finalFocus` / `finalGaze` 必须等于编译后的
+`summary.focus` / `summary.lookAny`，`names.repaired` / `names.dropped` 必须是非负有限数。raw
+`twoLineShare`/`focusPerLine`/`lookAnyPerLine` 也必须落在宽松的模型区间内。聚合只统计成功场；不要为了通过
+而放宽区间。
+
+**产品决策（记录在报告的 `policy`）**：line-break balancing 是确定性的 renderer layout 步骤，不是模型必须
+自己完成的演出。报告同时保留 `metrics.raw` 与 `metrics.final`，门禁评价最终编译结果，只对 raw 模型输出做
+宽松的 focus/gaze 合理性检查；不要求 raw `twoLineShare >= 0.15`，因为多数模型会把台词写成单行，宿主在布局
+时按官方两行比例补齐。`docs/host.md` 和报告中的 `ournotes-eval-policy/1` 是这一决策的出处。
 
 已编译 episode 的命令审计可以单独运行（检查 `i`/`raw`/`commandCount`、注册命令、参数区间、SE 资源闭合、
 `HostActions` 里的 `LookTargetPosition` 和 required-command 清单，失败时退出码为 1）：

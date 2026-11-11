@@ -3,7 +3,7 @@
 // camera, motion, expression, gaze, listener reactions, BGM). The dialogue is final after pass 2: pass 3 references
 // line ids and mergeStagedScript restores the exact text, so a direction pass can never silently rewrite a line.
 import { motionStems, nearest } from "../../scripts/lib/story-author/script.js";
-import { budgetCount, dialogueBudgetFor, directionBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
+import { budgetCount, dialogueBudgetFor, directionBudgetFor, gazeBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
 import { dialoguePersonaPrompt } from "./personas.js";
 import { MAX_PROMPT_MODELS, expressionListFor, motionListFor, officialDenominatorNote, personaEntryFor, stagingRules, voiceStyleFor } from "./prompt.js";
 
@@ -630,6 +630,7 @@ export const buildStoryboardMessages = ({ plan, dialogue, catalog, request, conf
   }).join("\n");
   const lines = dialogue.lines.length;
   const budget = directionBudgetFor(lines);
+  const gaze = gazeBudgetFor(budget);
   const motionBudget = `${budget.motionMin}~${budget.motionMax}`;
   const noMotionTarget = Math.max(1, Math.round(lines * OFFICIAL_TARGETS.noMotionShare));
   const example = storyboardExample({ plan, dialogue, catalog });
@@ -702,11 +703,11 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
 - 每个说话者开口前必须已经在台上；用 positions 让他进场。**两人同台必须 far-left / far-right**；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0）" : "同台最多 2 人，第 3 人必须等一人退场后再进场"}；不要用 center+right、center+left 或 left+right（会重叠）。
 - **镜头预算**：全场约 ${budget.focusChanges} 个 focus（含 scene/positions 上的；官方 Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句），其中 close 近景约 ${budget.closeUps} 次（距离 4 约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行），near 全景 0~1 次。close 停 1~2 句（偶尔 3 句），下一句用 middle + focus 5 回到二人/群像；不要连续两句 close，也不要停在同一个 close 上直到结尾。
   大部分 line beat 不要写 focus/camera/track，只有真的换机位时才写；同一机位保持 3~4 句，连续两句都写 focus 通常就是切太碎。推近（middle/far → close）是硬切，拉回（close → middle/far）会自动缓推，不需要写 duration。
-- **换机位上限**：带 focus/camera/track 的 line beat 不超过 ${Math.max(0, budget.focusChanges - 2)} 句（scene/positions 的 Focus 另计）；多写的会在合并时删除。不要把每句都写成新机位。
+- **换机位上限**：整场只有 ${Math.max(0, budget.focusChanges - 2)} 句 line beat 可以写 focus/camera/track（scene/positions 的 Focus 另计）；请把镜头字段集中到真正的剪辑句，其余 line beat 一个镜头字段都不要写；多写的会在合并时删除。
 - **慢推镜**：全场约 ${budget.zoomMin}~${budget.zoomMax} 次 zoom，写在情绪句/近景或结尾：推近 1.03~1.10，拉远 0.92~0.98，zoomDuration 3~5 秒。一个机位最多 1 次；不写就静止，不要每个镜头都推。
-- **视线预算**：全场约 ${budget.lookAt} 个 lookAt；双人戏每 3~4 句最多 1 个，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名或 1~9 的构图点；不要每句都看着对方。${budgetCount(2, budget.lookAt)} 句写独立 look/lookY（"look": -0.4, "lookY": 0.1, "lookDuration": 0.5，与 lookAt 二选一），用来表现角色把视线移开。
+- **视线预算**：全场总视线（lookAt + 独立 look）约 ${gaze.total} 次；双人戏每 3~4 句最多 1 个 lookAt，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名或 1~9 的构图点；不要每句都看着对方。独立 look 最多 ${gaze.independentMax} 个（计入上面的总视线，不额外增加），写成 "look": -0.4, "lookY": 0.1, "lookDuration": 0.5，与 lookAt 二选一，用来表现角色把视线移开。
 - **表演预算**：全场至少 ${budget.motionMin} 个、目标 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；低于 ${budget.motionMin} 个视为不合格。约 ${noMotionTarget} 句可以完全没有 Motion（参考上限 ${budget.maxStatic} 句；超出预算时优先修剪最短句）；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。
-- **扩展运镜与声音（官方实测频率，不是可选装饰）**：写 ${budgetCount(2, budget.pedestal)} 个 pedestal（"pedestal": -0.2, "pedestalDuration": 1.5，轻微上下移）、${budgetCount(2, budget.panV2)} 个 pan（"pan": -5 或 8, "panDuration": 2，只在换组/横移句）、${budgetCount(0, budget.dof)} 个 dof（"dof": 0.5, "dofLayers": 2, "dofDuration": 1.5，情绪特写；角色 DoF 必须有台上目标）、${budgetCount(2, budget.lookAt)} 个独立 look（见视线预算）；Se 约 ${budget.se} 条（se 只能写上面音效清单里的 cue；清单为 (none) 时不写 se/seStop），Track 约 ${budget.track} 次。可选时长字段：focusDuration、trackDuration、pedestalDuration、panDuration、panFocusSlide、dofDuration、dofLayers、lookY、lookDuration、seDuration、seDelay、seStop、motionFadeIn、motionWait；不写就给默认时长。trackDuration 只在写了 track 时有效，focusDuration 只在写了 focus/camera 时有效；角色 DoF 需要台上目标（say 默认说话者，action 用动作角色；camera/narrate 的 focus 指向具体角色或有人的位置，省略 focus 时编译器选当前镜头附近的台上角色），背景 DoF（dofLayers 0）不需要。
+- **扩展运镜与声音（官方实测频率，不是可选装饰）**：写 ${budgetCount(2, budget.pedestal)} 个 pedestal（"pedestal": -0.2, "pedestalDuration": 1.5，轻微上下移）、${budgetCount(2, budget.panV2)} 个 pan（"pan": -5 或 8, "panDuration": 2，只在换组/横移句）、${budgetCount(0, budget.dof)} 个 dof（"dof": 0.5, "dofLayers": 2, "dofDuration": 1.5，情绪特写；角色 DoF 必须有台上目标）、独立 look 最多 ${gaze.independentMax} 个（见视线预算，计入总视线）；Se 约 ${budget.se} 条（se 只能写上面音效清单里的 cue；清单为 (none) 时不写 se/seStop），Track 约 ${budget.track} 次。可选时长字段：focusDuration、trackDuration、pedestalDuration、panDuration、panFocusSlide、dofDuration、dofLayers、lookY、lookDuration、seDuration、seDelay、seStop、motionFadeIn、motionWait；不写就给默认时长。trackDuration 只在写了 track 时有效，focusDuration 只在写了 focus/camera 时有效；角色 DoF 需要台上目标（say 默认说话者，action 用动作角色；camera/narrate 的 focus 指向具体角色或有人的位置，省略 focus 时编译器选当前镜头附近的台上角色），背景 DoF（dofLayers 0）不需要。
 - 听者反应写进 actions（at: 0），**每句最多 1 条**，cast 必须是台上的其他角色；不要给说话者本人写 actions，也不要一句叠两个听者。
 - focus 优先写构图点/位置，角色 focus 只给 close 近景和情绪最重的 1~2 句；close / very-close 必须 focus 到角色 id 或该角色的位置，不要用 focus 5。track 只在换组/群像横移时写，-4~4，双人通常 0~1 次。
 - 没有合适的动作/表情就省略字段，不要编清单之外的名字。

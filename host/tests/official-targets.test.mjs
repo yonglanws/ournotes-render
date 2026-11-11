@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dialogueBudgetFor, directionBudgetFor, OFFICIAL_TARGETS } from "../ai/official-targets.js";
+import { dialogueBudgetFor, directionBudgetFor, gazeBudgetFor, OFFICIAL_TARGETS } from "../ai/official-targets.js";
 import { buildCastMessages, buildDialogueMessages, buildStoryboardMessages } from "../ai/staged.js";
 import { buildStoryMessages, stagingRules } from "../ai/prompt.js";
 
@@ -170,11 +170,40 @@ test("half-minute prompts keep a coherent minimum line target", () => {
   assert.match(dialogue.content, /总共 12~12 句/);
 });
 
+test("prompt gaze budgets are one total, not lookAt plus independent looks", () => {
+  for (const lines of [9, 20, 36]) {
+    const budget = directionBudgetFor(lines);
+    const gaze = gazeBudgetFor(budget);
+    assert.equal(gaze.total, budget.lookAt);
+    assert.ok(gaze.total <= budget.lookAt, `${lines}: total gaze <= budget`);
+    assert.ok(gaze.independentMax <= gaze.total, `${lines}: independent looks are part of the total`);
+    const dialogue = { lines: Array.from({ length: lines }, (_, i) =>
+      ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `第${i + 1}句台词的内容。` })) };
+    const [stagedSystem, stagedUser] = buildStoryboardMessages({
+      plan: PLAN, dialogue, catalog: CATALOG, request: {}, config: CONFIG,
+    });
+    const [, single] = buildStoryMessages({
+      catalog: CATALOG, request: { prompt: "放学后", targetMinutes: lines / 18 }, config: CONFIG,
+    });
+    const dialogueForSingle = dialogueBudgetFor(lines / 18);
+    const singleGaze = gazeBudgetFor(directionBudgetFor(
+      Math.max(1, dialogueForSingle.lines, dialogueForSingle.minLines)));
+    for (const [text, expected] of [[stagedSystem.content, gaze], [stagedUser.content, gaze],
+      [single.content, singleGaze]]) {
+      assert.ok(text.includes(`总视线（lookAt + 独立 look）约 ${expected.total} 次`),
+        `${lines}: total gaze ${expected.total}`);
+      assert.ok(text.includes(`独立 look 最多 ${expected.independentMax}`),
+        `${lines}: independent look max ${expected.independentMax} is inside the total`);
+      assert.ok(!text.includes(`独立 look ${expected.total} 次`), `${lines}: no second full gaze budget`);
+    }
+  }
+});
+
 test("the shared staging rules receive the actual scene budget", () => {
   const rules = stagingRules(3, directionBudgetFor(40));
   assert.match(rules, /一场 2~5 次/);
   assert.doesNotMatch(rules, /一场 0~2 次/);
-  assert.match(rules, /本场预算：Focus 约 18 次、close 约 9 次、zoom 2~5 次、lookAt 约 12 次、Se 约 5 条、Track 约 3 次。/);
+  assert.match(rules, /本场预算：Focus 约 18 次、close 约 9 次、zoom 2~5 次、总视线（lookAt \+ 独立 look）约 12 次、Se 约 5 条、Track 约 3 次。/);
 });
 
 test("system and user storyboard prompts agree on the 40-line and 54-line budgets", () => {
@@ -191,13 +220,13 @@ test("system and user storyboard prompts agree on the 40-line and 54-line budget
       plan: PLAN, dialogue, catalog: CATALOG, request: {}, config: CONFIG,
     });
     const budgetLine = `本场预算：Focus 约 ${expected.focus} 次、close 约 ${expected.close} 次、` +
-      `zoom ${expected.zoomMin}~${expected.zoomMax} 次、lookAt 约 ${expected.lookAt} 次、` +
+      `zoom ${expected.zoomMin}~${expected.zoomMax} 次、总视线（lookAt + 独立 look）约 ${expected.lookAt} 次、` +
       `Se 约 ${expected.se} 条、Track 约 ${expected.track} 次。`;
     assert.ok(system.content.includes(budgetLine), `${lineCount}: system budget line`);
     assert.ok(user.content.includes(`全场约 ${expected.focus} 个 focus`), `${lineCount}: focus`);
     assert.ok(user.content.includes(`close 近景约 ${expected.close} 次`), `${lineCount}: close`);
     assert.ok(user.content.includes(`全场约 ${expected.zoomMin}~${expected.zoomMax} 次 zoom`), `${lineCount}: zoom`);
-    assert.ok(user.content.includes(`全场约 ${expected.lookAt} 个 lookAt`), `${lineCount}: lookAt`);
+    assert.ok(user.content.includes(`全场总视线（lookAt + 独立 look）约 ${expected.lookAt} 次`), `${lineCount}: lookAt`);
     assert.ok(user.content.includes(`Se 约 ${expected.se} 条`), `${lineCount}: se`);
     assert.ok(user.content.includes(`Track 约 ${expected.track} 次`), `${lineCount}: track`);
   }
@@ -248,6 +277,6 @@ test("short-scene prompts never print an inverted range or an unreachable look/S
   assert.match(user.content, /写 1 个 pedestal/);
   assert.match(user.content, /1 个 pan/);
   assert.match(user.content, /0 个 dof/);
-  assert.match(user.content, /2 个独立 look/);
+  assert.match(user.content, /独立 look 最多 2/);
   assert.match(user.content, /Se 约 1 条/);
 });

@@ -638,6 +638,27 @@ test("the single pipeline narrows a large pool to the characters the scene names
   assert.equal(out.script.cast.length, 2);
 });
 
+test("a single-pipeline generation failure preserves raw, stages and usage", async () => {
+  const llm = { available: true,
+    async json() {
+      throw new LLMError("HTTP 500: upstream failed", {
+        usage: { completion_tokens: 9 }, content: '{"format":"ournotes.story-script/1","beats":[',
+      });
+    } };
+  await assert.rejects(generateScript({
+    llm, catalog: CATALOG, request: { prompt: "放学后", language: "zh-Hans" },
+    config: CONFIG, logger: quietLogger(),
+  }), (error) => {
+    assert.ok(error.partial, "the single failure must carry partial diagnostics");
+    assert.equal(error.partial.raw, '{"format":"ournotes.story-script/1","beats":[');
+    assert.equal(error.partial.usage.calls[0].completion_tokens, 9);
+    assert.ok(error.partial.stages.some((stage) => stage.stage === "story" && stage.ok === false));
+    assert.ok(error.partial.latencyMs >= 0);
+    assert.ok(Array.isArray(error.partial.warnings));
+    return true;
+  });
+});
+
 test("a large unnamed pool gets one short quick-cast call before the story prompt", async () => {
   const calls = [];
   const llm = { available: true,

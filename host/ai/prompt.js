@@ -3,7 +3,7 @@
 // measured from 30 official episodes (8 local chapters plus 22 duo friendship stories; 1300 Talk rows, 1158 text
 // lines); the output is checked and repaired afterwards.
 import { motionStems } from "../../scripts/lib/story-author/script.js";
-import { budgetCount, dialogueBudgetFor, directionBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
+import { budgetCount, dialogueBudgetFor, directionBudgetFor, gazeBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
 import { dialoguePersonaPrompt } from "./personas.js";
 
 const pct = (value) => Math.round(value * 100);
@@ -205,17 +205,18 @@ ${stages || "(none)"}
 // the shared system rules and the per-scene user block cannot state different counts.
 export const stagingRules = (maxOnStage = 3, budget = null) => {
   const limit = Math.max(2, Math.min(3, Math.round(Number(maxOnStage) || 3)));
+  const gaze = budget ? gazeBudgetFor(budget) : null;
   const budgetLine = budget
     ? `本场预算：Focus 约 ${budget.focusChanges} 次、close 约 ${budget.closeUps} 次、` +
-      `zoom ${budget.zoomMin}~${budget.zoomMax} 次、lookAt 约 ${budget.lookAt} 次、` +
+      `zoom ${budget.zoomMin}~${budget.zoomMax} 次、总视线（lookAt + 独立 look）约 ${gaze.total} 次、` +
       `Se 约 ${budget.se} 条、Track 约 ${budget.track} 次。`
     : "";
   // The extension fields are part of the measured official performance, not optional decoration: state them in the
   // same shared rules so both prompt paths ask for the sampled Pedestal/PanV2/DoF/Look counts.
   const extensionBudget = budget
     ? `扩展运镜预算：Pedestal ${budgetCount(2, budget.pedestal)} 次、PanV2 ${budgetCount(2, budget.panV2)} 次、` +
-      `DoF ${budgetCount(0, budget.dof)} 次、独立 look ${budgetCount(2, budget.lookAt)} 次` +
-      `（与 lookAt 二选一）、Se 约 ${budget.se} 条。`
+      `DoF ${budgetCount(0, budget.dof)} 次、独立 look 最多 ${gaze.independentMax} 次` +
+      `（计入上面的总视线，不额外增加）、Se 约 ${budget.se} 条。`
     : "";
   return [
     `一场戏只写一个很小的具体事件（拍照、找东西、等人、收拾器材、分零食、试新曲……），${limit === 2 ? "2 人一组" : "2~3 人一组"}（需要时让其他成员分批进出，同台最多 ${limit} 人）；不要世界观解说、比赛结果或生离死别。`,
@@ -232,8 +233,8 @@ export const stagingRules = (maxOnStage = 3, budget = null) => {
     `慢推镜（可选）：zoom 1.03~1.10 缓慢推近、0.92~0.98 拉远，zoomDuration 3~5 秒；${budget ? `一场 ${budget.zoomMin}~${budget.zoomMax} 次` : "次数按本场预算"}，官方最常见值是 ${OFFICIAL_TARGETS.zoomDefault}，但本脚本默认只写缓慢推拉；只给情绪句、近景或结尾，一个机位最多 1 次。`,
     `表演：一句台词最多一个说话者动作，听者反应最多一个；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的台词没有 Motion；表情和动作一起写，默认 idle，不要每句都笑。`,
     limit === 2
-      ? "视线：双人戏每 3~4 句写一个 lookAt，不要每 1~2 句都写；角色把视线移开时用独立 look/lookY。"
-      : "视线：双人戏每 3~4 句写一个 lookAt，三人以上只在被点名或明显反应时用；角色把视线移开时用独立 look/lookY。",
+      ? `视线：双人戏每 3~4 句写一个 lookAt，不要每 1~2 句都写；角色把视线移开时用独立 look/lookY（最多 ${gaze?.independentMax ?? 2} 次，计入总视线预算）。`
+      : `视线：双人戏每 3~4 句写一个 lookAt，三人以上只在被点名或明显反应时用；角色把视线移开时用独立 look/lookY（最多 ${gaze?.independentMax ?? 2} 次，计入总视线预算）。`,
     "留白只用于 0.1~0.5 秒的呼吸；fade out/in 只用于真正的时间或地点跳跃。",
   ].filter(Boolean).join("\n");
 };
@@ -263,6 +264,7 @@ export const buildStoryMessages = ({ catalog, request, config, plan = null }) =>
   // The single system prompt and user prompt share one scene budget, just like
   // the staged storyboard system/user pair.
   const direction = directionBudgetFor(lineBudget);
+  const gaze = gazeBudgetFor(direction);
   const models = catalog.models.slice(0, MAX_PROMPT_MODELS);
   const modelLines = models.map((m) => {
     // The single pass writes dialogue too, so a persona is trimmed the same way the staged dialogue pass trims it.
@@ -388,7 +390,7 @@ ${planNotes}
 - ${officialDenominatorNote()}
 - 运镜：官方常用 Focus、Track、Zoom、Pedestal、PanV2、DoF；Zoom 每集约 ${perEpisode(OFFICIAL_TARGETS.zoomPerTextLine)} 次、Pedestal 约 ${perEpisode(OFFICIAL_TARGETS.pedestalPerTextLine)} 次、PanV2 约 ${perEpisode(OFFICIAL_TARGETS.panV2PerTextLine)} 次、DoF 约 ${perEpisode(OFFICIAL_TARGETS.dofPerTextLine)} 次；Se 每集约 ${perEpisode(OFFICIAL_TARGETS.sePerTextLine)} 条、Bgm 每集约 ${fixed(OFFICIAL_TARGETS.bgmPerEpisode, 1)} 条。AI 每场默认 ${direction.zoomMin}~${direction.zoomMax} 次 Zoom、0~${direction.track} 次 Track，Pedestal ${budgetCount(2, direction.pedestal)} 次、PanV2 ${budgetCount(2, direction.panV2)} 次、DoF ${budgetCount(0, direction.dof)} 次（官方实测频率），Se 约 ${direction.se} 条/场。
 - 表演：Motion 约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的句子没有 Motion；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条（默认 0~1 条/场），表情都挂在 Motion 上。
-- 视线：Look + LookTarget 约 ${fixed(OFFICIAL_TARGETS.lookAnyPerTextLine, 2)}/句（${pct(OFFICIAL_TARGETS.lookLineShare)}% 的句子带视线）；双人戏每 3~4 句一个 lookAt。
+- 视线：Look + LookTarget 约 ${fixed(OFFICIAL_TARGETS.lookAnyPerTextLine, 2)}/句（${pct(OFFICIAL_TARGETS.lookLineShare)}% 的句子带视线）；总视线（lookAt + 独立 look）约 ${gaze.total} 次/场，其中独立 look 最多 ${gaze.independentMax} 次（计入总视线，不额外增加）；双人戏每 3~4 句一个 lookAt。
 - 10610 的 13 句教学场是特例（10 Focus / 5 Track / 20 Motion），镜头更碎；日常戏不要照它的密度写。
 
 ## 输出格式（ournotes.story-script/1）
@@ -411,7 +413,7 @@ ${JSON.stringify(example, null, 2)}
 - track：镜头相对焦点的横向偏移，-4~4；0 是正对焦点。两人对话用 ±0.2~0.8，群像横移可用 ±1.2~2。一场 0~${direction.track} 次，双人通常 0~1 次；只在换组/群像横移时写，不要每句微调。
 - zoom：镜头缓慢推近/拉远，1.03~1.10 推近、0.92~0.98 拉远；zoomDuration 3~5 秒。一场 ${direction.zoomMin}~${direction.zoomMax} 次，只给情绪句、近景或结尾，一个机位最多 1 次；不写就静止。
 - actions：一句台词内的听者反应，最多 1 条（加上 say.motion 共 2 个动作）：{"at": 0~1, "cast": 可选（默认说话者）, "motion": 可选, "expression": 可选, "lookAt": 可选}。至少写 motion/expression/lookAt 之一；cast 必须在台上。**听者反应一律写 at: 0**；官方样本没有句中动作，不要用 0.3~0.7。
-- lookAt：一个站在台上的 cast id、位置名，或 1~9 的构图点。双人戏每 3~4 句写一个 lookAt。
+- lookAt：一个站在台上的 cast id、位置名，或 1~9 的构图点。双人戏每 3~4 句写一个 lookAt；总视线（lookAt + 独立 look）约 ${gaze.total} 次/场，独立 look 最多 ${gaze.independentMax} 次（计入总视线）。
 - cast id 是字母开头、只含字母数字下划线的字符串；cast 的 model 必须是下方清单里的 model id，name 是显示名。
 - motion 可以写清单中的完整名，也可以写去掉 _L/_C/_R 的 stem；expression 必须是完整名。动作说明（括号里）是按名称推断的，只用来帮你选，不要写进 JSON。
 - 同一时刻最多 3 个角色在台上；用 positions 换组，不要为每次换人新开一个 scene。
@@ -425,7 +427,7 @@ ${JSON.stringify(example, null, 2)}
 - pedestal / pedestalDuration：Y 偏移 -4~5，duration 0~20，默认 1.5；本场写 ${budgetCount(2, direction.pedestal)} 次（"pedestal": -0.2），只在轻微上下移时用。
 - pan / panDuration / panFocusSlide：角度 -30~30，duration 0~20，focus slide 0~1；本场写 ${budgetCount(2, direction.panV2)} 次（"pan": -5 或 8），只在换组或明确横移时用。
 - dof / dofDuration / dofLayers：强度 0~1，duration 0.5~10，layers 0（背景）/2（角色）/省略（角色）；本场写 ${budgetCount(0, direction.dof)} 次（"dof": 0.5, "dofLayers": 2）；角色 DoF 需要台上目标（say 用说话者，action 用动作角色；camera/narrate 的 focus 要指向具体角色或有人的位置，省略 focus 时编译器会选当前镜头附近的台上角色），背景 DoF 不需要目标。
-- look / lookY / lookDuration：x/y -1~1，duration 0.2~10，默认 0.5；${budgetCount(2, direction.lookAt)} 句写独立 look（"look": -0.4, "lookY": 0.1），表现角色把视线移开；与 lookAt 二选一，同一 beat 不要同时写。
+- look / lookY / lookDuration：x/y -1~1，duration 0.2~10，默认 0.5；独立 look 最多 ${gaze.independentMax} 句（计入上面的总视线，不额外增加；"look": -0.4, "lookY": 0.1），表现角色把视线移开；与 lookAt 二选一，同一 beat 不要同时写。
 - se / seDuration / seDelay / seStop：se 必须是站点声音清单里的 cue（清单为 (none) 时不要写 se/seStop）；duration 0.5~10，delay 0~10；seStop 与 se 互斥。
 - motionFadeIn / motionWait：fade -1~2，wait 布尔；默认 ${OFFICIAL_TARGETS.motionFadeInDefault}/false，只在明确需要节奏时写。
 示例（只演示字段位置，不要照抄数值）：

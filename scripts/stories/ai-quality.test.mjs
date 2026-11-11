@@ -8,21 +8,26 @@ import { test } from "node:test";
 import { aggregate } from "./story-metrics.mjs";
 import { EVAL_SCENES, EVAL_SCENE_LABELS } from "./eval-scenes.mjs";
 import {
-  PROVENANCE_SCHEMA, configDigest, evalSourceDigest, sceneListDigest, sha256,
+  EVAL_POLICY, FIXED_MIN_CHARS, FIXED_MIN_LINES, PROVENANCE_SCHEMA, configDigest, evalSourceDigest,
+  sceneListDigest, sha256,
 } from "./eval-provenance.mjs";
-import { reportFailures, rangeFailures } from "./eval-gate.mjs";
+import { catalogVerification, reportChecks, reportFailures, rangeFailures } from "./eval-gate.mjs";
 
 const reportPath = process.env.OURNOTES_EVAL_REPORT;
 const skip = !reportPath ? "OURNOTES_EVAL_REPORT is not set"
   : !existsSync(reportPath) ? `${reportPath} does not exist`
     : false;
 const loadReport = () => JSON.parse(readFileSync(reportPath, "utf8"));
+// Synthetic reports are not bound to a real site; an explicit null keeps the
+// catalog re-verification skipped even on an operator machine with a site env.
+const gate = (report, options = {}) => reportFailures(report, { siteDir: null, ...options });
 
 const validReport = () => {
   const config = {
     configFile: "config.yaml", siteFormat: "site", base: "stories/10438.json", language: "zh-Hans",
     catalogDigest: "a".repeat(64), pipeline: "staged", temperature: 0.8, targetMinutes: 2,
-    maxLines: 36, maxOnStage: 2, repairRounds: 2, translateForTts: false, jsonMode: "auto",
+    maxLines: 36, minLines: FIXED_MIN_LINES, minChars: FIXED_MIN_CHARS,
+    maxOnStage: 2, repairRounds: 2, translateForTts: false, jsonMode: "auto",
     maxTokens: 16384, timeoutMs: 180000, retries: 2, directorPlan: false, model: "test-model",
     baseUrl: "http://127.0.0.1:5000/v1", apiKey: "unset", systemPromptChars: 0,
     systemPromptDigest: sha256(""), personas: [], sceneListDigest: sceneListDigest(),
@@ -62,6 +67,7 @@ const validReport = () => {
   return {
     generatedAt,
     run: "test",
+    policy: EVAL_POLICY,
     scenes: EVAL_SCENES.map((scene, index) => ({ index: index + 1, ...scene })),
     selected: EVAL_SCENE_LABELS,
     config,
@@ -80,9 +86,11 @@ const validReport = () => {
   };
 };
 
-test("the real evaluation report passes the provenance, scene and metric gate", { skip }, () => {
+test("the real evaluation report passes the provenance, scene and metric gate", { skip }, (t) => {
   const report = loadReport();
-  assert.deepEqual(reportFailures(report), []);
+  const { failures, catalog } = reportChecks(report);
+  if (!catalog.checked) t.diagnostic(`catalog digest was not re-verified: ${catalog.reason}`);
+  assert.deepEqual(failures, []);
 });
 
 test("every new official command family is compiled at least once", { skip }, () => {
@@ -100,54 +108,54 @@ test("every new official command family is compiled at least once", { skip }, ()
 
 test("a valid synthetic report passes; duplicate, missing and stale reports fail", () => {
   const report = validReport();
-  assert.deepEqual(reportFailures(report), []);
+  assert.deepEqual(gate(report), []);
   const duplicate = JSON.parse(JSON.stringify(report));
   duplicate.results[1].label = duplicate.results[0].label;
-  assert.ok(reportFailures(duplicate).some((failure) => /duplicate labels/.test(failure)));
+  assert.ok(gate(duplicate).some((failure) => /duplicate labels/.test(failure)));
 
   const missing = JSON.parse(JSON.stringify(report));
   missing.results.pop();
   missing.counts.succeeded = missing.results.length;
-  assert.ok(reportFailures(missing).some((failure) => /missing scenes/.test(failure)));
+  assert.ok(gate(missing).some((failure) => /missing scenes/.test(failure)));
 
   const stale = JSON.parse(JSON.stringify(report));
   stale.generatedAt = new Date(Date.now() - 100 * 3_600_000).toISOString();
   stale.provenance.generatedAt = stale.generatedAt;
-  assert.ok(reportFailures(stale).some((failure) => /old; max/.test(failure)));
+  assert.ok(gate(stale).some((failure) => /old; max/.test(failure)));
 });
 
 test("tampered provenance, config and aggregate fields fail", () => {
   const report = validReport();
   const source = JSON.parse(JSON.stringify(report));
   source.provenance.source.digest = "0".repeat(64);
-  assert.ok(reportFailures(source).some((failure) => /source.digest/.test(failure)));
+  assert.ok(gate(source).some((failure) => /source.digest/.test(failure)));
 
   const scene = JSON.parse(JSON.stringify(report));
   scene.provenance.sceneList.digest = "0".repeat(64);
-  assert.ok(reportFailures(scene).some((failure) => /sceneList.digest/.test(failure)));
+  assert.ok(gate(scene).some((failure) => /sceneList.digest/.test(failure)));
 
   const config = JSON.parse(JSON.stringify(report));
   config.config.model = "other-model";
-  assert.ok(reportFailures(config).some((failure) => /config.digest/.test(failure)));
+  assert.ok(gate(config).some((failure) => /config.digest/.test(failure)));
 
   const changedAggregate = JSON.parse(JSON.stringify(report));
   changedAggregate.aggregate.focusPerLine = 0.9;
-  assert.ok(reportFailures(changedAggregate).some((failure) => /focusPerLine/.test(failure)));
+  assert.ok(gate(changedAggregate).some((failure) => /focusPerLine/.test(failure)));
 });
 
 test("a scene with inconsistent compiled counts or missing normalization fails", () => {
   const report = validReport();
   const counts = JSON.parse(JSON.stringify(report));
   counts.results[0].compiled.counts.Talk = 35;
-  assert.ok(reportFailures(counts).some((failure) => /Talk count/.test(failure)));
+  assert.ok(gate(counts).some((failure) => /Talk count/.test(failure)));
 
   const normalization = JSON.parse(JSON.stringify(report));
   delete normalization.results[0].normalization;
-  assert.ok(reportFailures(normalization).some((failure) => /normalization is missing/.test(failure)));
+  assert.ok(gate(normalization).some((failure) => /normalization is missing/.test(failure)));
 
   const mutatedNormalization = JSON.parse(JSON.stringify(report));
   mutatedNormalization.results[0].normalization.lineBreaks.added = 20;
-  assert.ok(reportFailures(mutatedNormalization).some((failure) => /lineBreakChangedShare/.test(failure)));
+  assert.ok(gate(mutatedNormalization).some((failure) => /lineBreakChangedShare/.test(failure)));
 });
 
 test("the aggregate range checker rejects a mutated named field", () => {
@@ -159,4 +167,64 @@ test("the aggregate range checker rejects a mutated named field", () => {
   assert.deepEqual(rangeFailures(good), []);
   assert.ok(rangeFailures({ ...good, focusPerLine: 0.9 }).some((failure) => failure.includes("focusPerLine")));
   assert.ok(rangeFailures({ ...good, motionsPerLine: undefined }).some((failure) => failure.includes("motionsPerLine")));
+});
+
+test("normalization direction totals must equal the final compiled summary", () => {
+  const report = validReport();
+  const focus = JSON.parse(JSON.stringify(report));
+  focus.results[0].normalization.direction.finalFocus = 13;
+  assert.ok(gate(focus).some((failure) => /finalFocus/.test(failure)));
+
+  const gaze = JSON.parse(JSON.stringify(report));
+  gaze.results[0].normalization.direction.finalGaze = 14;
+  assert.ok(gate(gaze).some((failure) => /finalGaze/.test(failure)));
+
+  for (const value of [-1, "2", null]) {
+    const names = JSON.parse(JSON.stringify(report));
+    names.results[0].normalization.names.repaired = value;
+    assert.ok(gate(names).some((failure) => /names\.repaired/.test(failure)),
+      `repaired ${JSON.stringify(value)} is rejected`);
+  }
+  const dropped = JSON.parse(JSON.stringify(report));
+  dropped.results[0].normalization.names.dropped = -1;
+  assert.ok(gate(dropped).some((failure) => /names\.dropped/.test(failure)));
+});
+
+test("the gate re-verifies the catalog digest and names the skip reason when no site is configured", () => {
+  const report = validReport();
+  const digest = report.config.catalogDigest;
+  const verified = catalogVerification(report, {
+    siteDir: "ignored", computeCatalogDigest: () => digest,
+  });
+  assert.equal(verified.checked, true);
+  assert.deepEqual(verified.failures, []);
+
+  const mismatch = catalogVerification(report, {
+    siteDir: "ignored", computeCatalogDigest: () => "b".repeat(64),
+  });
+  assert.equal(mismatch.checked, true);
+  assert.ok(mismatch.failures.some((failure) => /catalog\.digest/.test(failure)));
+
+  const skipped = catalogVerification(report, { siteDir: null });
+  assert.equal(skipped.checked, false);
+  assert.match(skipped.reason, /OURNOTES_SITE_FORMAT/);
+  assert.deepEqual(skipped.failures, []);
+});
+
+test("reportFailures tolerates a missing report, config and null result", () => {
+  for (const report of [null, undefined, {}, { results: [null], counts: {}, failures: [] }]) {
+    assert.doesNotThrow(() => gate(report), JSON.stringify(report));
+  }
+  assert.ok(reportFailures(null, { siteDir: null }).length > 0);
+});
+
+test("the report carries the explicit line-break product decision", () => {
+  const report = validReport();
+  assert.ok(report.policy);
+  const missing = JSON.parse(JSON.stringify(report));
+  delete missing.policy;
+  assert.ok(gate(missing).some((failure) => /report\.policy/.test(failure)));
+  const changed = JSON.parse(JSON.stringify(report));
+  changed.policy.rawTwoLineMinimum = 0.15;
+  assert.ok(gate(changed).some((failure) => /rawTwoLineMinimum/.test(failure)));
 });

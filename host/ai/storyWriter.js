@@ -277,6 +277,27 @@ const combineUsage = (calls) => {
 };
 
 const generateSingle = async ({ llm, catalog, request, config, logger, signal, onProgress = () => {} }) => {
+  const startedAt = Date.now();
+  const stages = [];
+  const stageWarnings = [];
+  const usages = [];
+  const recordStage = (label, answer, callStartedAt) => {
+    if (answer?.usage) usages.push({ stage: label, ...answer.usage });
+    stages.push({ stage: label, model: answer?.model ?? null, latencyMs: Date.now() - callStartedAt,
+                  usage: answer?.usage ?? null, ok: true });
+  };
+  const recordFailure = (label, error) => {
+    if (error?.usage) usages.push({ stage: label, ...error.usage });
+    stages.push({ stage: label, ok: false, attempts: 1, note: error?.message || String(error),
+                  usage: error?.usage ?? null });
+  };
+  const failurePartial = (raw, warnings = []) => ({
+    latencyMs: Date.now() - startedAt,
+    warnings: [...stageWarnings, ...warnings],
+    raw: raw ?? null,
+    stages: [...stages],
+    usage: combineUsage(usages),
+  });
   const maxOnStage = maxOnStageOf(config);
   // single 只有一次主生成：先把大角色池缩到这场戏需要的几个人，主提示词只带他们的紧凑人设。
   const narrowed = await resolveFastCast({ catalog, request, config, llm, logger, signal });
@@ -302,16 +323,23 @@ const generateSingle = async ({ llm, catalog, request, config, logger, signal, o
   let answer = null;
   let doc = null;
   let lastProblems = [];
+  let lastWarnings = [];
 
   for (let round = 0; round <= rounds; round++) {
     if (signal?.aborted) throw signal.reason || new Error("aborted");
     if (round) onProgress("writing", round / (rounds + 1), `AI 修正剧本 (${round}/${rounds})`);
+    const stageLabel = round ? "repair" : "story";
+    const callStartedAt = Date.now();
     try {
-      answer = await llm.json(messages, { signal, label: round ? "repair" : "story" });
+      answer = await llm.json(messages, { signal, label: stageLabel });
     } catch (e) {
       if (signal?.aborted) throw signal.reason || e;
-      throw new StoryWriterError(`AI 剧本生成失败：${e.message}`, { cause: e });
+      recordFailure(stageLabel, e);
+      throw new StoryWriterError(`AI 剧本生成失败：${e.message}`, {
+        cause: e, partial: failurePartial(e?.content ?? answer?.content ?? null, lastWarnings),
+      });
     }
+    recordStage(stageLabel, answer, callStartedAt);
 
     // The answer itself is repairable too: keep the conversation, append the problem, try again (one focused retry
     // per round instead of failing the job).
@@ -348,6 +376,7 @@ const generateSingle = async ({ llm, catalog, request, config, logger, signal, o
         }
       }
     }
+    lastWarnings = warnings;
     lastProblems = problems;
     // apply the fixes the checker knows (nearest names, duplicate ids, free positions)
     const fixable = [...problems, ...warnings].filter((p) => Array.isArray(p.fix) && p.fix.length);
@@ -364,7 +393,10 @@ const generateSingle = async ({ llm, catalog, request, config, logger, signal, o
     messages.push({ role: "assistant", content: answer.content.slice(0, 20_000) });
     messages.push({ role: "user", content: REPAIR_HINT(problems) });
   }
-  throw new StoryWriterError("AI 剧本经过自动修复后仍有错误", { details: lastProblems });
+  throw new StoryWriterError("AI 剧本经过自动修复后仍有错误", {
+    details: lastProblems,
+    partial: failurePartial(answer?.content ?? null, lastWarnings),
+  });
 };
 
 // Three calls instead of one: cast -> dialogue (full persona prompts, selected cast only) -> storyboard. The repair

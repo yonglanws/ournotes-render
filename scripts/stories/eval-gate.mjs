@@ -4,9 +4,11 @@
 import { aggregate } from "./story-metrics.mjs";
 import { EVAL_SCENES, EVAL_SCENE_LABELS } from "./eval-scenes.mjs";
 import {
-  FIXED_MAX_LINES, FIXED_TARGET_MINUTES, PROVENANCE_SCHEMA, configDigest, evalSourceDigest,
-  sceneListDigest,
+  catalogDigest, EVAL_POLICY, FIXED_MAX_LINES, FIXED_MIN_CHARS, FIXED_MIN_LINES, FIXED_TARGET_MINUTES,
+  PROVENANCE_SCHEMA, configDigest, evalSourceDigest, sceneListDigest,
 } from "./eval-provenance.mjs";
+import { catalogFromSite } from "../../host/story/siteFormat.js";
+import { readSiteCatalog } from "../../host/tools/site-story.mjs";
 
 export const REPORT_MAX_AGE_HOURS = 72;
 
@@ -44,6 +46,62 @@ const finite = (value) => typeof value === "number" && Number.isFinite(value);
 const near = (a, b, epsilon = 1e-9) => finite(a) && finite(b) && Math.abs(a - b) <= epsilon;
 const show = (value, digits = 3) => (finite(value) ? value.toFixed(digits) : String(value));
 const outside = (value, min, max) => !finite(value) || value < min || value > max;
+const asReport = (report) => report && typeof report === "object" && !Array.isArray(report) ? report : {};
+
+export const policyFailures = (report) => {
+  const policy = asReport(report).policy;
+  if (!policy || typeof policy !== "object") return ["report.policy is missing"];
+  const failures = [];
+  for (const key of ["schema", "lineBreakBalancing", "gatedMetricBasis", "rawTwoLineMinimum"]) {
+    if (policy[key] !== EVAL_POLICY[key])
+      failures.push(`report.policy.${key} is ${JSON.stringify(policy[key])}, expected ${JSON.stringify(EVAL_POLICY[key])}`);
+  }
+  return failures;
+};
+
+// Rebuild the writer catalog from the configured site and hash exactly the
+// identity the evaluator recorded: stages, music, sounds and every model's
+// motion/expression vocabulary. Personas only contribute display names/group
+// and aliases to that identity, all of which the report stores.
+export const siteCatalogDigest = ({ siteDir, config, logger = console } = {}) => {
+  if (!siteDir) throw new Error("siteDir is required");
+  if (!config?.base) throw new Error("report.config.base is missing");
+  const personas = (Array.isArray(config.personas) ? config.personas : []).map((persona) => ({
+    name: persona?.name || "", group: persona?.group || "",
+    aliases: [...(Array.isArray(persona?.aliases) ? persona.aliases : [])], prompt: "",
+  }));
+  const catalog = catalogFromSite(siteDir, config.base, config.language || "", { personas });
+  const compiler = readSiteCatalog(siteDir, catalog.manifest, catalog.language);
+  return catalogDigest(catalog, compiler);
+};
+
+export const catalogVerification = (report, options = {}) => {
+  const siteDir = "siteDir" in options ? options.siteDir : process.env.OURNOTES_SITE_FORMAT;
+  const compute = options.computeCatalogDigest || siteCatalogDigest;
+  if (!siteDir) return {
+    checked: false, failures: [],
+    reason: "OURNOTES_SITE_FORMAT is not set; the catalog digest was not recomputed",
+  };
+  const config = asReport(report).config;
+  if (!config || typeof config !== "object" || !config.base) return {
+    checked: false, failures: [],
+    reason: "report.config.base is missing; the catalog digest was not recomputed",
+  };
+  try {
+    const digest = compute({ siteDir, config });
+    return {
+      checked: true, siteDir, digest,
+      failures: digest === config.catalogDigest ? []
+        : [`catalog.digest ${JSON.stringify(config.catalogDigest)} != configured site ${JSON.stringify(digest)}`],
+    };
+  } catch (error) {
+    return {
+      checked: false, siteDir,
+      reason: `the configured site catalog could not be read: ${error.message}`,
+      failures: [`catalog.digest could not be recomputed from the configured site: ${error.message}`],
+    };
+  }
+};
 
 export const rangeFailures = (aggregateValues) => AGGREGATE_RANGES.flatMap(([name, valueOf, min, max]) => {
   const value = valueOf(aggregateValues || {});
@@ -52,13 +110,15 @@ export const rangeFailures = (aggregateValues) => AGGREGATE_RANGES.flatMap(([nam
 });
 
 export const fixedBaselineFailures = (config = {}) => {
+  const cfg = config && typeof config === "object" ? config : {};
   const expected = {
-    targetMinutes: FIXED_TARGET_MINUTES, maxLines: FIXED_MAX_LINES, maxOnStage: 2, repairRounds: 2,
+    targetMinutes: FIXED_TARGET_MINUTES, maxLines: FIXED_MAX_LINES, minLines: FIXED_MIN_LINES,
+    minChars: FIXED_MIN_CHARS, maxOnStage: 2, repairRounds: 2,
     translateForTts: false, jsonMode: "auto", maxTokens: 16384, timeoutMs: 180000, retries: 2,
     directorPlan: false,
   };
   return Object.entries(expected).flatMap(([key, value]) =>
-    config[key] === value ? [] : [`config.${key} is ${JSON.stringify(config[key])}, expected ${JSON.stringify(value)}`]);
+    cfg[key] === value ? [] : [`config.${key} is ${JSON.stringify(cfg[key])}, expected ${JSON.stringify(value)}`]);
 };
 
 export const sceneCoverageFailures = (report) => {
@@ -130,6 +190,13 @@ const normalizationFailures = (result) => {
   for (const field of ["rawFocus", "focusPruned", "finalFocus", "rawGaze", "gazePruned", "finalGaze"]) {
     if (!finite(direction[field]) || direction[field] < 0) failures.push(`${label}: direction.${field} is invalid`);
   }
+  for (const field of ["repaired", "dropped"]) {
+    if (!finite(names[field]) || names[field] < 0) failures.push(`${label}: names.${field} is invalid`);
+  }
+  if (finite(direction.finalFocus) && finite(summary.focus) && direction.finalFocus !== summary.focus)
+    failures.push(`${label}: direction.finalFocus ${direction.finalFocus} != summary.focus ${summary.focus}`);
+  if (finite(direction.finalGaze) && finite(summary.lookAny) && direction.finalGaze !== summary.lookAny)
+    failures.push(`${label}: direction.finalGaze ${direction.finalGaze} != summary.lookAny ${summary.lookAny}`);
   if (finite(direction.rawFocus) && finite(direction.focusPruned) && finite(direction.finalFocus) &&
       direction.rawFocus - direction.focusPruned !== direction.finalFocus)
     failures.push(`${label}: rawFocus - focusPruned != finalFocus`);
@@ -174,15 +241,16 @@ const normalizationFailures = (result) => {
 
 export const resultFailures = (report) => {
   const failures = [];
-  const results = Array.isArray(report.results) ? report.results : [];
-  for (const result of results) {
+  const results = Array.isArray(asReport(report).results) ? asReport(report).results : [];
+  for (const rawResult of results) {
+    const result = rawResult && typeof rawResult === "object" ? rawResult : {};
     const label = result.label || "(unnamed scene)";
     if (result.error) failures.push(`${label}: ${result.error}`);
     if (!result.summary) { failures.push(`${label}: summary is missing`); continue; }
-    if (!finite(result.summary.count) || result.summary.count < 28)
-      failures.push(`${label}: ${result.summary.count} dialogue lines < 28`);
-    if (!finite(result.summary.charsTotal) || result.summary.charsTotal < 400)
-      failures.push(`${label}: ${result.summary.charsTotal} characters < 400`);
+    if (!finite(result.summary.count) || result.summary.count < FIXED_MIN_LINES)
+      failures.push(`${label}: ${result.summary.count} dialogue lines < ${FIXED_MIN_LINES}`);
+    if (!finite(result.summary.charsTotal) || result.summary.charsTotal < FIXED_MIN_CHARS)
+      failures.push(`${label}: ${result.summary.charsTotal} characters < ${FIXED_MIN_CHARS}`);
     if (!Array.isArray(result.warnings)) failures.push(`${label}: warnings must be an array`);
     if (!Array.isArray(result.compiled?.commands) || !result.compiled.commands.length)
       failures.push(`${label}: compiled.commands must be a non-empty array`);
@@ -249,7 +317,7 @@ export const provenanceFailures = (report, {
     failures.push("provenance.source.digest does not match the checked-in evaluator source");
   if (typeof provenance.source?.gitHead !== "string" && provenance.source?.gitHead !== null)
     failures.push("provenance.source.gitHead is not a hash or null");
-  if (configDigest(report.config) !== provenance.config?.digest)
+  if (configDigest(report.config || {}) !== provenance.config?.digest)
     failures.push("provenance.config.digest does not match report.config");
   failures.push(...fixedBaselineFailures(report.config));
   if (report.config?.catalogDigest !== provenance.catalog?.digest)
@@ -276,21 +344,29 @@ export const aggregateFailures = (report) => {
   return failures;
 };
 
-export const reportFailures = (report, options = {}) => {
+export const reportChecks = (report, options = {}) => {
+  const normalized = asReport(report);
   const failures = [];
-  failures.push(...sceneCoverageFailures(report));
-  failures.push(...provenanceFailures(report, options));
-  failures.push(...resultFailures(report));
-  failures.push(...aggregateFailures(report));
-  const counts = report.counts || {};
-  const selected = Array.isArray(report.selected) ? report.selected.length : 0;
-  const runs = report.provenance?.runs?.runs ?? 1;
+  failures.push(...sceneCoverageFailures(normalized));
+  failures.push(...policyFailures(normalized));
+  failures.push(...provenanceFailures(normalized, options));
+  failures.push(...resultFailures(normalized));
+  failures.push(...aggregateFailures(normalized));
+  const catalog = catalogVerification(normalized, options);
+  failures.push(...catalog.failures);
+  const counts = normalized.counts || {};
+  const selected = Array.isArray(normalized.selected) ? normalized.selected.length : 0;
+  const runs = normalized.provenance?.runs?.runs ?? 1;
   if (counts.selected !== selected) failures.push("counts.selected != selected scenes");
   if (counts.attempted !== selected * runs) failures.push("counts.attempted != selected * runs");
-  if (counts.succeeded !== (report.results || []).length) failures.push("counts.succeeded != results.length");
-  if (counts.failed !== (report.failures || []).length) failures.push("counts.failed != failures.length");
-  return failures;
+  if (counts.succeeded !== (Array.isArray(normalized.results) ? normalized.results.length : 0))
+    failures.push("counts.succeeded != results.length");
+  if (counts.failed !== (Array.isArray(normalized.failures) ? normalized.failures.length : 0))
+    failures.push("counts.failed != failures.length");
+  return { failures, catalog };
 };
+
+export const reportFailures = (report, options = {}) => reportChecks(report, options).failures;
 
 export const SCENE_LABELS = EVAL_SCENE_LABELS;
 export const SCENES = EVAL_SCENES;

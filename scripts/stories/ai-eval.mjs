@@ -20,7 +20,7 @@ import { aggregate } from "./story-metrics.mjs";
 import { auditCompiledStory, auditGeneratedScriptToMetrics } from "./compiled-command-audit.mjs";
 import { EVAL_SCENES, sceneList } from "./eval-scenes.mjs";
 import {
-  buildProvenance, catalogDigest, configFingerprint, evalSourceDigestInfo,
+  buildProvenance, catalogDigest, configFingerprint, evalSourceDigestInfo, EVAL_POLICY,
 } from "./eval-provenance.mjs";
 import { redactValue, redactingLogger } from "./redaction.mjs";
 
@@ -91,6 +91,15 @@ const errorRecord = (error) => ({
   details: error && typeof error === "object" && "details" in error ? error.details : null,
 });
 
+// Fatal CLI errors bypass per-scene redaction otherwise. Keep the formatting
+// here so a key in an exception message or details block is scrubbed too.
+export const fatalErrorText = (error, secrets = []) => {
+  const message = error instanceof Error ? error.message : String(error);
+  const details = error && typeof error === "object" && "details" in error ? error.details : null;
+  const body = details === null ? message : `${message}\n${JSON.stringify(details, null, 2)}`;
+  return redactValue(body, secrets);
+};
+
 // One failure shape for every scene, including a generation failure that has no
 // compiled result: elapsed time, warnings already produced, and the raw/partial
 // answer reference when the writer got that far.
@@ -103,6 +112,7 @@ export const failureRecord = ({ scene, run, label, error, startedAt, partial = n
     warnings: partial?.warnings || [],
     raw: partial?.raw ?? null,
     stages: partial?.stages ?? null,
+    usage: partial?.usage ?? null,
     ...errorRecord(error),
   };
   if (partial) record.partial = partial;
@@ -338,6 +348,10 @@ Environment:
   OURNOTES_AI_LAB        report root outside the repository
   OURNOTES_LLM_API_KEY   LLM key, read through llm.apiKeyEnv (never printed)`;
 
+// The CLI top-level catch runs outside the per-scene redaction boundary. Keep
+// the configured values here so a fatal error is scrubbed with the same set.
+let fatalSecrets = [];
+
 export const main = async (argv = process.argv.slice(2)) => {
   const args = parseArgs(argv);
   if (args.help) {
@@ -370,6 +384,7 @@ export const main = async (argv = process.argv.slice(2)) => {
 
   const secrets = [config.secrets.llmApiKey, config.secrets.ttsApiKey, config.secrets.apiKey]
     .filter((secret) => typeof secret === "string" && secret.length >= 4);
+  fatalSecrets = secrets;
   const logger = redactingLogger(console, secrets);
   const redact = (value) => redactValue(value, secrets);
 
@@ -432,6 +447,7 @@ export const main = async (argv = process.argv.slice(2)) => {
   const report = {
     generatedAt,
     run: args.run,
+    policy: EVAL_POLICY,
     scenes: EVAL_SCENES.map((scene, index) => ({ index: index + 1, ...scene })),
     selected: selected.map((scene) => scene.label),
     config: fingerprint,
@@ -449,5 +465,8 @@ export const main = async (argv = process.argv.slice(2)) => {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().then((code) => { if (code) process.exitCode = code; })
-    .catch((error) => { console.error(error.message); if (error.details) console.error(JSON.stringify(error.details, null, 2)); process.exit(2); });
+    .catch((error) => {
+      redactingLogger(console, fatalSecrets).error(fatalErrorText(error, fatalSecrets));
+      process.exit(2);
+    });
 }
