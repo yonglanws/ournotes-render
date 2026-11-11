@@ -6,7 +6,7 @@
 //
 //   node scripts/stories/frame-audit.mjs --video frame-check.mp4 \
 //     --episode frame-check.episode.json --timeline frame-check.timeline.json --out frames \
-//     [--ffmpeg ffmpeg] [--ffprobe ffprobe]
+//     [--ffmpeg ffmpeg] [--require-camera]
 //
 // Checks name PNG basenames inside --out; the report stores relative paths only, so it is
 // deterministic for the same inputs and does not leak the machine's directory layout.
@@ -32,6 +32,13 @@ const CAMERA = new Set(CAMERA_COMMANDS);
 const CHECKPOINT = new Set(CHECKPOINT_COMMANDS);
 const CAMERA_ORDER = ["Focus", "Zoom", "Pedestal", "PanV2", "DoF", "Track"];
 const OTHER_ORDER = ["Se", "Motion", "LookTarget", "In", "Out"];
+// Rows that can change pixels during a checkpoint window. Se is audio-only; Delay/Bgm/Character do not draw.
+const VISUAL_COMMANDS = new Set([
+  ...CAMERA_COMMANDS, "Motion", "Expression", "LookTarget", "Look", "In", "Out", "Talk", "Location", "Stage",
+  "FadeIn", "FadeOut", "Shake", "Brightness", "Alpha", "Still", "Video", "Effect", "PostEffect", "Flash",
+  "CameraRotate", "Angle", "MoveToRight", "MoveToLeft", "MoveToUp", "MoveToDown", "MoveToForward", "MoveToBack",
+  "MoveToDirection",
+]);
 const PNG_EXT = ".png";
 const SHA256 = /^[0-9a-f]{64}$/i;
 
@@ -80,9 +87,11 @@ export const frameCheckpoints = (episode, timeline, { settleSeconds = DEFAULT_SE
     if (!row || typeof row !== "object" || !CHECKPOINT.has(row.cmd)) continue;
     const at = times.get(row.i);
     if (!at || at.cmd !== row.cmd) continue;
-    if (!(at.seconds >= settleSeconds)) continue;
     const commandSeconds = round(at.seconds);
     const effectSeconds = round(commandSeconds + Math.max(number(row.DelaySeconds), 0));
+    const beforeSeconds = round(Math.max(0, effectSeconds - FRAME_BEFORE_SECONDS));
+    // The settle must cover the whole before window, not just the command's start.
+    if (beforeSeconds < settleSeconds) continue;
     // Never let the after frame sample the next command's effect: cap at the next start (one frame earlier).
     const nextStart = starts.find((value) => value > effectSeconds + 0.05);
     const cappedAfter = nextStart == null ? effectSeconds + FRAME_AFTER_SECONDS
@@ -93,12 +102,14 @@ export const frameCheckpoints = (episode, timeline, { settleSeconds = DEFAULT_SE
       cmd: row.cmd,
       seconds: effectSeconds,
       commandSeconds,
-      beforeSeconds: round(Math.max(0, effectSeconds - FRAME_BEFORE_SECONDS)),
+      beforeSeconds,
       afterSeconds,
       duration: round(number(row.Duration)),
       lowerBound: false,
       clamped: false,
       afterCapped: afterSeconds < round(effectSeconds + FRAME_AFTER_SECONDS) - 1e-9,
+      visual: row.cmd !== "Se",
+      confounds: [],
     };
     if (!candidates.has(row.cmd)) candidates.set(row.cmd, []);
     candidates.get(row.cmd).push(check);
@@ -127,11 +138,28 @@ export const frameCheckpoints = (episode, timeline, { settleSeconds = DEFAULT_SE
     chosen.push(pick);
     used.add(windowKey(pick));
   }
+  // Attribution: name every other visual row whose effect can overlap the checkpoint's window, so a
+  // report never claims isolated per-command evidence when a second camera move or a line overlaps.
+  const visualRows = [];
+  for (const row of rowsOf(episode)) {
+    if (!VISUAL_COMMANDS.has(row.cmd)) continue;
+    const at = times.get(row.i);
+    if (!at || at.cmd !== row.cmd) continue;
+    const start = round(at.seconds + Math.max(number(row.DelaySeconds), 0));
+    visualRows.push({ i: row.i, cmd: row.cmd, start, end: start + Math.max(number(row.Duration), 0) });
+  }
+  for (const check of chosen) {
+    check.confounds = visualRows.filter((row) => row.i !== check.i && (
+      row.end > row.start
+        ? row.start < check.afterSeconds && row.end > check.beforeSeconds
+        : row.start >= check.beforeSeconds && row.start <= check.afterSeconds
+    )).map(({ i, cmd }) => ({ i, cmd }));
+  }
   return chosen.sort(byTime);
 };
 
 // Frame-accurate target: a time beyond the last decoded frame is a hard failure, a negative one is
-// clamped to the first frame. `lastFrameAt` is duration - 1/fps from ffprobe.
+// clamped to the first frame. `lastFrameAt` is duration - 1/fps from the pinned ffmpeg probe.
 export const frameTarget = (seconds, video) => {
   const last = number(video?.lastFrameAt);
   if (!(last >= 0)) throw new Error("frameTarget needs the video's lastFrameAt");
@@ -150,7 +178,8 @@ export const frameTarget = (seconds, video) => {
 export const duplicateFramePairs = (checks = []) => {
   const groups = new Map();
   for (const check of checks) {
-    if (!check || !isSha256(check.beforeSha256) || !isSha256(check.afterSha256)) continue;
+    if (!check || check.frameFailure) continue;
+    if (!isSha256(check.beforeSha256) || !isSha256(check.afterSha256)) continue;
     const key = `${check.beforeSha256.toLowerCase()}:${check.afterSha256.toLowerCase()}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push({ i: check.i, cmd: check.cmd });
@@ -178,7 +207,7 @@ const within = (dir, value) => {
 // Report failures: no checks, missing/unsafe frame paths, missing hashes, a numeric difference that
 // disagrees with `changed`, a camera row that did not change, duplicate camera frames, a frame
 // failure, missing renderer/environment provenance, or an invalid timeline entry.
-export const validateFrameReport = (report, { dir = "", verifyFiles = false } = {}) => {
+export const validateFrameReport = (report, { dir = "", verifyFiles = false, requireCamera = false } = {}) => {
   const failures = [];
   const fail = (code, message, extra = {}) => failures.push({ code, message, ...extra });
   if (!report || typeof report !== "object" || Array.isArray(report)) {
@@ -243,10 +272,15 @@ export const validateFrameReport = (report, { dir = "", verifyFiles = false } = 
     fail("ffmpegMissing", "the frame report has no ffmpeg provenance");
   } else {
     if (ffmpeg.ok === false || ffmpeg.error) fail("ffmpegFailed", `ffmpeg failed: ${ffmpeg.error || "unknown error"}`);
+    if (typeof ffmpeg.path !== "string" || ffmpeg.path.trim() === "")
+      fail("ffmpegMissing", "the frame report has no pinned ffmpeg path");
+    if (!isSha256(ffmpeg.sha256)) fail("ffmpegMissing", "the frame report has no ffmpeg binary sha256");
     if (typeof ffmpeg.version !== "string" || ffmpeg.version.trim() === "")
       fail("ffmpegMissing", "the frame report has no ffmpeg version");
-    if (!ffmpeg.probe || typeof ffmpeg.probe.version !== "string" || ffmpeg.probe.version.trim() === "")
-      fail("ffmpegMissing", "the frame report has no ffprobe version");
+    if (!ffmpeg.probe || ffmpeg.probe.tool !== "ffmpeg" ||
+        typeof ffmpeg.probe.version !== "string" || ffmpeg.probe.version.trim() === "" ||
+        !isSha256(ffmpeg.probe.sha256))
+      fail("ffmpegMissing", "the frame report has no self-contained ffmpeg probe provenance");
   }
 
   const checks = Array.isArray(report.checks) ? report.checks
@@ -272,21 +306,48 @@ export const validateFrameReport = (report, { dir = "", verifyFiles = false } = 
     if (typeof check.commandSeconds !== "number" || !Number.isFinite(check.commandSeconds) ||
         check.commandSeconds < 0 || check.commandSeconds > check.seconds + 1e-9)
       fail("invalidCommandSeconds", `check ${index} has no valid commandSeconds`, where);
+    if (typeof check.visual !== "boolean") {
+      fail("missingVisual", `${check.cmd || `check ${index}`} has no visual flag`, where);
+    } else if (check.cmd === "Se" && check.visual !== false) {
+      fail("audioVisual", `Se checkpoint ${check.i} is audio-only but marked visual`, where);
+    } else if (CAMERA.has(check.cmd) && check.visual !== true) {
+      fail("cameraNotVisual", `${check.cmd} checkpoint ${check.i} is camera evidence but not visual`, where);
+    }
+    if (!Array.isArray(check.confounds)) {
+      fail("missingConfounds", `${check.cmd || `check ${index}`} has no confounds list`, where);
+    } else {
+      for (const confound of check.confounds) {
+        if (!confound || !Number.isInteger(confound.i) || typeof confound.cmd !== "string")
+          fail("invalidConfound", `${check.cmd || `check ${index}`} has a malformed confound`, where);
+      }
+    }
+    for (const key of ["lowerBound", "clamped", "afterCapped"]) {
+      if (typeof check[key] !== "boolean") fail("missingFlag", `${check.cmd || `check ${index}`} has no ${key} flag`,
+                                                 { ...where, key });
+    }
+    const frameFailed = typeof check.frameFailure === "string" && check.frameFailure.trim() !== "";
+    if (frameFailed) {
+      fail("frameFailure", check.frameFailure, { ...where, kind: check.frameFailureKind || "" });
+      continue;                                                // frame-dependent findings are noise after this
+    }
     for (const key of ["before", "after"]) {
       const problem = framePathProblem(check[key]);
       if (problem === "missing") {
         fail("missingFrame", `${check.cmd || `check ${index}`} has no ${key} PNG`, { ...where, key });
       } else if (problem === "unsafe") {
-        fail("unsafeFramePath", `${check.cmd || `check ${index}`} ${key} path is absolute or escapes the output`,
-             { ...where, key, value: check[key] });
+        const name = path.basename(String(check[key]));
+        fail("unsafeFramePath", `${check.cmd || `check ${index}`} ${key} path is absolute or escapes the output: ${name}`,
+             { ...where, key, value: name });
       } else if (verifyFiles) {
         const file = within(dir, check[key]);
         if (!file) {
-          fail("unsafeFramePath", `${check.cmd || `check ${index}`} ${key} path escapes the output directory`,
-               { ...where, key, value: check[key] });
+          const name = path.basename(String(check[key]));
+          fail("unsafeFramePath", `${check.cmd || `check ${index}`} ${key} path escapes the output directory: ${name}`,
+               { ...where, key, value: name });
         } else if (!fs.existsSync(file) || !fs.statSync(file).isFile() || fs.statSync(file).size === 0) {
-          fail("missingFrameFile", `${check.cmd || `check ${index}`} ${key} PNG is missing or empty: ${file}`,
-               { ...where, key, file });
+          const name = path.basename(file);
+          fail("missingFrameFile", `${check.cmd || `check ${index}`} ${key} PNG is missing or empty: ${name}`,
+               { ...where, key, file: name });
         }
       }
     }
@@ -304,16 +365,10 @@ export const validateFrameReport = (report, { dir = "", verifyFiles = false } = 
       fail("changedMismatch", `${check.cmd || `check ${index}`} changed=${check.changed} but difference ` +
         `${difference} against threshold ${threshold}`, where);
     }
-    for (const key of ["lowerBound", "clamped", "afterCapped"]) {
-      if (typeof check[key] !== "boolean") fail("missingFlag", `${check.cmd || `check ${index}`} has no ${key} flag`,
-                                                 { ...where, key });
-    }
     if (check.lowerBound === true && CAMERA.has(check.cmd))
       fail("lowerBoundCamera", `${check.cmd} checkpoint is a lower bound, not a renderer timestamp`, where);
     if (CAMERA.has(check.cmd) && check.changed === false)
       fail("cameraUnchanged", `${check.cmd} checkpoint at ${check.seconds}s did not change the frame`, where);
-    if (typeof check.frameFailure === "string" && check.frameFailure.trim() !== "")
-      fail("frameFailure", check.frameFailure, { ...where, kind: check.frameFailureKind || "" });
   }
 
   for (const pair of duplicateFramePairs(checks || [])) {
@@ -323,6 +378,8 @@ export const validateFrameReport = (report, { dir = "", verifyFiles = false } = 
            { i: member.i, cmd: member.cmd });
     }
   }
+  if (requireCamera && !(checks || []).some((check) => check && CAMERA.has(check.cmd) && check.visual !== false))
+    fail("missingCamera", "the report has no visual camera checkpoint for this objective");
   return failures;
 };
 
@@ -332,23 +389,6 @@ const resolveFfmpeg = (explicit = "") => {
   return validateFfmpeg();
 };
 
-const resolveFfprobe = (ffmpeg, explicit = "") => {
-  const given = explicit || process.env.OURNOTES_FFPROBE || "";
-  if (given) {
-    const file = path.resolve(given);
-    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw new Error(`ffprobe not found: ${file}`);
-    if (!/^ffprobe(\.exe)?$/i.test(path.basename(file)))
-      throw new Error(`refusing to run ${path.basename(file)}: the probe must be named ffprobe or ffprobe.exe`);
-    return fs.realpathSync(file);
-  }
-  // A bundled probe beside the pinned ffmpeg; PATH is never scanned.
-  for (const name of process.platform === "win32" ? ["ffprobe.exe", "ffprobe"] : ["ffprobe"]) {
-    const sibling = path.join(path.dirname(ffmpeg), name);
-    if (fs.existsSync(sibling) && fs.statSync(sibling).isFile()) return fs.realpathSync(sibling);
-  }
-  throw new Error("ffprobe is not available: pass --ffprobe or set OURNOTES_FFPROBE to a pinned ffprobe");
-};
-
 const toolVersion = (file) => {
   const run = spawnSync(file, ["-version"], { encoding: "utf8", maxBuffer: 1024 * 1024 });
   if (run.status !== 0)
@@ -356,31 +396,27 @@ const toolVersion = (file) => {
   return { ok: true, version: String(run.stdout || "").split(/\r?\n/)[0].trim(), error: "" };
 };
 
-const ratio = (value) => {
-  const parts = String(value || "").split("/").map(Number);
-  if (parts.length === 2 && parts[1] > 0) return parts[0] / parts[1];
-  const numberValue = Number(value);
-  return Number.isFinite(numberValue) ? numberValue : 0;
-};
-
-const probeVideo = (ffprobe, video) => {
-  const run = spawnSync(ffprobe, ["-v", "error", "-select_streams", "v:0",
-    "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate",
-    "-show_entries", "format=duration", "-of", "json", video],
-  { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
-  if (run.status !== 0) throw new Error(`ffprobe failed: ${String(run.stderr || "").trim() || `exit ${run.status}`}`);
-  let parsed;
-  try { parsed = JSON.parse(run.stdout); } catch (e) {
-    throw new Error(`ffprobe output is not JSON: ${e.message}`, { cause: e });
+// The pinned ffmpeg is the only probe: `-i` prints the container duration and the video stream's
+// dimensions and frame rate, so a clean install needs no external ffprobe.
+const probeVideo = (ffmpeg, video) => {
+  const run = spawnSync(ffmpeg, ["-nostdin", "-hide_banner", "-i", video],
+    { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  if (run.error) throw new Error(`ffmpeg probe failed to start: ${run.error.message}`);
+  const text = `${run.stdout || ""}${run.stderr || ""}`;
+  const size = /Video:.*?(\d{2,5})x(\d{2,5})/.exec(text);
+  const duration = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(text);
+  const rate = /,\s*([\d.]+)\s+fps\b/.exec(text) || /,\s*([\d.]+)\s+tbr\b/.exec(text);
+  if (!size || !duration || !rate) {
+    throw new Error(`ffmpeg did not report width/height/duration/fps for ${video}: ` +
+      `${text.split(/\r?\n/).filter(Boolean).slice(-3).join(" | ")}`);
   }
-  const stream = parsed?.streams?.[0] || {};
-  const width = Math.round(number(stream.width));
-  const height = Math.round(number(stream.height));
-  const duration = number(parsed?.format?.duration);
-  const fps = ratio(stream.avg_frame_rate) || ratio(stream.r_frame_rate);
-  if (!width || !height || !(duration > 0) || !(fps > 0))
-    throw new Error(`ffprobe did not report width/height/duration/fps for ${video}`);
-  return { path: video, width, height, duration, fps, lastFrameAt: Math.max(0, duration - 1 / fps) };
+  const width = Number(size[1]);
+  const height = Number(size[2]);
+  const seconds = Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3]);
+  const fps = Number(rate[1]);
+  if (!width || !height || !(seconds > 0) || !(fps > 0))
+    throw new Error(`ffmpeg did not report width/height/duration/fps for ${video}`);
+  return { path: video, width, height, duration: seconds, fps, lastFrameAt: Math.max(0, seconds - 1 / fps) };
 };
 
 const sha256File = (file) => new Promise((resolve, reject) => {
@@ -397,13 +433,13 @@ const reportPath = (dir, file) => {
   return rel.split(path.sep).join("/");
 };
 
-const seekArgs = (target, video) => {
-  // Within half a second of the end, seek from EOF so a frame-accurate last frame is still decoded.
-  if (target >= video.lastFrameAt - 0.5) {
-    const offset = Math.min(video.duration, Math.max(0.05, video.duration - target + 0.05));
-    return ["-sseof", `-${offset.toFixed(3)}`];
-  }
-  return ["-ss", String(target)];
+// Near the end, `-sseof` lands a frame or two before the target; seek on the output instead, which
+// decodes from the start and stops exactly at the requested frame. Normal times keep the fast input seek.
+const mediaArgs = (video, seconds) => {
+  const base = ["-nostdin", "-hide_banner", "-v", "error"];
+  return seconds >= video.lastFrameAt - 0.5
+    ? [...base, "-i", video.path, "-ss", String(seconds)]
+    : [...base, "-ss", String(seconds), "-i", video.path];
 };
 
 const noFrame = (what, seconds) => {
@@ -420,16 +456,17 @@ const processFailure = (what, seconds, run) => {
 };
 
 const grabPng = (ffmpeg, video, seconds, png) => {
-  const run = spawnSync(ffmpeg, ["-nostdin", "-hide_banner", "-v", "error", ...seekArgs(seconds, video),
-    "-i", video.path, "-frames:v", "1", "-y", png], { maxBuffer: 8 * 1024 * 1024 });
+  const run = spawnSync(ffmpeg, [...mediaArgs(video, seconds), "-frames:v", "1", "-y", png],
+    { maxBuffer: 8 * 1024 * 1024 });
   if (run.status !== 0) throw processFailure("PNG", seconds, run);
   if (!fs.existsSync(png) || fs.statSync(png).size === 0) throw noFrame("PNG frame", seconds);
 };
+export const extractPng = grabPng;
 
 const grabGray = (ffmpeg, video, seconds) => {
-  const run = spawnSync(ffmpeg, ["-nostdin", "-hide_banner", "-v", "error", ...seekArgs(seconds, video),
-    "-i", video.path, "-frames:v", "1", "-vf", `scale=${RAW_WIDTH}:${RAW_HEIGHT}`, "-pix_fmt", "gray",
-    "-f", "rawvideo", "pipe:1"], { maxBuffer: 64 * 1024 * 1024 });
+  const run = spawnSync(ffmpeg, [...mediaArgs(video, seconds), "-frames:v", "1", "-vf",
+    `scale=${RAW_WIDTH}:${RAW_HEIGHT}`, "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1"],
+  { maxBuffer: 64 * 1024 * 1024 });
   if (run.status !== 0) throw processFailure("raw frame", seconds, run);
   if (!run.stdout || run.stdout.length < RAW_WIDTH * RAW_HEIGHT) throw noFrame("raw frame", seconds);
   return run.stdout.subarray(0, RAW_WIDTH * RAW_HEIGHT);
@@ -444,7 +481,7 @@ const meanAbsoluteDifference = (a, b) => {
 
 const frameName = (check, side) => `${String(check.i).padStart(6, "0")}-${check.cmd}-${side}.png`;
 
-export const auditFrames = async ({ video, episode, timeline, out, ffmpeg = "", ffprobe = "",
+export const auditFrames = async ({ video, episode, timeline, out, ffmpeg = "", requireCamera = false,
                                      logger = console } = {}) => {
   if (!video) throw new Error("--video is required");
   if (!episode) throw new Error("--episode is required");
@@ -472,12 +509,10 @@ export const auditFrames = async ({ video, episode, timeline, out, ffmpeg = "", 
   fs.mkdirSync(outDir, { recursive: true });
 
   const ffmpegPath = resolveFfmpeg(ffmpeg);
-  const ffprobePath = resolveFfprobe(ffmpegPath, ffprobe);
-  const info = probeVideo(ffprobePath, videoFile);
+  const info = probeVideo(ffmpegPath, videoFile);
   const ffmpegVersion = toolVersion(ffmpegPath);
-  const probeVersion = toolVersion(ffprobePath);
   if (!ffmpegVersion.ok) throw new Error(`ffmpeg -version failed: ${ffmpegVersion.error}`);
-  if (!probeVersion.ok) throw new Error(`ffprobe -version failed: ${probeVersion.error}`);
+  const ffmpegSha256 = await sha256File(ffmpegPath);
   const checkpoints = frameCheckpoints(episodeJson, timelineJson);
   logger.info?.(`frame audit: ${rows.length} commands, ${checkpoints.length} checkpoints, ` +
     `${info.width}x${info.height} @ ${round(info.fps, 3)} fps, ${round(info.duration, 3)} s`);
@@ -514,10 +549,12 @@ export const auditFrames = async ({ video, episode, timeline, out, ffmpeg = "", 
       commandCount: rows.length,
     },
     ffmpeg: {
+      path: path.basename(ffmpegPath),
+      sha256: ffmpegSha256,
       version: ffmpegVersion.version,
       ok: true,
       error: "",
-      probe: { version: probeVersion.version },
+      probe: { tool: "ffmpeg", version: ffmpegVersion.version, sha256: ffmpegSha256 },
     },
     checks: [],
     duplicates: [],
@@ -544,6 +581,8 @@ export const auditFrames = async ({ video, episode, timeline, out, ffmpeg = "", 
       lowerBound: checkpoint.lowerBound,
       clamped: before.clamped || after.clamped,
       afterCapped: checkpoint.afterCapped,
+      visual: checkpoint.visual,
+      confounds: checkpoint.confounds,
     };
     const targetFailure = before.failure || after.failure;
     if (targetFailure) {
@@ -575,7 +614,7 @@ export const auditFrames = async ({ video, episode, timeline, out, ffmpeg = "", 
   }
 
   report.duplicates = duplicateFramePairs(report.checks);
-  report.failures = validateFrameReport(report, { dir: outDir, verifyFiles: true });
+  report.failures = validateFrameReport(report, { dir: outDir, verifyFiles: true, requireCamera });
   const reportFile = path.join(outDir, "frame-report.json");
   fs.writeFileSync(reportFile, `${JSON.stringify(report, null, 2)}\n`);
   logger.info?.(`frame report: ${reportFile} (${report.failures.length} failures)`);
@@ -583,7 +622,7 @@ export const auditFrames = async ({ video, episode, timeline, out, ffmpeg = "", 
 };
 
 const parseArgs = (argv) => {
-  const options = { video: "", episode: "", timeline: "", out: "", ffmpeg: "", ffprobe: "", help: false };
+  const options = { video: "", episode: "", timeline: "", out: "", ffmpeg: "", requireCamera: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const next = () => {
@@ -597,7 +636,7 @@ const parseArgs = (argv) => {
     else if (arg === "--timeline") options.timeline = next();
     else if (arg === "--out") options.out = next();
     else if (arg === "--ffmpeg") options.ffmpeg = next();
-    else if (arg === "--ffprobe") options.ffprobe = next();
+    else if (arg === "--require-camera") options.requireCamera = true;
     else throw new Error(`unknown argument ${arg}`);
   }
   if (options.help) return options;
@@ -612,15 +651,18 @@ export const main = async (argv = process.argv.slice(2)) => {
   const options = parseArgs(argv);
   if (options.help) {
     console.log("usage: node scripts/stories/frame-audit.mjs --video <mp4> --episode <episode.json> " +
-      "--timeline <timeline.json> --out <dir> [--ffmpeg <file>] [--ffprobe <file>]");
+      "--timeline <timeline.json> --out <dir> [--ffmpeg <file>] [--require-camera]");
     return null;
   }
   const { report, reportPath } = await auditFrames(options);
+  const visualCamera = (check) => CAMERA.has(check.cmd) && check.visual !== false;
   const summary = {
     ok: report.failures.length === 0,
     report: reportPath,
     checks: report.checks.length,
-    cameraChecks: report.checks.filter((check) => CAMERA.has(check.cmd)).length,
+    cameraChecks: report.checks.filter(visualCamera).length,
+    visualChecks: report.checks.filter((check) => check.visual !== false).length,
+    audioChecks: report.checks.filter((check) => check.visual === false).length,
     changed: report.checks.filter((check) => check.changed).length,
     duplicates: report.duplicates.length,
     failures: report.failures,

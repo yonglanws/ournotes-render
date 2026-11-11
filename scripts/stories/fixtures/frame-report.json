@@ -30,11 +30,15 @@
     "commandCount": 24
   },
   "ffmpeg": {
+    "path": "ffmpeg.exe",
+    "sha256": "8888888888888888888888888888888888888888888888888888888888888888",
     "version": "ffmpeg version 7.0",
     "ok": true,
     "error": "",
     "probe": {
-      "version": "ffprobe version 7.0"
+      "tool": "ffmpeg",
+      "version": "ffmpeg version 7.0",
+      "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
     }
   },
   "checks": [
@@ -54,7 +58,9 @@
       "changed": true,
       "lowerBound": false,
       "clamped": false,
-      "afterCapped": false
+      "afterCapped": false,
+      "visual": true,
+      "confounds": []
     },
     {
       "i": 8,
@@ -72,7 +78,9 @@
       "changed": true,
       "lowerBound": false,
       "clamped": false,
-      "afterCapped": false
+      "afterCapped": false,
+      "visual": true,
+      "confounds": []
     }
   ],
   "duplicates": [],

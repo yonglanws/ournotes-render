@@ -80,27 +80,31 @@ test("a director script compiles onto a site and renders with camera and acting"
       "--episode", episodeFile,
       "--timeline", result.timeline,
       "--out", framesDir,
+      "--require-camera",
     ], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 300000 });
     assert.equal(audit.error, undefined, `frame audit did not finish: ${audit.error?.message}`);
     assert.equal(audit.status, 0, `frame audit failed:\n${audit.stdout}\n${audit.stderr}`);
     const reportFile = path.join(framesDir, "frame-report.json");
     const report = JSON.parse(fs.readFileSync(reportFile, "utf8"));
+    const hash = (file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
     assert.deepEqual(report.failures, [], JSON.stringify(report.failures));
+    assert.deepEqual(report.duplicates, [], "no camera checkpoint duplicates another frame pair");
     assert.equal(report.method.timing, "renderer");
-    assert.equal(report.video.sha256,
-                 crypto.createHash("sha256").update(fs.readFileSync(result.output)).digest("hex"),
-                 "the report names the rendered video");
+    assert.equal(report.video.sha256, hash(result.output), "the report names the rendered video");
+    assert.equal(report.method.timeline.sha256, hash(result.timeline), "the report names the timeline");
+    assert.equal(report.episode.sha256, hash(episodeFile), "the report names the episode");
     assert.equal(report.episode.commandCount, built.episode.commands.length, "the report names the episode");
     const times = new Map(JSON.parse(fs.readFileSync(result.timeline, "utf8")).commands.map((entry) => [entry.i, entry.seconds]));
     for (const check of report.checks) {
       assert.equal(check.commandSeconds, times.get(check.i), `${check.cmd} uses the renderer's start time`);
       assert.ok(check.seconds >= check.commandSeconds, `${check.cmd} effect starts at or after the row`);
+      if (check.cmd === "Se") assert.equal(check.visual, false, "Se is audio-only evidence");
     }
     const camera = new Set(["Focus", "Zoom", "Pedestal", "PanV2", "DoF", "Track"]);
     const settle = report.method.settleSeconds;
-    assert.ok(report.checks.some((check) => camera.has(check.cmd) && check.seconds >= settle),
+    assert.ok(report.checks.some((check) => camera.has(check.cmd) && check.beforeSeconds >= settle),
               "at least one camera checkpoint after the opening settle");
-    assert.ok(report.checks.every((check) => !camera.has(check.cmd) || check.seconds >= settle),
+    assert.ok(report.checks.every((check) => !camera.has(check.cmd) || check.beforeSeconds >= settle),
               "no camera evidence is taken from the opening settle");
     const firstLine = Math.min(...result.report.lines.map((line) => line.time));
     assert.ok(report.checks.some((check) => camera.has(check.cmd) && check.seconds >= firstLine),

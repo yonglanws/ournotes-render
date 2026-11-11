@@ -123,7 +123,7 @@
 3. `npm run lint`。
 4. `npm run test:stories`（新增）：语料存在时重算 30 部基线，断言零解析失败及核心分布；读取一次 LLM `report.json` 断言固定场景数、逐场硬性下限、聚合区间和命令数；语料或报告缺失时逐项 skip。
 5. `npm run eval:stories -- --run <name>`：使用本机 `config.yaml` 的 LLM 地址/模型，固定温度、pipeline、repairRounds、jsonMode、maxTokens；输出逐场脚本、usage/latency/warnings、`report.json` 和 `all-stories.json`。
-6. `npm run audit:frames -- --video <mp4> --episode <episode.json> --out <dir>`：ffmpeg 抽帧并生成 `frame-report.json`；人工核对报告中的前后帧变化、时间点和画面 PNG。
+6. `npm run audit:frames -- --video <mp4> --episode <episode.json> --timeline <job>.timeline.json --out <dir> --require-camera`：读取渲染器 `onCommand` 时间线，ffmpeg 抽帧并生成 `frame-report.json`；人工核对报告中的前后帧变化、时间点、`confounds` 和画面 PNG。
 7. 至少一次真实 e2e 导出（`OURNOTES_E2E_CORE`、`OURNOTES_E2E_SITE`、可用 Chrome/ffmpeg 均设置）及其抽帧报告；若环境不可用，明确列为未完成证据而不是用单元测试替代。
 8. `git status --short`、`git diff --cached --stat` 和本次提交 hash；确认 23 个原有修改仍为未暂存且内容未被本轮覆盖。
 

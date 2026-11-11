@@ -739,41 +739,19 @@ Expected: FAIL because `frame-audit.mjs` does not exist.
 
 - [ ] **Step 3: Implement timeline and frame extraction**
 
-In `scripts/stories/frame-audit.mjs`, export `validateFrameReport`, `frameCheckpoints(episode)`, and CLI `main`:
-- parse `--video`, `--episode`, `--out`, `--ffmpeg`;
-- choose command indices for `Focus`, `Zoom`, `Pedestal`, `PanV2`, `DoF`, `Se`, `Motion`, `In`, `Out`; estimate timeline seconds by summing blocking `Duration` and `DelaySeconds` from the existing `player-core.js` rules; include 0.15s before and 0.45s after each checkpoint;
-- use `spawnSync(ffmpeg, ["-ss", seconds, "-i", video, "-frames:v", "1", png])` for each before/after frame, clipped to video duration probed with `ffprobe`;
-- Use `spawnSync` for ffmpeg rawvideo output and compute the difference in Node without new dependencies:
+In `scripts/stories/frame-audit.mjs`, export `validateFrameReport`, `frameCheckpoints(episode, timeline)`, `frameTarget`, `duplicateFramePairs`, and CLI `main`:
+- parse `--video`, `--episode`, `--timeline`, `--out`, `--ffmpeg`, `--require-camera`;
+- the renderer writes `<job>.timeline.json` from the StorySession `onCommand` clock (shifted to video time by the first captured frame); checkpoints come only from that timeline, never from a second `blockingSeconds`/duration model;
+- skip the settle with `beforeSeconds >= settleSeconds`, prefer a non-zero-duration camera move, include `Track`/`LookTarget`, cap the after window at the next command start, mark `Se` `visual:false` (audio-only), and record overlapping visual rows as `confounds`;
+- probe width/height/duration/fps with the pinned ffmpeg (`-i` stderr), record its version and binary sha256; no external ffprobe requirement;
+- extract full-resolution PNGs with `spawnSync`; near the end seek on the output (`-i ... -ss ...`) so the frame is exact; compare 160×90 gray frames and set `changed = meanAbsoluteDifference > 1.0`;
+- write `frame-report.json` with relative video/episode/timeline paths, sha256, command counts, method threshold/windows, every checkpoint's `i`, `cmd`, `commandSeconds`, effect `seconds`, before/after PNG paths + sha256, difference, `changed`, `visual`, `confounds`, `lowerBound`/`clamped`/`afterCapped` flags, duplicate pairs, and `failures`.
 
-```js
-const grabGray = (file, seconds, width, height, ffmpeg) => {
-  const r = spawnSync(ffmpeg, ["-v", "error", "-ss", String(seconds), "-i", file,
-    "-frames:v", "1", "-vf", `scale=${width}:${height}`, "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1"],
-    { maxBuffer: 64 * 1024 * 1024 });
-  if (r.status !== 0 || r.stdout.length < width * height)
-    throw new Error(`ffmpeg frame extraction failed at ${seconds}s: ${r.stderr?.toString() || "short output"}`);
-  return r.stdout.subarray(0, width * height);
-};
-const meanAbsoluteDifference = (a, b) => {
-  let total = 0;
-  for (let i = 0; i < a.length; i++) total += Math.abs(a[i] - b[i]);
-  return a.length ? total / a.length : 0;
-};
-const frame = (ffmpeg, video, seconds, png) => {
-  const r = spawnSync(ffmpeg, ["-v", "error", "-ss", String(seconds), "-i", video,
-    "-frames:v", "1", "-y", png]);
-  if (r.status !== 0) throw new Error(`ffmpeg PNG extraction failed: ${r.stderr?.toString()}`);
-};
-```
-
-Probe width/height/duration with `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -show_entries format=duration -of json <video>`; scale raw frames to 160×90 for comparison while saving the full-resolution PNG evidence. `changed` is `meanAbsoluteDifference > 1.0` on the 0–255 grayscale values. Do not fabricate changed pixels.
-- write `frame-report.json` with video sha256, episode command count, ffmpeg version, every checkpoint's command `i`, `cmd`, seconds, before/after PNG paths, numeric difference, `changed`, and `failures`.
-
-`validateFrameReport` must return failures for zero checks, missing PNGs, missing difference values, any ffmpeg failure, or any `changed: false` on a camera check.
+`validateFrameReport` must return failures for zero checks, missing/unsafe frame paths, missing hashes or difference values, a `changed` flag inconsistent with the difference, missing video/episode/timeline provenance, any ffmpeg failure, a `frameFailure`, duplicate camera frame pairs, `Se` marked visual, a non-visual camera check, or (with `--require-camera`) no visual camera checkpoint.
 
 - [ ] **Step 4: Extend e2e director test**
 
-In `host/tests/e2e-director.test.mjs`, after the existing site-engine render assertion, add a gated step that writes the generated episode next to the MP4 and invokes the frame-audit CLI when `OURNOTES_FRAME_AUDIT=1`. Keep the existing `OURNOTES_E2E_SITE`, `OURNOTES_E2E_CORE`, and `OURNOTES_E2E_DIRECTOR_BASE` skip guards. Assert `frame-report.json` has zero failures and at least one camera check.
+In `host/tests/e2e-director.test.mjs`, after the existing site-engine render assertion, add a gated step that writes the generated episode next to the MP4, passes the renderer's `<job>.timeline.json`, and invokes the frame-audit CLI with `--timeline` and `--require-camera` when `OURNOTES_FRAME_AUDIT=1`. Keep the existing `OURNOTES_E2E_SITE`, `OURNOTES_E2E_CORE`, and `OURNOTES_E2E_DIRECTOR_BASE` skip guards. Give `spawnSync` a timeout and assert zero failures, an empty duplicate list, the video/timeline/episode sha256 and command count, and at least one visual camera checkpoint after the settle and after a real line time.
 
 - [ ] **Step 5: Wire npm script**
 
@@ -794,10 +772,11 @@ OURNOTES_E2E_DIRECTOR_BASE=stories/10610.json OURNOTES_FRAME_AUDIT=1 \
 npm run test:host -- --test-name-pattern="director"
 npm run audit:frames -- --video ../ournotes-ai-lab/frame-check.mp4 \
   --episode ../ournotes-ai-lab/frame-check.episode.json \
-  --out ../ournotes-ai-lab/frames
+  --timeline ../ournotes-ai-lab/frame-check.timeline.json \
+  --out ../ournotes-ai-lab/frames --require-camera
 ```
 
-Expected: frame-report has zero failures, at least one `Focus`, `Zoom`, `Pedestal`, `PanV2`, `DoF`, or `Motion` checkpoint, and all referenced PNGs exist with nonzero difference. If browser/core/ffmpeg is unavailable, record the exact skip reason as an unfinished acceptance item; do not replace it with a synthetic report.
+Expected: frame-report has zero failures, at least one visual `Focus`, `Zoom`, `Pedestal`, `PanV2`, `DoF`, or `Track` checkpoint, and all referenced PNGs exist with nonzero difference. `Se` is marked `visual:false`; overlapping rows are listed in `confounds`, not claimed as isolated evidence. If browser/core/ffmpeg is unavailable, record the exact skip reason as an unfinished acceptance item; do not replace it with a synthetic report.
 
 - [ ] **Step 7: Commit Task 5**
 
@@ -842,7 +821,9 @@ OURNOTES_EVAL_REPORT=../ournotes-ai-lab/runs/phase1/report.json \
 npm run test:stories
 npm run eval:stories -- --run final --pipeline staged --temperature 0.8
 npm run audit:frames -- --video ../ournotes-ai-lab/final.mp4 \
-  --episode ../ournotes-ai-lab/final.episode.json --out ../ournotes-ai-lab/final-frames
+  --episode ../ournotes-ai-lab/final.episode.json \
+  --timeline ../ournotes-ai-lab/final.timeline.json \
+  --out ../ournotes-ai-lab/final-frames --require-camera
 ```
 
 Expected: all available gates PASS; any skipped external gate has a clear reason and is listed as evidence, not counted as a visual pass.
