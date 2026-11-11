@@ -11,7 +11,7 @@ import {
   EVAL_POLICY, FIXED_MIN_CHARS, FIXED_MIN_LINES, PROVENANCE_SCHEMA, configDigest, evalSourceDigest,
   sceneListDigest, sha256,
 } from "./eval-provenance.mjs";
-import { catalogVerification, reportChecks, reportFailures, rangeFailures } from "./eval-gate.mjs";
+import { catalogVerification, reportChecks, reportFailures, rangeFailures, resultFailures } from "./eval-gate.mjs";
 
 const reportPath = process.env.OURNOTES_EVAL_REPORT;
 const skip = !reportPath ? "OURNOTES_EVAL_REPORT is not set"
@@ -188,6 +188,26 @@ test("normalization direction totals must equal the final compiled summary", () 
   const dropped = JSON.parse(JSON.stringify(report));
   dropped.results[0].normalization.names.dropped = -1;
   assert.ok(gate(dropped).some((failure) => /names\.dropped/.test(failure)));
+});
+
+test("the per-scene character floor is the official-derived 300", () => {
+  assert.equal(FIXED_MIN_CHARS, 300);
+  assert.equal(FIXED_MIN_LINES, 28);
+  const accepted = validReport();
+  accepted.results[0].summary.charsTotal = 328;
+  accepted.results[0].summary.charsMean = 328 / 36;
+  assert.ok(!resultFailures(accepted).some((failure) => /characters < 300/.test(failure)),
+    "a 328-character pair scene is above the fixed floor");
+
+  const rejected = validReport();
+  rejected.results[0].summary.charsTotal = 299;
+  rejected.results[0].summary.charsMean = 299 / 36;
+  assert.ok(resultFailures(rejected).some((failure) => /299 characters < 300/.test(failure)));
+
+  const relaxed = JSON.parse(JSON.stringify(validReport()));
+  relaxed.config.minChars = 400;
+  assert.ok(gate(relaxed).some((failure) => /config\.minChars/.test(failure)),
+    "the floor is pinned in the config fingerprint");
 });
 
 test("the gate re-verifies the catalog digest and names the skip reason when no site is configured", () => {

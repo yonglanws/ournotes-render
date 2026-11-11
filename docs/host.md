@@ -479,8 +479,10 @@ npm run eval:stories -- --run phase1 --pipeline staged --temperature 0.8
 - 单场超时、JSON 失败、编译失败或命令审计失败只记录该场，继续其余场景；回答被 `finish_reason=length` 截断时，
   staged 管线只在单个 `ask` 阶段对同一请求重试一次，single 管线没有截断重试；评估器每场只调用一次 `StoryWriter`。
   staged 与 single 的失败记录都保留 `raw`、`stages`、`usage`、`warnings` 和 `latencyMs`（single 的
-  `StoryWriterError.partial` 由同一个记录路径写出），不会只剩一句错误信息。分镜经修复仍不可用、退回
-  「默认走位 + 无动作演出」时按失败场记录（该场没有可验收的演出）。成功场数与失败列表分开写入。
+  `StoryWriterError.partial` 由同一个记录路径写出），不会只剩一句错误信息。台词补写以 2 分钟目标 480 字为
+  提示目标，最多补写两次；两轮后仍低于 480 但达到固定门禁 `28 句 / 300 字` 时按短场接受并写入
+  `dialogueShort` 警告，只有低于 `28 句 / 300 字` 才失败。分镜经修复仍不可用、退回「默认走位 + 无动作演出」
+  时按失败场记录（该场没有可验收的演出）。成功场数与失败列表分开写入。
 
 报告目录：
 
@@ -500,7 +502,8 @@ runs/<run>/report.json            generatedAt、provenance、脱敏配置、逐�
   官方目标的 `official-baseline.mjs` / `official-corpus.mjs`）和当前 HEAD。
 - `config.digest`：pipeline、temperature、targetMinutes、maxLines、minLines、minChars、maxOnStage、repairRounds、
   retries、directorPlan、systemPrompt 摘要、角色卡身份摘要、模型/baseUrl/密钥是否存在、catalog/scene 摘要；
-  报告只存摘要，不存提示词或密钥。每场下限固定在 `FIXED_MIN_LINES = 28`、`FIXED_MIN_CHARS = 400`。
+  报告只存摘要，不存提示词或密钥。每场下限固定在 `FIXED_MIN_LINES = 28`、`FIXED_MIN_CHARS = 300`：
+  官方双人场实测总字数均值约 338.8、中位 372，300 低于官方均值，不是凭空放宽；28 行保留官方 32 行下限的容差。
 - `catalog.digest`：站点底本的舞台/音乐/SE/角色动作与表情清单。质量门在设置了 `OURNOTES_SITE_FORMAT` 时会从该
   站点重新构建 catalog 并重算摘要；未设置时该检查按明确原因跳过，不会假装通过。
 - `generatedAt`：报告时间；质量门默认拒绝超过 72 小时或未来的报告。

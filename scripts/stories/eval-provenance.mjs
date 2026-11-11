@@ -7,15 +7,14 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { EVAL_SCENES } from "./eval-scenes.mjs";
+import { FIXED_MIN_CHARS, FIXED_MIN_LINES } from "../../host/ai/official-targets.js";
+
+export { FIXED_MIN_CHARS, FIXED_MIN_LINES };
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const PROVENANCE_SCHEMA = "ournotes-eval-provenance/1";
 export const FIXED_TARGET_MINUTES = 2;
 export const FIXED_MAX_LINES = 36;
-// The gate's per-scene floors are fixed here as well as checked in the config
-// fingerprint, so a report cannot silently relax them by editing one file.
-export const FIXED_MIN_LINES = 28;
-export const FIXED_MIN_CHARS = 400;
 
 // A product decision, recorded in every report: line-break balancing is a
 // deterministic renderer layout step. Raw two-line output is diagnostic; the

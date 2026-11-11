@@ -8,7 +8,7 @@
 //             focused repair and a fallback, and the result carries per-stage diagnostics (stages/warnings/usage).
 import { applyFixes, checkScript, parseScript, SCRIPT_FORMAT } from "../../scripts/lib/story-author/script.js";
 import { extractJson } from "./json.js";
-import { dialogueBudgetFor } from "./official-targets.js";
+import { dialogueBudgetFor, FIXED_MIN_CHARS, FIXED_MIN_LINES } from "./official-targets.js";
 import { buildPlanMessages, buildQuickCastMessages, buildStoryMessages, MAX_PROMPT_MODELS } from "./prompt.js";
 import {
   balanceLineBreaks, buildCastMessages, buildDialogueLengthPrompt, buildDialogueMessages,
@@ -561,18 +561,36 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
       }
     }
     if (dialogueIsShort()) {
-      const message = `台词补写后仍不足（${dialogue.lines.length} 句 / ${countDialogueChars(dialogue)} 字，` +
-        `至少需要 ${minDialogueLines} 句 / ${minDialogueChars} 字）`;
-      throw new StoryWriterError(message, {
-        details: [{ path: "/dialogue", code: "tooShort", message }],
-        partial: {
-          latencyMs: Date.now() - runStartedAt,
-          warnings: [...stageWarnings],
-          raw: lastDialogueRaw,
-          stages: [...stages],
-          usage: combineUsage(usages),
-        },
-      });
+      // The 480-character prompt target is a best-effort expansion target; the
+      // fixed gate floor is the official-derived 300 characters. A pair scene
+      // between those bounds is accepted and explicitly reported as short.
+      const candidates = [dialogue, expansionBase]
+        .filter((candidate) => candidate.lines.length >= FIXED_MIN_LINES &&
+          countDialogueChars(candidate) >= FIXED_MIN_CHARS)
+        .sort((a, b) => countDialogueChars(b) - countDialogueChars(a) ||
+          b.lines.length - a.lines.length);
+      if (candidates.length) {
+        dialogue = candidates[0];
+        stageWarnings.push({
+          code: "dialogueShort",
+          message: `台词补写后仍短于目标（${dialogue.lines.length} 句 / ${countDialogueChars(dialogue)} 字，` +
+            `目标 ${requiredLines} 句 / ${minDialogueChars} 字），但达到固定下限 ` +
+            `${FIXED_MIN_LINES} 句 / ${FIXED_MIN_CHARS} 字；按短场接受`,
+        });
+      } else {
+        const message = `台词补写后仍不足（${dialogue.lines.length} 句 / ${countDialogueChars(dialogue)} 字，` +
+          `至少需要 ${FIXED_MIN_LINES} 句 / ${FIXED_MIN_CHARS} 字）`;
+        throw new StoryWriterError(message, {
+          details: [{ path: "/dialogue", code: "tooShort", message }],
+          partial: {
+            latencyMs: Date.now() - runStartedAt,
+            warnings: [...stageWarnings],
+            raw: lastDialogueRaw,
+            stages: [...stages],
+            usage: combineUsage(usages),
+          },
+        });
+      }
     }
   }
   const breakBalance = balanceLineBreaks(dialogue);

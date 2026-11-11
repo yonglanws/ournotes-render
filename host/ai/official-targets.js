@@ -9,6 +9,13 @@ import { OFFICIAL_TARGETS } from "../../scripts/stories/official-baseline.mjs";
 
 export { OFFICIAL_TARGETS };
 
+// Fixed evaluation floors for one generated pair scene. The class has a
+// 338.8-character mean and 372-character median per pair scene in the checked
+// official sample; 300 is deliberately below that official mean. The line floor
+// keeps the 32-line official minimum with a small tolerance.
+export const FIXED_MIN_LINES = 28;
+export const FIXED_MIN_CHARS = 300;
+
 const CHECKED_MIN_LINE_FLOOR = 12;
 const LINES_TOLERANCE = 0.88;
 const LINES_ABOVE_TARGET = 1.3;

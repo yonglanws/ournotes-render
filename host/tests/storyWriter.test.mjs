@@ -421,6 +421,30 @@ test("a successful expansion meeting both floors is used", async () => {
   assert.equal(countDialogueChars(out.dialogue), 32 * 16);
 });
 
+test("two failed expansions accept a 328-character scene above the fixed floor with a warning", async () => {
+  const short = dialogueWith(36, 9);
+  short.lines[0].text = "台".repeat(13); // 36 * 9 + 4 = 328 official-pair-scene-sized chars
+  const llm = expansionLlm(short, [JSON.stringify(short), JSON.stringify(short)]);
+  const out = await stagedRunAtTwoMinutes(llm);
+  assert.equal(llm.calls.length, 5, "both expansions run before the fixed-floor acceptance");
+  assert.equal(out.dialogue.lines.length, 36);
+  assert.equal(countDialogueChars(out.dialogue), 328);
+  assert.ok(out.warnings.some((warning) => warning?.code === "dialogueShort"),
+    "the accepted short scene is reported, not silently passed");
+});
+
+test("two failed expansions reject a 299-character scene below the fixed floor", async () => {
+  const short = dialogueWith(36, 8);
+  short.lines[0].text = "台".repeat(19); // 36 * 8 + 11 = 299
+  const llm = expansionLlm(short, [JSON.stringify(short), JSON.stringify(short)]);
+  await assert.rejects(stagedRunAtTwoMinutes(llm), (error) => {
+    assert.match(error.message, /299 字/);
+    assert.match(error.message, /至少需要 28 句 \/ 300 字/);
+    return true;
+  });
+  assert.equal(llm.calls.length, 4, "no storyboard for a scene below the fixed floor");
+});
+
 test("normalizeDialogue keeps the fixed 32-line floor under the 36-line cap", () => {
   const dialogue = normalizeDialogue({
     raw: dialogueWith(32, 16), plan: PLAN2,
