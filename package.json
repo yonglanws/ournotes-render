@@ -29,6 +29,7 @@
     "baseline:stories": "node scripts/stories/official-baseline.mjs",
     "eval:stories": "node scripts/stories/ai-eval.mjs",
     "audit:stories": "node scripts/stories/compiled-command-audit.mjs",
+    "audit:frames": "node scripts/stories/frame-audit.mjs",
     "test:host": "node --test \"host/tests/**/*.test.mjs\"",
     "host:fetch-story": "node host/tools/fetch-story.mjs",
     "host:render-story": "node host/tools/render-story.mjs",

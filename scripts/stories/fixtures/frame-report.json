@@ -1,0 +1,39 @@
+{
+  "video": {
+    "path": "frame-check.mp4",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "duration": 6.2,
+    "width": 1300,
+    "height": 600
+  },
+  "episode": {
+    "path": "frame-check.episode.json",
+    "commandCount": 24
+  },
+  "ffmpeg": {
+    "path": "ffmpeg",
+    "version": "ffmpeg version 7.0",
+    "ok": true
+  },
+  "checks": [
+    {
+      "i": 5,
+      "cmd": "Focus",
+      "seconds": 1.2,
+      "before": "005-Focus-before.png",
+      "after": "005-Focus-after.png",
+      "meanAbsoluteDifference": 12.5,
+      "changed": true
+    },
+    {
+      "i": 8,
+      "cmd": "Zoom",
+      "seconds": 2.4,
+      "before": "008-Zoom-before.png",
+      "after": "008-Zoom-after.png",
+      "meanAbsoluteDifference": 4.25,
+      "changed": true
+    }
+  ],
+  "failures": []
+}

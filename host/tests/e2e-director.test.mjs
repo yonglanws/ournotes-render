@@ -5,6 +5,7 @@
 //   OURNOTES_E2E_SITE=resources/site OURNOTES_E2E_CORE=resources/site/vendor/live2dcubismcore.min.js \
 //     node --test host/tests/e2e-director.test.mjs
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -62,4 +63,32 @@ test("a director script compiles onto a site and renders with camera and acting"
   await runFfmpeg(["-hide_banner", "-loglevel", "error", "-i", result.output, "-f", "null", "-"]);
   console.log(`e2e director video: ${result.output} (${result.report.frames} frames, ${result.duration}s, ` +
               `${result.report.lines.length} lines)`);
+
+  // Opt-in frame audit: keep the generated episode next to the MP4, extract real PNG stills from
+  // the encoded video for the first camera/acting row of each kind, and fail on an unchanged
+  // camera checkpoint. The audit writes its own report and evidence under the temporary output.
+  if (process.env.OURNOTES_FRAME_AUDIT === "1") {
+    const outputDir = path.dirname(result.output);
+    const episodeFile = path.join(outputDir, "e2e-director.episode.json");
+    const framesDir = path.join(outputDir, "frames");
+    fs.writeFileSync(episodeFile, JSON.stringify(built.episode, null, 2));
+    const audit = spawnSync(process.execPath, [
+      path.resolve("scripts/stories/frame-audit.mjs"),
+      "--video", result.output,
+      "--episode", episodeFile,
+      "--out", framesDir,
+    ], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+    assert.equal(audit.status, 0, `frame audit failed:\n${audit.stdout}\n${audit.stderr}`);
+    const reportFile = path.join(framesDir, "frame-report.json");
+    const report = JSON.parse(fs.readFileSync(reportFile, "utf8"));
+    assert.deepEqual(report.failures, [], JSON.stringify(report.failures));
+    const camera = new Set(["Focus", "Zoom", "Pedestal", "PanV2", "DoF"]);
+    assert.ok(report.checks.some((check) => camera.has(check.cmd)), "at least one camera checkpoint");
+    for (const check of report.checks) {
+      assert.ok(fs.existsSync(path.join(framesDir, check.before)), `${check.cmd} before PNG exists`);
+      assert.ok(fs.existsSync(path.join(framesDir, check.after)), `${check.cmd} after PNG exists`);
+    }
+    console.log(`e2e frame report: ${reportFile} (${report.checks.length} checks, ` +
+                `${report.checks.filter((check) => check.changed).length} changed)`);
+  }
 });
