@@ -249,7 +249,7 @@ export const run = async (job) => {
                                            premultipliedAlpha: false, preserveDrawingBuffer: true });
   if (!gl) throw new Error("WebGL2 is not available in the browser");
 
-  const events = [], lines = [];
+  const events = [], lines = [], timeline = [];
   let uiFactory = null;
   if (job.fixtureUi && !siteEngine) {
     const fixture = await import("./fixture-ui.js");
@@ -304,20 +304,29 @@ export const run = async (job) => {
   const s = await Session.create(gl, store, {
     lang: job.lang || undefined, auto: true, autoplay: true, voice: true, sound: true, seed: job.seed || 1,
     width, height, audio: audioFactory, ...(uiFactory ? { ui: uiFactory } : {}),
-    onCommand: (c) => scheduleSiteActions(sessionRef, c),
+    onCommand: (c) => {
+      // The player calls this when the row actually starts, with the story clock at that moment. This is the
+      // timeline the frame audit cuts against: no host-side duration model, only what the player did.
+      if (c && Number.isInteger(c.i) && c.i >= 0) {
+        const seconds = sessionRef ? sessionRef.time : 0;
+        timeline.push({ i: c.i, cmd: c.cmd, seconds: Math.round(seconds * 1000) / 1000 });
+      }
+      scheduleSiteActions(sessionRef, c);
+    },
     onLine: (e) => lines.push({ index: e.index, time: sessionRef ? Math.round(sessionRef.time * 1000) / 1000 : 0,
                                 speaker: e.speaker, text: e.text }),
   });
   sessionRef = s;
   const audio = s.audio;
   if (siteEngine) cues = await uploadCuesSite(job.jobId, store, audio);
-  let frames = 0, steps = 0, ended = false, storySeconds = 0;
+  let frames = 0, steps = 0, ended = false, storySeconds = 0, videoStart = null;
   try {
     while (!s.ended && frames < maxFrames) {
       await s.step({ draw: false });
       steps++;
       if (steps % stepPerFrame !== 0 && !s.ended) continue;
       for (let i = 0; i < settle; i++) await s.step({ draw: false });
+      if (frames === 0) videoStart = s.time;                 // the story clock at the first encoded frame
       s.render();
       const blob = await blobOf(canvas, Math.max(0.3, Math.min(1, (job.jpegQuality || 92) / 100)));
       await post(`/job/${job.jobId}/frame`, blob, { "content-type": "image/jpeg", "x-frame": String(frames) });
@@ -327,6 +336,7 @@ export const run = async (job) => {
     ended = s.ended;
     storySeconds = s.time;
     if (!frames) {
+      if (videoStart == null) videoStart = s.time;
       s.render();
       const blob = await blobOf(canvas, 0.9);
       await post(`/job/${job.jobId}/frame`, blob, { "content-type": "image/jpeg", "x-frame": "0" });
@@ -337,8 +347,14 @@ export const run = async (job) => {
     if (audio && typeof audio.close === "function") { try { await audio.close(); } catch { /* already closed */ } }
   }
   events.push(...(audio.events || []));
+  // The MP4 starts at the first captured frame, which is later than story time 0 (model warmup and loading steps run
+  // before the capture loop). The audit cuts against the video, so shift the command and line clocks by that pre-roll.
+  const start = videoStart == null ? 0 : videoStart;
+  const toVideo = (value) => Math.max(0, Math.round((value - start) * 1000) / 1000);
+  for (const entry of timeline) { entry.storySeconds = entry.seconds; entry.seconds = toVideo(entry.seconds); }
+  for (const line of lines) { line.storyTime = line.time; line.time = toVideo(line.time); }
   const seconds = Math.round((performance.now() - t0) / 100) / 10;
   console.log(`job ${job.jobId}: ${frames} frames, ${ended ? "ended" : "stopped at the limit"}, ${events.length} audio events`);
   return { frames, fps: outFps, width, height, ended, storySeconds: Math.round(storySeconds * 1000) / 1000,
-           events, cues, lines, seconds };
+           videoStart: Math.round(start * 1000) / 1000, events, cues, lines, timeline, seconds };
 };

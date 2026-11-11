@@ -78,8 +78,14 @@ export class Renderer {
         signal, logger: this.logger,
       });
       const duration = report.frames / (report.fps || cfg.video.fps);
+      // The command timeline the page recorded at execution. The frame audit cuts against these timestamps, so the
+      // sidecar lives next to the MP4 and the report never has to guess a command's start from episode durations.
+      const timeline = path.join(cfg.paths.output, `${jobId}.timeline.json`);
+      fs.writeFileSync(timeline, `${JSON.stringify({
+        version: 1, videoStart: report.videoStart ?? 0, commands: report.timeline || [],
+      }, null, 2)}\n`);
       onProgress("done", 1, "完成");
-      return { output, report, audio, duration, pageErrors };
+      return { output, report, audio, duration, timeline, pageErrors };
     } finally {
       try { await browser?.close(); } catch { /* already gone */ }
       try { pageServer.removeJob(job); } catch { /* gone */ }

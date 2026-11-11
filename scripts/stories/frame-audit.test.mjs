@@ -1,49 +1,206 @@
-// The frame audit: a report passes only when it carries checks whose before/after PNGs are
-// named, a numeric difference and a visible change on every camera checkpoint. A broken
-// report (an empty frame path, a camera checkpoint that did not change) fails with one
-// finding per problem, and the timeline follows the player's blocking rules.
+// The frame audit: a report passes only when every check names a relative PNG pair, carries the
+// hashes and a numeric difference that agrees with `changed`, and every camera checkpoint shows a
+// visible, non-duplicated change. Checkpoints come from the renderer's own command timeline
+// (Location, Talk and no-wait rows included), never from a second host-side duration model.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
-import { frameCheckpoints, validateFrameReport } from "./frame-audit.mjs";
+import {
+  CAMERA_COMMANDS, duplicateFramePairs, frameCheckpoints, frameTarget, validateFrameReport,
+} from "./frame-audit.mjs";
 
-test("frame report needs real extracted frames and visible changes", () => {
-  const report = JSON.parse(readFileSync(new URL("./fixtures/frame-report.json", import.meta.url)));
+const reportFixture = () => JSON.parse(readFileSync(new URL("./fixtures/frame-report.json", import.meta.url)));
+
+const timelineOf = (entries) => ({ version: 1, commands: entries });
+const t = (i, cmd, seconds) => ({ i, cmd, seconds });
+
+test("a complete renderer report passes", () => {
+  const report = reportFixture();
   assert.deepEqual(validateFrameReport(report), []);
-  const broken = structuredClone(report);
-  broken.checks[0].changed = false;
-  broken.checks[0].before = "";
-  assert.ok(validateFrameReport(broken).length >= 2);
 });
 
-test("frame checkpoints follow the player's blocking seconds and window", () => {
+test("an empty frame path and a lying changed flag fail", () => {
+  const report = reportFixture();
+  report.checks[0].changed = false;
+  report.checks[0].before = "";
+  const failures = validateFrameReport(report);
+  assert.ok(failures.length >= 2);
+  assert.ok(failures.some((failure) => failure.code === "missingFrame"));
+  assert.ok(failures.some((failure) => failure.code === "cameraUnchanged"));
+});
+
+test("checkpoints use the renderer timeline, including a Location wait", () => {
   const episode = {
     commands: [
-      { i: 0, cmd: "Stage", TargetAssetName: "st/garden" },
-      { i: 1, cmd: "Focus", CameraDistance: 2, PositionType: 5, Duration: 1.2 },
+      { i: 0, cmd: "Location" },
+      { i: 1, cmd: "Focus", Duration: 1.2 },
       { i: 2, cmd: "Delay", Duration: 0.5 },
-      { i: 3, cmd: "Zoom", Parameter1: "1.2", Duration: 0.8, DelaySeconds: 0.2 },
-      { i: 4, cmd: "Talk", TargetName: "anon" },
-      { i: 5, cmd: "Pedestal", Parameter1: "-0.2", Duration: 1 },
-      { i: 6, cmd: "Focus", CameraDistance: 3, PositionType: 1, Duration: 0.5 },
-      { i: 7, cmd: "Se", Parameter1: "se_01", Duration: 0.5 },
+      { i: 3, cmd: "Zoom", Duration: 0.8 },
     ],
   };
-  const checks = frameCheckpoints(episode);
-  assert.deepEqual(checks.map((c) => [c.i, c.cmd]), [[1, "Focus"], [3, "Zoom"], [5, "Pedestal"], [7, "Se"]]);
-  assert.deepEqual(checks.map((c) => c.seconds), [0, 1.9, 2.7, 4.2]);
-  for (const check of checks) {
-    assert.equal(check.beforeSeconds, Number(Math.max(0, check.seconds - 0.15).toFixed(3)));
-    assert.equal(check.afterSeconds, Number((check.seconds + 0.45).toFixed(3)));
-  }
+  const checks = frameCheckpoints(episode, timelineOf([
+    t(0, "Location", 0), t(1, "Focus", 2.5), t(2, "Delay", 2.5), t(3, "Zoom", 3.1),
+  ]));
+  assert.deepEqual(checks.map((check) => [check.i, check.seconds]), [[1, 2.5], [3, 3.1]]);
+  assert.ok(checks.every((check) => check.lowerBound === false));
 });
 
-test("a report without checks or ffmpeg provenance fails", () => {
-  const empty = { checks: [], ffmpeg: { ok: true, version: "ffmpeg version 7.0" } };
-  assert.ok(validateFrameReport(empty).some((failure) => failure.code === "zeroChecks"));
-  const noFfmpeg = {
-    checks: [{ i: 1, cmd: "Focus", seconds: 0, before: "a.png", after: "b.png",
-               meanAbsoluteDifference: 3, changed: true }],
+test("a checkpoint after a Talk uses the renderer's actual line time, not a lower bound", () => {
+  const episode = { commands: [{ i: 0, cmd: "Talk" }, { i: 1, cmd: "Focus", Duration: 1.2 }] };
+  const checks = frameCheckpoints(episode, timelineOf([t(0, "Talk", 4), t(1, "Focus", 5.2)]));
+  assert.equal(checks.length, 1);
+  assert.equal(checks[0].seconds, 5.2);
+  assert.equal(checks[0].lowerBound, false);
+});
+
+test("a row's DelaySeconds shifts its effect window without inventing a timeline", () => {
+  const episode = {
+    commands: [
+      { i: 0, cmd: "Se", DelaySeconds: 0.5 },
+      { i: 1, cmd: "Track", Duration: 1 },
+    ],
   };
-  assert.ok(validateFrameReport(noFfmpeg).some((failure) => failure.code === "ffmpegMissing"));
+  const checks = frameCheckpoints(episode, timelineOf([t(0, "Se", 9.6), t(1, "Track", 9.6)]));
+  assert.deepEqual(checks.map((check) => [check.i, check.cmd, check.seconds, check.commandSeconds]),
+                   [[1, "Track", 9.6, 9.6], [0, "Se", 10.1, 9.6]]);
+  assert.equal(checks.filter((check) => CAMERA_COMMANDS.includes(check.cmd)).length, 1);
+});
+
+test("the after frame stops before the next command starts", () => {
+  const episode = {
+    commands: [
+      { i: 0, cmd: "Out", Duration: 0.2 },
+      { i: 1, cmd: "Focus", Duration: 0.5 },
+    ],
+  };
+  const checks = frameCheckpoints(episode, timelineOf([t(0, "Out", 12.1), t(1, "Focus", 12.367)]));
+  const out = checks.find((check) => check.cmd === "Out");
+  const focus = checks.find((check) => check.cmd === "Focus");
+  assert.equal(out.afterSeconds, 12.327);
+  assert.equal(out.afterCapped, true);
+  assert.equal(focus.afterSeconds, 12.817);
+  assert.equal(focus.afterCapped, false);
+});
+
+test("an episode without camera rows has no camera checkpoint", () => {
+  const episode = {
+    commands: [
+      { i: 0, cmd: "Location" },
+      { i: 1, cmd: "In", Duration: 0.2 },
+      { i: 2, cmd: "Motion" },
+      { i: 3, cmd: "Out", Duration: 0.2 },
+    ],
+  };
+  const checks = frameCheckpoints(episode, timelineOf([
+    t(0, "Location", 0), t(1, "In", 2.5), t(2, "Motion", 3), t(3, "Out", 3.5),
+  ]));
+  assert.deepEqual(checks.map((check) => check.cmd), ["In", "Motion", "Out"]);
+  assert.ok(checks.every((check) => !CAMERA_COMMANDS.includes(check.cmd)));
+});
+
+test("selection skips the opening settle, prefers a non-zero camera move and adds Track/LookTarget", () => {
+  const episode = {
+    commands: [
+      { i: 0, cmd: "Focus", Duration: 0 },
+      { i: 1, cmd: "Focus", Duration: 0 },
+      { i: 2, cmd: "Focus", Duration: 1.2 },
+      { i: 3, cmd: "Zoom", Duration: 0.8 },
+      { i: 4, cmd: "Track", Duration: 1 },
+      { i: 5, cmd: "LookTarget", Duration: 0.2 },
+    ],
+  };
+  const checks = frameCheckpoints(episode, timelineOf([
+    t(0, "Focus", 0), t(1, "Focus", 2), t(2, "Focus", 3), t(3, "Zoom", 4), t(4, "Track", 5),
+    t(5, "LookTarget", 6),
+  ]));
+  assert.deepEqual(checks.map((check) => [check.i, check.cmd, check.seconds]),
+                   [[2, "Focus", 3], [3, "Zoom", 4], [4, "Track", 5], [5, "LookTarget", 6]]);
+  assert.ok(checks.every((check) => check.seconds >= 1));
+});
+
+test("a camera checkpoint never duplicates another checkpoint's frame window", () => {
+  const episode = {
+    commands: [
+      { i: 0, cmd: "In", Duration: 0.2 },
+      { i: 1, cmd: "Zoom", Duration: 0.8 },
+      { i: 2, cmd: "Zoom", Duration: 0.8 },
+      { i: 3, cmd: "Track", Duration: 1 },
+    ],
+  };
+  const checks = frameCheckpoints(episode, timelineOf([
+    t(0, "In", 3), t(1, "Zoom", 3), t(2, "Zoom", 4), t(3, "Track", 3),
+  ]));
+  assert.deepEqual(checks.map((check) => [check.i, check.cmd, check.seconds]),
+                   [[0, "In", 3], [2, "Zoom", 4]]);
+});
+
+test("frameTarget rejects a frame beyond the last video frame and clamps only before zero", () => {
+  const video = { duration: 10, fps: 30, lastFrameAt: 9.9667 };
+  assert.deepEqual(frameTarget(5, video), { time: 5, clamped: false, failure: "" });
+  const late = frameTarget(10, video);
+  assert.equal(late.clamped, true);
+  assert.match(late.failure, /after the last frame/);
+  const before = frameTarget(-1, video);
+  assert.deepEqual(before, { time: 0, clamped: true, failure: "" });
+});
+
+test("the validator enforces changed, hashes, provenance, paths and frame failures", () => {
+  let report = reportFixture();
+  report.checks[0].meanAbsoluteDifference = 0.5;
+  report.checks[0].changed = true;
+  assert.ok(validateFrameReport(report).some((failure) => failure.code === "changedMismatch"));
+
+  report = reportFixture();
+  report.checks[1].beforeSha256 = report.checks[0].beforeSha256;
+  report.checks[1].afterSha256 = report.checks[0].afterSha256;
+  assert.ok(validateFrameReport(report).some((failure) => failure.code === "duplicateFrames"));
+  assert.equal(duplicateFramePairs(report.checks).length, 1);
+
+  report = reportFixture();
+  report.checks[0].frameFailure = "ffmpeg produced no output PNG frame at 1.2s";
+  report.checks[0].frameFailureKind = "no-frame";
+  const frameFailure = validateFrameReport(report).find((failure) => failure.code === "frameFailure");
+  assert.equal(frameFailure.kind, "no-frame");
+
+  report = reportFixture();
+  report.checks[0].meanAbsoluteDifference = null;
+  report.checks[0].before = "frame.jpg";
+  assert.ok(validateFrameReport(report).some((failure) => failure.code === "missingDifference"));
+  assert.ok(validateFrameReport(report).some((failure) => failure.code === "missingFrame"));
+
+  report = reportFixture();
+  report.ffmpeg.ok = false;
+  report.ffmpeg.error = "ffmpeg exited with 1";
+  assert.ok(validateFrameReport(report).some((failure) => failure.code === "ffmpegFailed"));
+
+  report = reportFixture();
+  delete report.ffmpeg.probe.version;
+  assert.ok(validateFrameReport(report).some((failure) => failure.code === "ffmpegMissing"));
+
+  report = reportFixture();
+  report.video.sha256 = "";
+  report.episode.sha256 = "";
+  const failures = validateFrameReport(report);
+  assert.ok(failures.some((failure) => failure.code === "missingVideoSha"));
+  assert.ok(failures.some((failure) => failure.code === "missingEpisodeSha"));
+});
+
+test("verified frame paths stay inside the output directory", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "frame-audit-paths-"));
+  try {
+    for (const unsafe of ["../x.png", path.join(dir, "x.png"), "a/../../x.png"]) {
+      const report = reportFixture();
+      report.checks[0].before = unsafe;
+      const codes = validateFrameReport(report, { dir, verifyFiles: true }).map((failure) => failure.code);
+      assert.ok(codes.includes("unsafeFramePath"), `${unsafe}: ${codes}`);
+    }
+    const report = reportFixture();
+    report.checks[0].before = "missing.png";
+    assert.ok(validateFrameReport(report, { dir, verifyFiles: true })
+      .some((failure) => failure.code === "missingFrameFile"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

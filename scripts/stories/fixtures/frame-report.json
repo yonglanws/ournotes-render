@@ -1,39 +1,80 @@
 {
+  "version": 2,
+  "method": {
+    "timing": "renderer",
+    "threshold": 1,
+    "rawWidth": 160,
+    "rawHeight": 90,
+    "beforeSeconds": 0.15,
+    "afterSeconds": 0.45,
+    "settleSeconds": 1,
+    "timeline": {
+      "path": "../frame-check.timeline.json",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "commands": 2,
+      "videoStart": 0.4
+    }
+  },
   "video": {
-    "path": "frame-check.mp4",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "path": "../frame-check.mp4",
+    "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
     "duration": 6.2,
     "width": 1300,
-    "height": 600
+    "height": 600,
+    "fps": 30,
+    "lastFrameAt": 6.167
   },
   "episode": {
-    "path": "frame-check.episode.json",
+    "path": "../frame-check.episode.json",
+    "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
     "commandCount": 24
   },
   "ffmpeg": {
-    "path": "ffmpeg",
     "version": "ffmpeg version 7.0",
-    "ok": true
+    "ok": true,
+    "error": "",
+    "probe": {
+      "version": "ffprobe version 7.0"
+    }
   },
   "checks": [
     {
       "i": 5,
       "cmd": "Focus",
       "seconds": 1.2,
-      "before": "005-Focus-before.png",
-      "after": "005-Focus-after.png",
+      "commandSeconds": 1.2,
+      "duration": 1.2,
+      "beforeSeconds": 1.05,
+      "afterSeconds": 1.65,
+      "before": "000005-Focus-before.png",
+      "after": "000005-Focus-after.png",
+      "beforeSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "afterSha256": "5555555555555555555555555555555555555555555555555555555555555555",
       "meanAbsoluteDifference": 12.5,
-      "changed": true
+      "changed": true,
+      "lowerBound": false,
+      "clamped": false,
+      "afterCapped": false
     },
     {
       "i": 8,
       "cmd": "Zoom",
       "seconds": 2.4,
-      "before": "008-Zoom-before.png",
-      "after": "008-Zoom-after.png",
+      "commandSeconds": 2.4,
+      "duration": 0.8,
+      "beforeSeconds": 2.25,
+      "afterSeconds": 2.85,
+      "before": "000008-Zoom-before.png",
+      "after": "000008-Zoom-after.png",
+      "beforeSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+      "afterSha256": "7777777777777777777777777777777777777777777777777777777777777777",
       "meanAbsoluteDifference": 4.25,
-      "changed": true
+      "changed": true,
+      "lowerBound": false,
+      "clamped": false,
+      "afterCapped": false
     }
   ],
+  "duplicates": [],
   "failures": []
 }

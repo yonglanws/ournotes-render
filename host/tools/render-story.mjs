@@ -133,6 +133,7 @@ const main = async () => {
   console.log(`  story ${result.report.ended ? "ended" : "stopped at the duration limit"}, ` +
               `${result.report.storySeconds.toFixed(2)} s of game time, ${result.report.lines?.length ?? 0} lines`);
   if (result.audio) console.log(`  audio: ${result.audio.duration.toFixed(2)} s, ${result.audio.mixed} cues mixed`);
+  if (result.timeline) console.log(`  timeline: ${result.timeline}`);
   if (result.pageErrors.length) console.log(`  page errors: ${result.pageErrors.length} (see the log above)`);
   console.log(`  rendered in ${seconds} s`);
 };
