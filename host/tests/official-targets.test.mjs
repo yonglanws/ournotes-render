@@ -207,6 +207,8 @@ test("the length-expansion prompt demands the exact line count and character flo
   });
   assert.match(user.content, /总句数正好 36 句/);
   assert.match(user.content, /总字数至少 480 字/);
+  assert.match(user.content, /平均每句至少 14 字/);
+  assert.match(user.content, /2~6 字短反应控制在 8 句以内/);
   assert.doesNotMatch(user.content, /总句数 36~\d+ 句/, "the expansion does not ask for a range");
 });
 

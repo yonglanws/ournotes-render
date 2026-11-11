@@ -512,12 +512,14 @@ export const buildDialogueLengthPrompt = ({ plan, catalog, request, config, prev
   const actualChars = countDialogueChars(
     typeof previous === "string" ? (() => { try { return JSON.parse(previous); } catch { return null; } })() : previous,
   );
-  const charRule = requiredChars
-    ? `- 总字数至少 ${requiredChars} 字（上一轮约 ${actualChars} 字），平均每句约 ${fixed(OFFICIAL_TARGETS.lineCharsMean, 1)} 字；`
-    : "";
   const actualMean = actualLines > 0 ? (actualChars / actualLines).toFixed(1) : "0";
+  const minCharsPerLine = requiredChars && requiredLines ? Math.ceil(requiredChars / requiredLines) : 0;
+  const maxShortLines = requiredChars ? Math.max(1, Math.round(requiredLines * OFFICIAL_TARGETS.shortShare)) : 0;
+  const charRule = requiredChars
+    ? `- 总字数至少 ${requiredChars} 字（上一轮约 ${actualChars} 字），平均每句至少 ${minCharsPerLine} 字；`
+    : "";
   const longRule = requiredChars
-    ? `- 上一轮平均每句只有 ${actualMean} 字；这一轮不要用大量 2~4 字短句凑句数，把对话的来回写满；也不要靠给每句加换行来凑长度。`
+    ? `- 上一轮平均每句只有 ${actualMean} 字；把 2~6 字短反应控制在 ${maxShortLines} 句以内，其余句子写 12~18 字，不要用「……嗯。」这类短句凑句数，也不要靠给每句加换行来凑长度。`
     : "";
   return [
     base[0],
@@ -528,6 +530,7 @@ export const buildDialogueLengthPrompt = ({ plan, catalog, request, config, prev
 少于要求的 ${requiredLines} 句${requiredChars ? ` / ${requiredChars} 字` : ""}。请保留原来的小事件和人物关系，
 重写一份完整台词稿：
 - 总句数正好 ${requiredLines} 句（不要少也不要多，上限 ${lineCap} 句），仍然用 turns 结构，每个 turn 1~4 条 lines；
+- 如果上一轮句数已经达到 ${requiredLines} 句，不要减少句数；逐句扩写内容直到总字数达标；
 ${charRule}
 ${longRule}
 - 不要靠重复台词凑数；补足对话的来回、停顿、短反应和情绪铺垫；

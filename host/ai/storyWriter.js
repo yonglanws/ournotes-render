@@ -515,8 +515,9 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
     countDialogueChars(dialogue) < minDialogueChars;
   if (enforceDialogueLength && dialogueIsShort()) {
     let lastDialogueRaw = dialogueAnswer.content;
+    let expansionBase = dialogue;
     const expandDialogue = async (label) => {
-      const current = dialogue;
+      const current = expansionBase;
       const currentLines = current.lines.length;
       const currentChars = countDialogueChars(current);
       logger.info?.(`${label}: ${currentLines} 句 / ${currentChars} 字，目标 ${requiredLines} 句 / ${minDialogueChars} 字`);
@@ -533,9 +534,13 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
         stageWarnings.push(`${label} 仍不足：` +
           (expanded ? `${expandedLines} 句 / ${expandedChars} 字` : "无法解析") +
           `（至少 ${minDialogueLines} 句 / ${minDialogueChars} 字）`);
+        // The second attempt should start from the best failed draft, not the
+        // original short dialogue, so its feedback can build on that draft.
+        if (expanded && (expandedLines > currentLines || expandedChars > currentChars)) expansionBase = expanded;
         return { ok: false, expanded };
       }
       dialogue = expanded;
+      expansionBase = expanded;
       return { ok: true, expanded };
     };
     markStageFailed(
