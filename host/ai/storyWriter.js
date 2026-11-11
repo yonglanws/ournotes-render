@@ -403,6 +403,7 @@ const generateSingle = async ({ llm, catalog, request, config, logger, signal, o
 // loop only asks for a new storyboard: the finished dialogue is restored verbatim after every merge. Every stage has
 // a fallback and reports into `stages`, so a caller can see which leg needed help.
 const generateStaged = async ({ llm, catalog, request, config, logger, signal, onProgress = () => {} }) => {
+  const runStartedAt = Date.now();
   const usages = [];
   const stages = [];
   const stageWarnings = [];
@@ -513,6 +514,7 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
   const dialogueIsShort = () => dialogue.lines.length < minDialogueLines ||
     countDialogueChars(dialogue) < minDialogueChars;
   if (enforceDialogueLength && dialogueIsShort()) {
+    let lastDialogueRaw = dialogueAnswer.content;
     const expandDialogue = async (label) => {
       const current = dialogue;
       const currentLines = current.lines.length;
@@ -520,13 +522,21 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
       logger.info?.(`${label}: ${currentLines} 句 / ${currentChars} 字，目标 ${requiredLines} 句 / ${minDialogueChars} 字`);
       const answer = await ask(buildDialogueLengthPrompt({ plan, catalog, request, config, previous: current,
         actualLines: currentLines, requiredLines, requiredChars: minDialogueChars }), label);
+      lastDialogueRaw = answer.content;
       const expanded = normalizeDialogue({ raw: extractJson(answer.content), plan, request, config });
-      if (expanded &&
-          (expanded.lines.length > currentLines || countDialogueChars(expanded) > currentChars)) {
-        dialogue = expanded;
-        return true;
+      const expandedLines = expanded?.lines.length || 0;
+      const expandedChars = expanded ? countDialogueChars(expanded) : 0;
+      // A rewrite that only grows characters (or only lines) is not progress:
+      // both fixed floors must be met before it replaces the dialogue.
+      const ok = expandedLines >= minDialogueLines && expandedChars >= minDialogueChars;
+      if (!ok) {
+        stageWarnings.push(`${label} 仍不足：` +
+          (expanded ? `${expandedLines} 句 / ${expandedChars} 字` : "无法解析") +
+          `（至少 ${minDialogueLines} 句 / ${minDialogueChars} 字）`);
+        return { ok: false, expanded };
       }
-      return false;
+      dialogue = expanded;
+      return { ok: true, expanded };
     };
     markStageFailed(
       `台词太短（${dialogue.lines.length} 句 / ${countDialogueChars(dialogue)} 字，` +
@@ -537,12 +547,27 @@ const generateStaged = async ({ llm, catalog, request, config, logger, signal, o
     for (let attempt = 0; attempt < 2 && dialogueIsShort(); attempt++) {
       if (attempt > 0) stageWarnings.push("补写后仍然偏短，已再补写一次");
       try {
-        const improved = await expandDialogue(attempt === 0 ? "dialogue-expand" : "dialogue-expand-2");
-        if (!improved) break;
+        const result = await expandDialogue(attempt === 0 ? "dialogue-expand" : "dialogue-expand-2");
+        if (!result.ok) continue;
       } catch (e) {
         if (signal?.aborted) throw signal.reason || e;
+        if (e?.content) lastDialogueRaw = e.content;
         stageWarnings.push(attempt === 0 ? `台词补写失败：${e.message}` : `台词二次补写失败：${e.message}`);
       }
+    }
+    if (dialogueIsShort()) {
+      const message = `台词补写后仍不足（${dialogue.lines.length} 句 / ${countDialogueChars(dialogue)} 字，` +
+        `至少需要 ${minDialogueLines} 句 / ${minDialogueChars} 字）`;
+      throw new StoryWriterError(message, {
+        details: [{ path: "/dialogue", code: "tooShort", message }],
+        partial: {
+          latencyMs: Date.now() - runStartedAt,
+          warnings: [...stageWarnings],
+          raw: lastDialogueRaw,
+          stages: [...stages],
+          usage: combineUsage(usages),
+        },
+      });
     }
   }
   const breakBalance = balanceLineBreaks(dialogue);

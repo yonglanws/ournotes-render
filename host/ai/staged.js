@@ -509,7 +509,6 @@ export const buildDialogueLengthPrompt = ({ plan, catalog, request, config, prev
   const base = buildDialogueMessages({ plan, catalog, request, config });
   const raw = typeof previous === "string" ? previous : JSON.stringify(previous);
   const lineCap = Math.max(1, Math.floor(Number(request.maxLines ?? config.story?.maxLines ?? 120) || 120));
-  const upper = Math.max(requiredLines, Math.min(lineCap, Math.round(requiredLines * 1.15)));
   const actualChars = countDialogueChars(
     typeof previous === "string" ? (() => { try { return JSON.parse(previous); } catch { return null; } })() : previous,
   );
@@ -528,7 +527,7 @@ export const buildDialogueLengthPrompt = ({ plan, catalog, request, config, prev
 上一轮只写了 ${actualLines} 句台词${requiredChars ? `、约 ${actualChars} 字` : ""}，
 少于要求的 ${requiredLines} 句${requiredChars ? ` / ${requiredChars} 字` : ""}。请保留原来的小事件和人物关系，
 重写一份完整台词稿：
-- 总句数 ${requiredLines}~${upper} 句，仍然用 turns 结构，每个 turn 1~4 条 lines；
+- 总句数正好 ${requiredLines} 句（不要少也不要多，上限 ${lineCap} 句），仍然用 turns 结构，每个 turn 1~4 条 lines；
 ${charRule}
 ${longRule}
 - 不要靠重复台词凑数；补足对话的来回、停顿、短反应和情绪铺垫；

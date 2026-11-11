@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { dialogueBudgetFor, directionBudgetFor, gazeBudgetFor, OFFICIAL_TARGETS } from "../ai/official-targets.js";
-import { buildCastMessages, buildDialogueMessages, buildStoryboardMessages } from "../ai/staged.js";
+import { buildCastMessages, buildDialogueMessages, buildStoryboardMessages, buildDialogueLengthPrompt } from "../ai/staged.js";
 import { buildStoryMessages, stagingRules } from "../ai/prompt.js";
 
 test("line and character budgets use one 2-minute formula", () => {
@@ -197,6 +197,17 @@ test("prompt gaze budgets are one total, not lookAt plus independent looks", () 
       assert.ok(!text.includes(`独立 look ${expected.total} 次`), `${lines}: no second full gaze budget`);
     }
   }
+});
+
+test("the length-expansion prompt demands the exact line count and character floor", () => {
+  const previous = { title: "雨", lines: [{ say: "a", text: "短。" }] };
+  const [, user] = buildDialogueLengthPrompt({
+    plan: PLAN, catalog: CATALOG, request: { prompt: "放学后", targetMinutes: 2, maxLines: 36 },
+    config: CONFIG, previous, actualLines: 27, requiredLines: 36, requiredChars: 480,
+  });
+  assert.match(user.content, /总句数正好 36 句/);
+  assert.match(user.content, /总字数至少 480 字/);
+  assert.doesNotMatch(user.content, /总句数 36~\d+ 句/, "the expansion does not ask for a range");
 });
 
 test("the shared staging rules receive the actual scene budget", () => {

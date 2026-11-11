@@ -5,7 +5,7 @@ import { parseScript } from "../../scripts/lib/story-author/script.js";
 import { generateScript, prepareScript } from "../ai/storyWriter.js";
 import { LLMError } from "../ai/llm.js";
 import { directionBudgetFor } from "../ai/official-targets.js";
-import { buildDialogueMessages, balanceLineBreaks, buildStoryboardMessages, mergeStagedScript, normalizeDialogue, onStageProblems, spreadPositions } from "../ai/staged.js";
+import { buildDialogueMessages, balanceLineBreaks, buildStoryboardMessages, mergeStagedScript, normalizeDialogue, onStageProblems, spreadPositions, countDialogueChars } from "../ai/staged.js";
 import { quietLogger } from "./helpers.mjs";
 
 const CATALOG = {
@@ -262,6 +262,37 @@ const stagedRun = (llm) => generateScript({
   config: STAGED_CONFIG, logger: quietLogger(),
 });
 
+const stagedRunAtTwoMinutes = (llm) => generateScript({
+  llm, catalog: CATALOG,
+  request: { prompt: "放学后", language: "zh-Hans", targetMinutes: 2, maxLines: 36 },
+  config: STAGED_CONFIG, logger: quietLogger(),
+});
+
+const dialogueWith = (count, chars) => ({
+  title: "雨",
+  lines: Array.from({ length: count }, (_, i) => ({
+    say: i % 2 ? "b" : "a", text: "台".repeat(chars),
+  })),
+});
+
+// Call 1 cast, call 2 the short dialogue, then the scripted expansion answers,
+// then a storyboard that references only the first three line ids.
+const expansionLlm = (dialogue, expansions) => {
+  const calls = [];
+  return {
+    calls,
+    available: true,
+    async json(messages) {
+      calls.push(messages.map((m) => m.content).join("\n"));
+      if (calls.length === 1) return { content: JSON.stringify(CAST_DOC) };
+      if (calls.length === 2) return { content: JSON.stringify(dialogue) };
+      const index = calls.length - 3;
+      if (index < expansions.length) return { content: expansions[index] };
+      return { content: JSON.stringify(STORYBOARD_DOC) };
+    },
+  };
+};
+
 test("the staged pipeline writes cast, dialogue, then storyboard", async () => {
   const llm = stagedLlm(STORYBOARD_DOC);
   const out = await stagedRun(llm);
@@ -339,6 +370,63 @@ test("a truncated staged answer is retried once before failing", async () => {
   assert.equal(calls, 4);
   assert.ok(out.stages.some((stage) => stage.stage === "storyboard-retry"));
   assert.ok(out.warnings.includes("storyboard 回答被截断，已重试一次"));
+});
+
+test("an expansion with more characters but not enough lines is rejected and retried", async () => {
+  const llm = expansionLlm(dialogueWith(27, 11), [
+    JSON.stringify(dialogueWith(27, 20)),
+    JSON.stringify(dialogueWith(32, 16)),
+  ]);
+  const out = await stagedRunAtTwoMinutes(llm);
+  assert.equal(llm.calls.length, 5, "the rejected expansion triggers the second expansion");
+  assert.equal(out.dialogue.lines.length, 32);
+  assert.ok(out.warnings.some((warning) => /仍不足/.test(warning)), "the rejected expansion is recorded");
+});
+
+test("an unparseable first expansion still triggers the second attempt", async () => {
+  const llm = expansionLlm(dialogueWith(27, 11), [
+    "not a JSON dialogue",
+    JSON.stringify(dialogueWith(32, 16)),
+  ]);
+  const out = await stagedRunAtTwoMinutes(llm);
+  assert.equal(llm.calls.length, 5);
+  assert.equal(out.dialogue.lines.length, 32);
+  assert.ok(out.warnings.some((warning) => /仍不足|无法解析/.test(warning)));
+});
+
+test("two failed expansions fail the scene instead of returning a below-floor script", async () => {
+  const llm = expansionLlm(dialogueWith(27, 11), [
+    JSON.stringify(dialogueWith(27, 20)),
+    JSON.stringify(dialogueWith(27, 20)),
+  ]);
+  await assert.rejects(stagedRunAtTwoMinutes(llm), (error) => {
+    assert.match(error.message, /台词补写后仍不足/);
+    assert.match(error.message, /27 句/);
+    assert.ok(error.partial, "the short-dialogue failure carries diagnostics");
+    assert.ok(error.partial.stages.length, "the expansion stages are retained");
+    assert.ok(Array.isArray(error.partial.warnings));
+    assert.equal(error.partial.usage, null);
+    return true;
+  });
+  assert.equal(llm.calls.length, 4, "the storyboard is never requested for a below-floor dialogue");
+});
+
+test("a successful expansion meeting both floors is used", async () => {
+  const llm = expansionLlm(dialogueWith(27, 11), [
+    JSON.stringify(dialogueWith(32, 16)),
+  ]);
+  const out = await stagedRunAtTwoMinutes(llm);
+  assert.equal(llm.calls.length, 4, "one expansion is enough");
+  assert.equal(out.dialogue.lines.length, 32);
+  assert.equal(countDialogueChars(out.dialogue), 32 * 16);
+});
+
+test("normalizeDialogue keeps the fixed 32-line floor under the 36-line cap", () => {
+  const dialogue = normalizeDialogue({
+    raw: dialogueWith(32, 16), plan: PLAN2,
+    request: { maxLines: 36 }, config: STAGED_CONFIG,
+  });
+  assert.equal(dialogue.lines.length, 32);
 });
 
 test("a dialogue answer with no usable lines is retried once", async () => {
