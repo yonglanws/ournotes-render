@@ -96,7 +96,6 @@ pip install -r data/plugins/astrbot_plugin_ournotes_script/requirements.txt
 | `history_rounds` | `/视频对话` 保留的历史轮数 | `3` |
 | `session_timeout_minutes` | 会话历史保留时长 | `60` |
 | `poll_interval_seconds` | 渲染进度轮询间隔 | `3` |
-| `progress_interval_seconds` | 同一阶段内进度消息间隔；宿主帧进度变化至少每 10 秒转发；`0` = 只发阶段变化 | `20` |
 | `temp_dir` | 视频与剧本产物目录，留空用插件数据目录 | 空 |
 | `callback_api_base` | AstrBot 文件服务的外部可达地址 | 空 |
 | `max_video_mb` | 视频大小提醒阈值 | `50` |
@@ -124,7 +123,7 @@ POST /api/v1/script/generate（场景 / 模式 / 历史 / 时长 / pipeline）
 POST /api/v1/render（剧本 JSON，wait: false）
     宿主：队列 → TTS → 剧情编译 → 逐帧渲染 → 混音 → MP4
     ↓
-GET /api/v1/tasks/<id> 轮询阶段与进度 → 发送「渲染中：配音 50%」等消息
+GET /api/v1/tasks/<id> 轮询任务状态（静默轮询，不刷进度消息）
     ↓
 GET /api/v1/download/<文件> 流式下载 → 多级降级发送到群
     ↓

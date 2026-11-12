@@ -115,13 +115,6 @@
     "slider": { "min": 0.5, "max": 30, "step": 0.5 },
     "hint": "每隔多久查询一次宿主渲染任务的阶段与进度。"
   },
-  "progress_interval_seconds": {
-    "description": "进度消息间隔（秒）",
-    "type": "int",
-    "default": 20,
-    "slider": { "min": 0, "max": 300, "step": 10 },
-    "hint": "阶段变化时会立即发一条进度；同一阶段内至少间隔这么久再发。宿主每 2 秒上报一次已渲染帧数，插件至少每 10 秒转发一次变化。0 表示只发阶段变化。"
-  },
   "temp_dir": {
     "description": "产物目录（可选）",
     "type": "string",

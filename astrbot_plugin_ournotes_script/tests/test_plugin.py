@@ -367,7 +367,6 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             "script_timeout": 60,
             "export_timeout": 60,
             "poll_interval_seconds": 0.5,
-            "progress_interval_seconds": 0,
             "max_video_files": 5,
         }
         _DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -400,8 +399,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.render_payloads[0]["script"]["title"], "测试视频")
 
         texts = self.context.texts()
-        self.assertTrue(any("剧本已生成（3 句）" in text for text in texts))
-        self.assertTrue(any("渲染中：配音 50%" in text for text in texts))
+        self.assertTrue(any("剧本已生成，正在渲染视频…" in text for text in texts))
+        self.assertFalse(any("渲染中：" in text for text in texts))
         chain = self.context.sent[-1][1].chain
         self.assertEqual(chain[0].__class__.__name__, "Plain")
         self.assertIn("《测试视频》生成完成", chain[0].text)
@@ -412,7 +411,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(Path(video.path).is_file())
         self.assertEqual(Path(video.path).read_bytes(), VIDEO_BYTES)
 
-    async def test_render_progress_forwards_host_frame_messages(self) -> None:
+    async def test_render_polls_silently_and_sends_only_two_progress_messages(self) -> None:
         self.task_views = [
             {"status": "running", "phase": "synthesizing", "progress": 0.3,
              "message": "TTS 1/4", "elapsedSeconds": 2},
@@ -421,23 +420,16 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             {"status": "running", "phase": "rendering", "progress": 0.62,
              "message": "渲染剧情帧 120 帧，4.0 秒剧情", "elapsedSeconds": 20},
         ]
-        previous = main.PROGRESS_DETAIL_MIN_SECONDS
-        main.PROGRESS_DETAIL_MIN_SECONDS = 0
-        try:
-            await self.plugin._run(
-                "req-progress", {"origin": "test:group:100", "session_key": "test:group:100",
-                                 "user_id": "42", "group_id": "100"},
-                "测试进度", "story",
-            )
-        finally:
-            main.PROGRESS_DETAIL_MIN_SECONDS = previous
+        await self.plugin._run(
+            "req-silent", {"origin": "test:group:100", "session_key": "test:group:100",
+                           "user_id": "42", "group_id": "100"},
+            "静默轮询", "story",
+        )
 
-        texts = [text for text in self.context.texts() if "渲染中：" in text]
-        self.assertGreaterEqual(len(texts), 3, texts)
-        self.assertTrue(any("TTS 1/4" in text for text in texts))
-        self.assertTrue(any("渲染剧情帧 120 帧" in text for text in texts))
-        self.assertTrue(any("已用 20s" in text for text in texts))
-        self.assertFalse(any("62%" in text for text in texts), "frame messages replace the stale percent")
+        texts = self.context.texts()
+        self.assertEqual(len([text for text in texts if "剧本已生成，正在渲染视频…" in text]), 1)
+        self.assertFalse(any("渲染中：" in text for text in texts), texts)
+        self.assertFalse(any("TTS 1/4" in text or "渲染剧情帧 120 帧" in text for text in texts), texts)
 
     async def test_chat_mode_passes_history_and_records_it(self) -> None:
         context = {"origin": "test:group:100", "session_key": "test:group:100",
