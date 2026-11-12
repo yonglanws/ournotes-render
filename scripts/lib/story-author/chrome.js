@@ -63,9 +63,9 @@ export class Browser {
 
   // opts: executable, gpu, width / height (window size), extraArgs (operator Chrome flags, e.g. --use-angle=vulkan on
   // a Linux host whose default ANGLE device is SwiftShader), onConsole(type, text): the page's console and its
-  // uncaught errors
+  // uncaught errors, onNetworkError(errorText, resourceType): Chrome's own reason for a failed request
   static async launch({ executable = findBrowser(), gpu = false, width = 1300, height = 600, extraArgs = [],
-                        onConsole = null } = {}) {
+                        onConsole = null, onNetworkError = null } = {}) {
     const b = new Browser();
     b.profile = fs.mkdtempSync(path.join(os.tmpdir(), "story-author-"));
     const args = ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${b.profile}`, "--no-first-run",
@@ -88,7 +88,7 @@ export class Browser {
       const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
       const page = targets.find((t) => t.type === "page");
       if (!page) throw new Error("the browser has no page");
-      await b._connect(page.webSocketDebuggerUrl, onConsole);
+      await b._connect(page.webSocketDebuggerUrl, onConsole, onNetworkError);
       b.browserUrl = (await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()).webSocketDebuggerUrl;
     } catch (e) {
       await b.close();
@@ -97,7 +97,7 @@ export class Browser {
     return b;
   }
 
-  async _connect(url, onConsole) {
+  async _connect(url, onConsole, onNetworkError = null) {
     this.ws = new WebSocket(url);
     this.id = 0;
     this.pending = new Map();
@@ -121,6 +121,8 @@ export class Browser {
         const d = m.params.exceptionDetails;
         onConsole("error", (d.exception && d.exception.description) || d.text);
       }
+      if (onNetworkError && m.method === "Network.loadingFailed" && !m.params.canceled)
+        onNetworkError(m.params.errorText || "unknown error", m.params.type || "");
       for (const w of [...this.waiters]) if (w.method === m.method) { this.waiters.splice(this.waiters.indexOf(w), 1); w.resolve(m.params); }
     });
     this.ws.addEventListener("close", () => {
@@ -130,6 +132,7 @@ export class Browser {
     });
     await this.send("Runtime.enable");
     await this.send("Page.enable");
+    if (onNetworkError) await this.send("Network.enable");
   }
 
   send(method, params = {}) {

@@ -45,7 +45,12 @@ Irodori 只有一个合成槽位，聊天 TTS 高峰时每分钟 7-9 个请求�
 - 客户端断连会 abort 剧本生成并取消渲染任务；排队中/运行中取消都会释放 Chrome。
 - **浏览器崩溃快速失败**：渲染器用 `Browser.onClosed()` 与页面结果做 race。`kill -9` Chrome 主进程后任务在 5 秒内失败（`the browser closed before the render page reported a result`），队列立即释放，不会占槽到 `render.taskTimeoutMs`。服务器把该上限从 1 小时降到 30 分钟，作为卡死兜底。
 - `render-healthcheck.timer` 每 2 分钟探测 `/api/v1/health`，连续 3 次失败才重启 unit。
-- **页面上传重试**：渲染页每帧 POST 一次 JPEG。2026-11-13 01:38 生产上出现过一次渲染 8 分钟后以裸 `Failed to fetch` 失败：TTS 39/39 已完成，页面在渲染途中遇到一次 keep-alive 连接重置，而当时没有任何重试，单次瞬时错误就终止了整条任务。现在帧、音频 cue 和最终结果的上传都走 `postWithRetry`（网络错误/5xx 重试 3-4 次，4xx 直接失败），页面服务端 `keepAliveTimeout` 从 Node 默认 5 秒提到 120 秒；宿主日志会记录页面上报的栈。错误信息带上下文（例如 `frame 2314: Failed to fetch (after 3 attempts)`）。
+- **页面上传重试与帧体重编码**：渲染页每帧 POST 一次 JPEG。2026-11-13 生产上出现两次长片失败（01:38、02:10），第二次的重试日志为 `frame 3873: Failed to fetch (after 3 attempts)`；同一时刻页面把字符串结果 POST 回宿主却成功，说明不是整机或结果通道中断。合成压测（6000 帧小 JPEG、6000 帧 WebGL 671KB/帧共 3.9GB）全部通过，排除请求数/字节上限。修复分三层：
+  1. 每个响应的 `ok` body 都读掉，连接及时回到 Chrome 的复用池，不再堆积未读响应导致的陈旧 keep-alive socket。
+  2. 帧体先 `blob.arrayBuffer()` 再上传，请求体不再依赖 blob storage 的延迟读取。
+  3. 帧上传失败时**重新从 canvas 编码**（最多 4 次、退避 250–750ms），而不是重发同一个可能已失效的 Blob；错误带帧号与尝试次数。
+  页面服务端 `keepAliveTimeout` 从 Node 默认 5 秒提到 120 秒；CDP 的 `Network.loadingFailed` 会以 `page network: net::ERR_...` 写进宿主日志，页面上报的栈也会保留。验证：60 句、165.5 秒、4965 帧长片 373.8s 成功，跨过 3873 帧且 0 条告警。
+- **TTS 重试**：服务器 `tts.retries: 5`（退避 0.5+1+2+4+8 秒）。Irodori 短时重启（实测 2–7 秒）不再把整段台词变成静音；02:03 一次 2 秒重启曾让 19 句被跳过。
 - 站点写入由 `_withSiteWrite` 串行化，manifest / stories.json 原子写入；并发渲染不会互相覆盖。
 
 ## 5. 实测

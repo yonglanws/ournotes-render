@@ -8,12 +8,46 @@ import { RecordingAudio } from "./recording-audio.js";
 import { StorySession } from "/src/story/session.js";
 import { postWithRetry } from "/host/render/fetchRetry.js";
 
-const post = (url, body, headers = {}, { label = "", attempts = 3 } = {}) =>
-  postWithRetry(fetch, url, body, headers, {
+const post = async (url, body, headers = {}, { label = "", attempts = 3 } = {}) => {
+  const response = await postWithRetry(fetch, url, body, headers, {
     label: label || url, attempts,
     onRetry: (attempt, error) =>
       console.warn(`retrying ${label || url}: attempt ${attempt} failed: ${error?.message || error}`),
   });
+  // Drain the small "ok" body: an unread response keeps its connection out of Chrome's reuse pool.
+  await response.arrayBuffer().catch(() => {});
+  return response;
+};
+
+// A frame upload must survive a bad body, not just a bad socket. The JPEG starts as a Blob backed by Chrome's blob
+// storage; under memory pressure a blob can become unreadable, and resending that same Blob fails every time (the
+// production failures were three identical "Failed to fetch" in under a second while a string POST worked). Read the
+// blob into an ArrayBuffer before the request and, on failure, re-encode the still-drawn canvas into a fresh Blob.
+const uploadFrame = async (jobId, canvas, quality, index) => {
+  let last = null;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const blob = await blobOf(canvas, quality);
+    let bytes = null;
+    try { bytes = await blob.arrayBuffer(); } catch (e) { last = e; }
+    if (bytes && bytes.byteLength) {
+      try {
+        const response = await fetch(`/job/${jobId}/frame`, {
+          method: "POST", headers: { "content-type": "image/jpeg", "x-frame": String(index) }, body: bytes,
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status} ${await response.text().catch(() => "")}`);
+        await response.arrayBuffer().catch(() => {});
+        return;
+      } catch (e) { last = e; }
+    }
+    if (attempt < 4) {
+      console.warn(`re-encoding frame ${index}: attempt ${attempt} failed: ${last?.message || last}`);
+      await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+    }
+  }
+  const detail = String(last?.message || last || "the canvas returned no JPEG");
+  throw new Error(detail.startsWith(`frame ${index}`) ? `${detail} (after 4 encodes)` :
+    `frame ${index}: ${detail} (after 4 encodes)`);
+};
 
 // The page's final report. The host learns a render's outcome only from this post, so retry it harder than a frame.
 export const reportResult = (jobId, data) =>
@@ -223,9 +257,7 @@ const runSmoke = async (job) => {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(`ournotes smoke ${n + 1}/${count}`, width / 2, height / 2);
-    const blob = await blobOf(canvas, 0.85);
-    await post(`/job/${job.jobId}/frame`, blob, { "content-type": "image/jpeg", "x-frame": String(n) },
-               { label: `frame ${n}` });
+    await uploadFrame(job.jobId, canvas, 0.85, n);
   }
   return { frames: count, fps, width, height, ended: true, storySeconds: count / fps, events: [], cues: {}, lines: [],
            seconds: Math.round((performance.now() - t0) / 100) / 10 };
@@ -343,9 +375,7 @@ export const run = async (job) => {
       for (let i = 0; i < settle; i++) await s.step({ draw: false });
       if (frames === 0) videoStart = s.time;                 // the story clock at the first encoded frame
       s.render();
-      const blob = await blobOf(canvas, Math.max(0.3, Math.min(1, (job.jpegQuality || 92) / 100)));
-      await post(`/job/${job.jobId}/frame`, blob, { "content-type": "image/jpeg", "x-frame": String(frames) },
-                 { label: `frame ${frames}` });
+      await uploadFrame(job.jobId, canvas, Math.max(0.3, Math.min(1, (job.jpegQuality || 92) / 100)), frames);
       frames++;
       if (frames % 60 === 0) reportProgress(job.jobId, frames, s.time);
       if (frames % 300 === 0) console.log(`job ${job.jobId}: ${frames} frames, ${s.time.toFixed(1)} s of story`);
@@ -355,9 +385,7 @@ export const run = async (job) => {
     if (!frames) {
       if (videoStart == null) videoStart = s.time;
       s.render();
-      const blob = await blobOf(canvas, 0.9);
-      await post(`/job/${job.jobId}/frame`, blob, { "content-type": "image/jpeg", "x-frame": "0" },
-                 { label: "frame 0" });
+      await uploadFrame(job.jobId, canvas, 0.9, 0);
       frames = 1;
     }
   } finally {

@@ -57,8 +57,12 @@ export class Renderer {
         height: cfg.video.height + 80,
         onConsole: (type, text) => {
           if (type === "error") pageErrors.push(text);
-          this.logger[type === "error" ? "warn" : "debug"]?.(`page: ${text}`);
+          // Warnings carry upload retries and re-encodes; they must be visible when a render fails.
+          const loud = type === "error" || type === "warning";
+          this.logger[loud ? "warn" : "debug"]?.(`page: ${text}`);
         },
+        onNetworkError: (error, type) =>
+          this.logger.warn?.(`page network: ${error}${type ? ` (${type})` : ""}`),
       });
       await withTimeout(
         browser.navigate(`${pageServer.url}/page.html?job=${encodeURIComponent(job.id)}`),
