@@ -45,6 +45,7 @@ Irodori 只有一个合成槽位，聊天 TTS 高峰时每分钟 7-9 个请求�
 - 客户端断连会 abort 剧本生成并取消渲染任务；排队中/运行中取消都会释放 Chrome。
 - **浏览器崩溃快速失败**：渲染器用 `Browser.onClosed()` 与页面结果做 race。`kill -9` Chrome 主进程后任务在 5 秒内失败（`the browser closed before the render page reported a result`），队列立即释放，不会占槽到 `render.taskTimeoutMs`。服务器把该上限从 1 小时降到 30 分钟，作为卡死兜底。
 - `render-healthcheck.timer` 每 2 分钟探测 `/api/v1/health`，连续 3 次失败才重启 unit。
+- **页面上传重试**：渲染页每帧 POST 一次 JPEG。2026-11-13 01:38 生产上出现过一次渲染 8 分钟后以裸 `Failed to fetch` 失败：TTS 39/39 已完成，页面在渲染途中遇到一次 keep-alive 连接重置，而当时没有任何重试，单次瞬时错误就终止了整条任务。现在帧、音频 cue 和最终结果的上传都走 `postWithRetry`（网络错误/5xx 重试 3-4 次，4xx 直接失败），页面服务端 `keepAliveTimeout` 从 Node 默认 5 秒提到 120 秒；宿主日志会记录页面上报的栈。错误信息带上下文（例如 `frame 2314: Failed to fetch (after 3 attempts)`）。
 - 站点写入由 `_withSiteWrite` 串行化，manifest / stories.json 原子写入；并发渲染不会互相覆盖。
 
 ## 5. 实测

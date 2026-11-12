@@ -12,6 +12,9 @@ test("the page server serves the base site, the overlay, and package modules onl
   const files = new Map([["composed.json", Buffer.from('{"ok":true}')]]);
   const server = await createPageServer({ site, files, core: "", outputDir: output, logger: quietLogger() });
   try {
+    // Chrome keeps one connection for thousands of frame POSTs; the 5 s Node default races a slow frame.
+    assert.equal(server.server.keepAliveTimeout, 120000);
+    assert.ok(server.server.headersTimeout > server.server.keepAliveTimeout);
     const hello = await fetch(`${server.url}/site/hello.txt`);
     assert.equal(await hello.text(), "hello site");
     const overlay = await fetch(`${server.url}/site/composed.json`);

@@ -6,18 +6,25 @@ import { StoryData } from "/src/story/data.js";
 import { MISSING_CUE } from "/src/engine/audio.js";
 import { RecordingAudio } from "./recording-audio.js";
 import { StorySession } from "/src/story/session.js";
+import { postWithRetry } from "/host/render/fetchRetry.js";
 
-const post = async (url, body, headers = {}) => {
-  const r = await fetch(url, { method: "POST", headers, body });
-  if (!r.ok) throw new Error(`${url}: HTTP ${r.status} ${await r.text().catch(() => "")}`);
-  return r;
-};
+const post = (url, body, headers = {}, { label = "", attempts = 3 } = {}) =>
+  postWithRetry(fetch, url, body, headers, {
+    label: label || url, attempts,
+    onRetry: (attempt, error) =>
+      console.warn(`retrying ${label || url}: attempt ${attempt} failed: ${error?.message || error}`),
+  });
+
+// The page's final report. The host learns a render's outcome only from this post, so retry it harder than a frame.
+export const reportResult = (jobId, data) =>
+  post(`/job/${encodeURIComponent(jobId)}/result`, JSON.stringify(data),
+       { "content-type": "application/json" }, { label: `job ${jobId} result`, attempts: 4 });
 
 // Frame progress is best effort: a failed report must never interrupt the render.
 const reportProgress = (jobId, frames, storySeconds) => {
   void post(`/job/${encodeURIComponent(jobId)}/progress`,
             JSON.stringify({ frames, storySeconds: Math.round(storySeconds * 1000) / 1000 }),
-            { "content-type": "application/json" }).catch(() => {});
+            { "content-type": "application/json" }, { label: "progress", attempts: 1 }).catch(() => {});
 };
 
 const cueExtension = (file) => {
@@ -45,7 +52,7 @@ const uploadCues = async (jobId, store, data) => {
       "x-categories": JSON.stringify(meta.categories || []),
       "x-loop-start": meta.loopStart == null ? "" : String(meta.loopStart),
       "x-loop-end": meta.loopEnd == null ? "" : String(meta.loopEnd),
-    });
+    }, { label: `cue ${soundId} ${meta.file}` });
     cues[String(soundId)] = {
       file: `${soundId}.${cueExtension(meta.file)}`, cue: row._cueName, sheet: sheet._cueSheetName,
       sampleRate: meta.sampleRate || 48000, samples: meta.samples || 0, channels: meta.channels || 1,
@@ -180,7 +187,7 @@ const uploadCuesSite = async (jobId, store, audio) => {
       "x-categories": JSON.stringify(meta.categories || []),
       "x-loop-start": meta.loopStart == null ? "" : String(meta.loopStart),
       "x-loop-end": meta.loopEnd == null ? "" : String(meta.loopEnd),
-    });
+    }, { label: `cue ${soundId} ${name}` });
     cues[String(soundId)] = {
       file: `${soundId}.${ext}`, cue: c.cue, sheet: c.sheet,
       sampleRate: meta.sampleRate || 48000, samples: meta.samples || 0, channels: meta.channels || 1,
@@ -217,7 +224,8 @@ const runSmoke = async (job) => {
     ctx.textBaseline = "middle";
     ctx.fillText(`ournotes smoke ${n + 1}/${count}`, width / 2, height / 2);
     const blob = await blobOf(canvas, 0.85);
-    await post(`/job/${job.jobId}/frame`, blob, { "content-type": "image/jpeg", "x-frame": String(n) });
+    await post(`/job/${job.jobId}/frame`, blob, { "content-type": "image/jpeg", "x-frame": String(n) },
+               { label: `frame ${n}` });
   }
   return { frames: count, fps, width, height, ended: true, storySeconds: count / fps, events: [], cues: {}, lines: [],
            seconds: Math.round((performance.now() - t0) / 100) / 10 };
@@ -336,7 +344,8 @@ export const run = async (job) => {
       if (frames === 0) videoStart = s.time;                 // the story clock at the first encoded frame
       s.render();
       const blob = await blobOf(canvas, Math.max(0.3, Math.min(1, (job.jpegQuality || 92) / 100)));
-      await post(`/job/${job.jobId}/frame`, blob, { "content-type": "image/jpeg", "x-frame": String(frames) });
+      await post(`/job/${job.jobId}/frame`, blob, { "content-type": "image/jpeg", "x-frame": String(frames) },
+                 { label: `frame ${frames}` });
       frames++;
       if (frames % 60 === 0) reportProgress(job.jobId, frames, s.time);
       if (frames % 300 === 0) console.log(`job ${job.jobId}: ${frames} frames, ${s.time.toFixed(1)} s of story`);
@@ -347,7 +356,8 @@ export const run = async (job) => {
       if (videoStart == null) videoStart = s.time;
       s.render();
       const blob = await blobOf(canvas, 0.9);
-      await post(`/job/${job.jobId}/frame`, blob, { "content-type": "image/jpeg", "x-frame": "0" });
+      await post(`/job/${job.jobId}/frame`, blob, { "content-type": "image/jpeg", "x-frame": "0" },
+                 { label: "frame 0" });
       frames = 1;
     }
   } finally {

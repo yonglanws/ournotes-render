@@ -87,11 +87,11 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
     `<link rel="icon" href="data:,"><style>html,body{margin:0;background:#000}canvas{display:block}</style></head>` +
     `<body>` + (coreUrl ? `<script src="${escapeAttr(coreUrl)}"></script>` : "") +
     (motionUrl ? `<script src="${escapeAttr(motionUrl)}"></script>` : "") +
-    `<script type="module">import { run } from "/host/render/page.js";` +
+    `<script type="module">import { run, reportResult } from "/host/render/page.js";` +
     `const id = new URLSearchParams(location.search).get("job") || "";` +
     `fetch("/job/"+encodeURIComponent(id)+".json").then(r=>{if(!r.ok)throw new Error("job: HTTP "+r.status);return r.json()})` +
-    `.then(job=>run(job)).then(r=>fetch("/job/"+encodeURIComponent(id)+"/result",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ok:true,...r})}))` +
-    `.catch(e=>{console.error(e&&e.stack||String(e));return fetch("/job/"+encodeURIComponent(id)+"/result",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ok:false,error:String(e&&e.message||e),stack:String(e&&e.stack||"")})}).catch(()=>{})})` +
+    `.then(job=>run(job)).then(r=>reportResult(id,{ok:true,...r}))` +
+    `.catch(e=>{console.error(e&&e.stack||String(e));return reportResult(id,{ok:false,error:String(e&&e.message||e),stack:String(e&&e.stack||"")}).catch(()=>{})})` +
     `;</script></body></html>`;
 
   const server = http.createServer(async (req, res) => {
@@ -139,7 +139,12 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
           if (job.settled) return send(res, 409, "already reported");
           job.settled = true;
           send(res, 200, "ok");
-          if (data.ok) job.resolve(data); else job.reject(new Error(data.error || "render page failed"));
+          if (data.ok) job.resolve(data);
+          else {
+            // A bare "Failed to fetch" from the page is opaque; keep its stack in the host log for the next failure.
+            logger.warn?.(`render page failed: ${data.error || "unknown error"}${data.stack ? `\n${data.stack}` : ""}`);
+            job.reject(new Error(data.error || "render page failed"));
+          }
           return;
         }
         return send(res, 404, "not found");
@@ -181,6 +186,12 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
       else res.destroy();
     }
   });
+  // The page reuses one connection for thousands of frame POSTs while the GPU is busy. Node's 5 s keep-alive closes
+  // an idle socket just as Chrome picks it for the next upload, which fetch reports as "Failed to fetch" (observed
+  // once in production, eight minutes into a render). Keep the socket far longer than any frame gap; headers must stay
+  // above keep-alive so Node does not cut the connection while a request is being read.
+  server.keepAliveTimeout = 120000;
+  server.headersTimeout = 125000;
   server.on("error", reject);
   server.listen(0, "127.0.0.1", () => {
     const url = `http://127.0.0.1:${server.address().port}`;
