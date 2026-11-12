@@ -63,6 +63,9 @@ export class Renderer {
         },
         onNetworkError: (error, type) =>
           this.logger.warn?.(`page network: ${error}${type ? ` (${type})` : ""}`),
+        onExit: (code, signal, stderr) =>
+          this.logger.warn?.(`page: chrome exited code=${code} signal=${signal || "-"}` +
+                              (stderr && stderr.trim() ? `\n${stderr.trim()}` : "")),
       });
       await withTimeout(
         browser.navigate(`${pageServer.url}/page.html?job=${encodeURIComponent(job.id)}`),
@@ -83,7 +86,9 @@ export class Renderer {
           Promise.race([
             job.result,
             browser.onClosed().then(() => {
-              throw new Error("the browser closed before the render page reported a result");
+              const p = browser.proc;
+              throw new Error("the browser closed before the render page reported a result" +
+                ` (exitCode=${p?.exitCode}, signal=${p?.signalCode || "-"})`);
             }),
           ]),
           cfg.render.taskTimeoutMs, signal, "the render page");

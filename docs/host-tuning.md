@@ -51,6 +51,7 @@ Irodori 只有一个合成槽位，聊天 TTS 高峰时每分钟 7-9 个请求�
   3. 帧上传失败时**重新从 canvas 编码**（最多 4 次、退避 250–750ms），而不是重发同一个可能已失效的 Blob；错误带帧号与尝试次数。
   页面服务端 `keepAliveTimeout` 从 Node 默认 5 秒提到 120 秒；CDP 的 `Network.loadingFailed` 会以 `page network: net::ERR_...` 写进宿主日志，页面上报的栈也会保留。验证：60 句、165.5 秒、4965 帧长片 373.8s 成功，跨过 3873 帧且 0 条告警。
 - **TTS 重试**：服务器 `tts.retries: 5`（退避 0.5+1+2+4+8 秒）。Irodori 短时重启（实测 2–7 秒）不再把整段台词变成静音；02:03 一次 2 秒重启曾让 19 句被跳过。
+- **CDP Network 域默认关闭**：调试请求失败时曾启用 `Network.enable`。2026-11-13 的 3 角色带 TTS 剧本在页面加载约 10 秒后 `DevTools socket closed`，但 Chrome 进程仍存活（`exitCode=null`）；加缓冲上限仍复现，不启用 Network 域后同一剧本正常渲染。现在只有 `OURNOTES_CDP_NETWORK=1` 时才启用。浏览器退出或 WS 关闭会记录 exitCode、signal 和 Chrome stderr 尾部，便于下次定位。
 - 站点写入由 `_withSiteWrite` 串行化，manifest / stories.json 原子写入；并发渲染不会互相覆盖。
 
 ## 5. 实测
@@ -63,3 +64,4 @@ Irodori 只有一个合成槽位，聊天 TTS 高峰时每分钟 7-9 个请求�
 | 渲染中 kill Chrome | 5 s 内任务失败，队列释放；下一个任务 54 s 成功 |
 | 插件测试 | 23 passed + 3 subtests |
 | 单元/宿主测试 | 525 + 178 passed（1/3 skip），lint 干净 |
+| 似梦非梦的身影（38 句 / 3 角色 / TTS） | 5609 帧，187.0 s，32.2 MB；38/38 有声，音频 mean -21.3 dB / max -2.4 dB |

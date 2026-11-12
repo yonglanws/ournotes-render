@@ -63,18 +63,28 @@ export class Browser {
 
   // opts: executable, gpu, width / height (window size), extraArgs (operator Chrome flags, e.g. --use-angle=vulkan on
   // a Linux host whose default ANGLE device is SwiftShader), onConsole(type, text): the page's console and its
-  // uncaught errors, onNetworkError(errorText, resourceType): Chrome's own reason for a failed request
+  // uncaught errors, onNetworkError(errorText, resourceType): Chrome's own reason for a failed request,
+  // onExit(code, signal, stderrTail): an unexpected browser exit and the end of its stderr
   static async launch({ executable = findBrowser(), gpu = false, width = 1300, height = 600, extraArgs = [],
-                        onConsole = null, onNetworkError = null } = {}) {
+                        onConsole = null, onNetworkError = null, onExit = null } = {}) {
     const b = new Browser();
     b.profile = fs.mkdtempSync(path.join(os.tmpdir(), "story-author-"));
     const args = ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${b.profile}`, "--no-first-run",
                   "--no-default-browser-check", "--disable-extensions", "--mute-audio", "--hide-scrollbars",
-                  `--window-size=${width},${height}`,
+                  "--enable-logging=stderr", `--window-size=${width},${height}`,
                   ...(gpu ? [] : ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"]),
                   ...extraArgs, "about:blank"];
-    b.proc = spawn(executable, args, { stdio: "ignore" });
-    b.exited = new Promise((r) => b.proc.once("exit", r));
+    b.proc = spawn(executable, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderrTail = "";
+    b.stderrTail = () => stderrTail;
+    b.proc.stderr?.on("data", (chunk) => { stderrTail = (stderrTail + chunk.toString()).slice(-16384); });
+    b.exited = new Promise((r) => b.proc.once("exit", (code, signal) => {
+      // close() ends the browser on purpose; only an exit the host did not ask for is worth a warning.
+      if (!b._closing && onExit) {
+        try { onExit(code, signal, stderrTail); } catch { /* diagnostics must not mask the exit */ }
+      }
+      r(code);
+    }));
     b.exited.then(() => b._resolveClosed?.());
     b.proc.once("error", () => {});
     try {
@@ -123,16 +133,36 @@ export class Browser {
       }
       if (onNetworkError && m.method === "Network.loadingFailed" && !m.params.canceled)
         onNetworkError(m.params.errorText || "unknown error", m.params.type || "");
+      if (onConsole && m.method === "Inspector.targetCrashed")
+        onConsole("error", "the render page crashed");
+      if (onConsole && m.method === "Inspector.detached")
+        onConsole("error", `the render page detached: ${m.params.reason || "unknown"}`);
       for (const w of [...this.waiters]) if (w.method === m.method) { this.waiters.splice(this.waiters.indexOf(w), 1); w.resolve(m.params); }
     });
     this.ws.addEventListener("close", () => {
+      if (onConsole) {
+        const code = this.proc?.exitCode, sig = this.proc?.signalCode;
+        const tail = this.stderrTail ? this.stderrTail().trim() : "";
+        onConsole("error", `DevTools socket closed (process exitCode=${code}, signal=${sig || "-"})` +
+                           (tail ? `\n${tail}` : ""));
+      }
       for (const p of this.pending.values()) p.reject(new Error("the browser closed"));
       this.pending.clear();
       this._resolveClosed?.();
     });
     await this.send("Runtime.enable");
     await this.send("Page.enable");
-    if (onNetworkError) await this.send("Network.enable");
+    try { await this.send("Inspector.enable"); }
+    catch (e) { onConsole?.("error", `Inspector.enable failed: ${e.message}`); }
+    // Off by default: on this host, enabling the Network domain makes Chrome close the DevTools session partway
+    // through a three-model story's cue uploads (the browser process stays alive, so the render dies with "browser
+    // closed"). It reproduced with and without buffer caps and stopped once the domain was not enabled. Set
+    // OURNOTES_CDP_NETWORK=1 only while debugging a specific failed request.
+    if (onNetworkError && process.env.OURNOTES_CDP_NETWORK === "1") await this.send("Network.enable", {
+      maxTotalBufferSize: 8 * 1024 * 1024,
+      maxResourceBufferSize: 1 * 1024 * 1024,
+      maxPostDataSize: 1 * 1024 * 1024,
+    });
   }
 
   send(method, params = {}) {
@@ -173,6 +203,7 @@ export class Browser {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    this._closing = true;
     try { if (this.ws) this.ws.close(); } catch (_) { /* already closed */ }
     if (this.proc && this.proc.exitCode === null) {
       if (this.browserUrl) {
