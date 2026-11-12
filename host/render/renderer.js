@@ -73,7 +73,16 @@ export class Renderer {
       }, 2000);
       let report;
       try {
-        report = await withTimeout(job.result, cfg.render.taskTimeoutMs, signal, "the render page");
+        // A killed/crashed browser never posts /result; without the race the task would hold its queue slot until
+        // render.taskTimeoutMs (an hour).
+        report = await withTimeout(
+          Promise.race([
+            job.result,
+            browser.onClosed().then(() => {
+              throw new Error("the browser closed before the render page reported a result");
+            }),
+          ]),
+          cfg.render.taskTimeoutMs, signal, "the render page");
       } finally {
         clearInterval(progressTimer);
       }

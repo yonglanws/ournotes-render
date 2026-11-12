@@ -52,6 +52,15 @@ const waitFor = async (what, test, ms) => {
 };
 
 export class Browser {
+  constructor() {
+    // Resolves when the process exits or the DevTools socket closes. The renderer races it against the page's
+    // result so a crashed browser fails the task immediately instead of waiting for render.taskTimeoutMs.
+    this.closedSignal = new Promise((resolve) => { this._resolveClosed = resolve; });
+  }
+
+  /** resolves once the browser process or its DevTools connection is gone */
+  onClosed() { return this.closedSignal; }
+
   // opts: executable, gpu, width / height (window size), extraArgs (operator Chrome flags, e.g. --use-angle=vulkan on
   // a Linux host whose default ANGLE device is SwiftShader), onConsole(type, text): the page's console and its
   // uncaught errors
@@ -66,6 +75,7 @@ export class Browser {
                   ...extraArgs, "about:blank"];
     b.proc = spawn(executable, args, { stdio: "ignore" });
     b.exited = new Promise((r) => b.proc.once("exit", r));
+    b.exited.then(() => b._resolveClosed?.());
     b.proc.once("error", () => {});
     try {
       const portFile = path.join(b.profile, "DevToolsActivePort");
@@ -116,6 +126,7 @@ export class Browser {
     this.ws.addEventListener("close", () => {
       for (const p of this.pending.values()) p.reject(new Error("the browser closed"));
       this.pending.clear();
+      this._resolveClosed?.();
     });
     await this.send("Runtime.enable");
     await this.send("Page.enable");
