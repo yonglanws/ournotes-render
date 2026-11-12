@@ -64,7 +64,19 @@ export class Renderer {
         browser.navigate(`${pageServer.url}/page.html?job=${encodeURIComponent(job.id)}`),
         Math.min(cfg.render.taskTimeoutMs, 60000), signal, "the render page to load");
       onProgress("rendering", 0.05, "渲染剧情帧");
-      const report = await withTimeout(job.result, cfg.render.taskTimeoutMs, signal, "the render page");
+      // The page reports every 60 frames; surface it so a long render does not look stuck at one percentage.
+      const progressTimer = setInterval(() => {
+        const p = job.progress;
+        if (!p) return;
+        const story = p.storySeconds ? `，${p.storySeconds.toFixed(1)} 秒剧情` : "";
+        onProgress("rendering", 0.05, `渲染剧情帧 ${p.frames} 帧${story}`);
+      }, 2000);
+      let report;
+      try {
+        report = await withTimeout(job.result, cfg.render.taskTimeoutMs, signal, "the render page");
+      } finally {
+        clearInterval(progressTimer);
+      }
       if (!report.ok) throw new Error(report.error || "the render page failed");
       if (report.frames < 1) throw new Error("the render page produced no frame");
       onProgress("mixing", 0.72, "混合 BGM 与配音");

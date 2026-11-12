@@ -123,6 +123,15 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
           fs.writeFileSync(path.join(job.cuesDir, `${soundId}.${ext}`), body);
           return send(res, 200, "ok");
         }
+        if (what === "/progress" && req.method === "POST") {
+          const body = await readBody(req, 16 * 1024);
+          let data;
+          try { data = JSON.parse(body.toString("utf8")); } catch { return send(res, 400, "bad JSON"); }
+          const frames = Math.max(0, Math.min(2_000_000, Math.round(Number(data.frames) || 0)));
+          const storySeconds = Math.max(0, Math.min(86_400, Number(data.storySeconds) || 0));
+          job.progress = { frames, storySeconds, at: Date.now() };
+          return send(res, 200, "ok");
+        }
         if (what === "/result" && req.method === "POST") {
           const body = await readBody(req, 8 * 1024 * 1024);
           let data;
@@ -186,8 +195,8 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
         fs.mkdirSync(cuesDir, { recursive: true });
         let resolveResult, rejectResult;
         const result = new Promise((r, j) => { resolveResult = r; rejectResult = j; });
-        const job = { id, dir, framesDir, cuesDir, config: { ...config, jobId: id }, frames: 0, settled: false,
-                      result, resolve: resolveResult, reject: rejectResult };
+        const job = { id, dir, framesDir, cuesDir, config: { ...config, jobId: id }, frames: 0, progress: null,
+                      settled: false, result, resolve: resolveResult, reject: rejectResult };
         jobs.set(id, job);
         return job;
       },

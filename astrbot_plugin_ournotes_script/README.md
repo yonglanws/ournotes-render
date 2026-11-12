@@ -96,7 +96,7 @@ pip install -r data/plugins/astrbot_plugin_ournotes_script/requirements.txt
 | `history_rounds` | `/视频对话` 保留的历史轮数 | `3` |
 | `session_timeout_minutes` | 会话历史保留时长 | `60` |
 | `poll_interval_seconds` | 渲染进度轮询间隔 | `3` |
-| `progress_interval_seconds` | 同一阶段内进度消息间隔；`0` = 只发阶段变化 | `60` |
+| `progress_interval_seconds` | 同一阶段内进度消息间隔；宿主帧进度变化至少每 10 秒转发；`0` = 只发阶段变化 | `20` |
 | `temp_dir` | 视频与剧本产物目录，留空用插件数据目录 | 空 |
 | `callback_api_base` | AstrBot 文件服务的外部可达地址 | 空 |
 | `max_video_mb` | 视频大小提醒阈值 | `50` |

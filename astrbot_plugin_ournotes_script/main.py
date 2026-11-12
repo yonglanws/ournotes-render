@@ -56,6 +56,7 @@ DEFAULT_TARGET_MINUTES = 0.0
 
 CLEANUP_INTERVAL_SECONDS = 1800
 FILE_RETENTION_SECONDS = 2 * 60 * 60
+PROGRESS_DETAIL_MIN_SECONDS = 10
 
 PHASES = {
     "queued": "排队",
@@ -180,7 +181,7 @@ class OurnotesVideoPlugin(Star):
 
         # ---- 轮询与进度 -----------------------------------------------------------------------------
         self.poll_interval = _cfg_float(config, "poll_interval_seconds", 3.0, 0.5, 30.0)
-        self.progress_interval = _cfg_int(config, "progress_interval_seconds", 60, 0, 300)
+        self.progress_interval = _cfg_int(config, "progress_interval_seconds", 20, 0, 300)
 
         # ---- 会话历史与统计 -------------------------------------------------------------------------
         self.history_rounds = _cfg_int(config, "history_rounds", 3, 1, 20)
@@ -521,6 +522,7 @@ class OurnotesVideoPlugin(Star):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.export_timeout
         last_phase = ""
+        last_message = ""
         last_update = loop.time()
         while True:
             if loop.time() >= deadline:
@@ -555,18 +557,39 @@ class OurnotesVideoPlugin(Star):
                 raise HostError("宿主找不到渲染任务（可能已过期）", status=502)
 
             phase = str(view.get("phase") or status)
+            message = str(view.get("message") or "").strip()
             progress = view.get("progress")
             now = loop.time()
             due = self.progress_interval > 0 and now - last_update >= self.progress_interval
-            if phase != last_phase or due:
+            # The host updates its message while frames are rendered; forward that at least every 10 s even when the
+            # phase stays "rendering" (otherwise a long render only shows the stage boundary twice).
+            detail_due = (bool(message) and message != last_message
+                          and now - last_update >= PROGRESS_DETAIL_MIN_SECONDS)
+            if phase != last_phase or due or detail_due:
+                label = _phase_label(phase)
+                detail = message or label
+                if message and label and message != label:
+                    detail = f"{label} · {message}"
+                if phase == "queued":
+                    position = view.get("queuePosition")
+                    detail = (f"排队中（前方 {max(0, int(position) - 1)} 个）"
+                              if isinstance(position, int) and position > 0 else "排队中")
                 percent = (
                     f" {round(float(progress) * 100)}%" if progress is not None else ""
                 )
+                if phase == "rendering" and "帧" in detail:
+                    percent = ""  # frame counts are the useful number during rendering
+                elapsed = view.get("elapsedSeconds")
+                elapsed_text = (
+                    f"（已用 {int(elapsed)}s）"
+                    if isinstance(elapsed, (int, float)) and elapsed >= 0 else ""
+                )
                 await self._send_safe(
                     context,
-                    f"渲染中：{_phase_label(phase)}{percent}\n任务 #{request_id}",
+                    f"渲染中：{detail}{percent}{elapsed_text}\n任务 #{request_id}",
                 )
                 last_phase = phase
+                last_message = message
                 last_update = now
 
     async def _cancel_render(self, request_id: str) -> None:

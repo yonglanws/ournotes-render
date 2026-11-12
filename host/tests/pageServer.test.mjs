@@ -56,6 +56,13 @@ test("a job accepts JPEG frames and a final report", async () => {
     });
     assert.equal(siteCue.status, 200);
     assert.deepEqual(fs.readFileSync(path.join(job.cuesDir, "3107000002001.m4a")), cue);
+    const progress = await fetch(`${server.url}/job/job-test/progress`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ frames: 120, storySeconds: 4 }),
+    });
+    assert.equal(progress.status, 200);
+    assert.deepEqual({ frames: job.progress.frames, storySeconds: job.progress.storySeconds },
+                     { frames: 120, storySeconds: 4 });
     const result = fetch(`${server.url}/job/job-test/result`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ ok: true, frames: 1 }),

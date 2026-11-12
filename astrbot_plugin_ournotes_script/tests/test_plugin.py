@@ -220,6 +220,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.script_payloads: list[dict[str, Any]] = []
         self.render_payloads: list[dict[str, Any]] = []
         self.fail_render = False
+        self.task_views: list[dict[str, Any]] | None = None
 
         async def health(_: web.Request) -> web.Response:
             return web.json_response(
@@ -274,6 +275,22 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
                     }
                 )
             self.polls += 1
+            if self.task_views and self.polls <= len(self.task_views):
+                return web.json_response(
+                    {"success": True, "taskId": task_id, **self.task_views[self.polls - 1]}
+                )
+            if self.task_views:
+                return web.json_response(
+                    {
+                        "success": True,
+                        "taskId": task_id,
+                        "status": "completed",
+                        "phase": "completed",
+                        "progress": 1,
+                        "result": {"success": True, "downloadUrl": "/api/v1/download/render.mp4",
+                                   "duration": 12.3, "warnings": []},
+                    }
+                )
             if self.polls == 1:
                 return web.json_response(
                     {
@@ -394,6 +411,33 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(video.__class__.__name__, "Video")
         self.assertTrue(Path(video.path).is_file())
         self.assertEqual(Path(video.path).read_bytes(), VIDEO_BYTES)
+
+    async def test_render_progress_forwards_host_frame_messages(self) -> None:
+        self.task_views = [
+            {"status": "running", "phase": "synthesizing", "progress": 0.3,
+             "message": "TTS 1/4", "elapsedSeconds": 2},
+            {"status": "running", "phase": "rendering", "progress": 0.62,
+             "message": "渲染剧情帧 60 帧，2.0 秒剧情", "elapsedSeconds": 10},
+            {"status": "running", "phase": "rendering", "progress": 0.62,
+             "message": "渲染剧情帧 120 帧，4.0 秒剧情", "elapsedSeconds": 20},
+        ]
+        previous = main.PROGRESS_DETAIL_MIN_SECONDS
+        main.PROGRESS_DETAIL_MIN_SECONDS = 0
+        try:
+            await self.plugin._run(
+                "req-progress", {"origin": "test:group:100", "session_key": "test:group:100",
+                                 "user_id": "42", "group_id": "100"},
+                "测试进度", "story",
+            )
+        finally:
+            main.PROGRESS_DETAIL_MIN_SECONDS = previous
+
+        texts = [text for text in self.context.texts() if "渲染中：" in text]
+        self.assertGreaterEqual(len(texts), 3, texts)
+        self.assertTrue(any("TTS 1/4" in text for text in texts))
+        self.assertTrue(any("渲染剧情帧 120 帧" in text for text in texts))
+        self.assertTrue(any("已用 20s" in text for text in texts))
+        self.assertFalse(any("62%" in text for text in texts), "frame messages replace the stale percent")
 
     async def test_chat_mode_passes_history_and_records_it(self) -> None:
         context = {"origin": "test:group:100", "session_key": "test:group:100",

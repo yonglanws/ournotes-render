@@ -13,6 +13,13 @@ const post = async (url, body, headers = {}) => {
   return r;
 };
 
+// Frame progress is best effort: a failed report must never interrupt the render.
+const reportProgress = (jobId, frames, storySeconds) => {
+  void post(`/job/${encodeURIComponent(jobId)}/progress`,
+            JSON.stringify({ frames, storySeconds: Math.round(storySeconds * 1000) / 1000 }),
+            { "content-type": "application/json" }).catch(() => {});
+};
+
 const cueExtension = (file) => {
   const m = String(file || "").toLowerCase().match(/\.([a-z0-9]+)$/);
   const ext = m ? m[1] : "bin";
@@ -331,6 +338,7 @@ export const run = async (job) => {
       const blob = await blobOf(canvas, Math.max(0.3, Math.min(1, (job.jpegQuality || 92) / 100)));
       await post(`/job/${job.jobId}/frame`, blob, { "content-type": "image/jpeg", "x-frame": String(frames) });
       frames++;
+      if (frames % 60 === 0) reportProgress(job.jobId, frames, s.time);
       if (frames % 300 === 0) console.log(`job ${job.jobId}: ${frames} frames, ${s.time.toFixed(1)} s of story`);
     }
     ended = s.ended;
