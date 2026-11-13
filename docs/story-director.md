@@ -330,9 +330,10 @@ say 用说话者，action 用动作角色，camera/narrate 用 focus 指向的�
 ## 官方风格的演出规则
 
 1. **一场戏一个 stage**：先建立空间，之后用 `positions` 换组，不要为每次换人新开 scene。只有真正换时间/地点才 `fade`。开场先放 1 人（最多 2 人），2~4 句后让下一人进场；一场最多 2 次 `positions` 变化。换组时让已有人物保持原位，只让角色退场/进场；把同一角色从 `left` 改到 `center` 会编译成 `Out` + `In`，画面会闪一下。
-2. **镜头按组**：双人戏用“二人同框（`middle`，`focus: 5`）↔ 说话者近景（`close`，`focus` 该角色）”交替，每个机位保持 3~4 句；三人用 `far` + `focus: 5` 群像，偶尔用两人构图。`Focus` 约 0.45/有文本行（官方 Talk 行 0.397）：一场 30 句约 13 次 `Focus` 变化，不要只写 4 个就停。`near` 全场最多 1 次，`close` 约占 22.9% 的有文本行（30 句约 7 次），近景停 1~2 句后回到 `middle` + `focus: 5`；不要连续两句 `close`，也不要停在同一个 `close` 上直到结尾。推近时保持同一侧 `focus`，只改 `camera.distance`，不要换焦点；情绪镜头可以加一次 `zoom` 慢推。
+2. **镜头按组**：双人戏用“二人同框（`middle`，`focus: 5`）↔ 说话者近景（`close`，`focus` 该角色）”交替，每个机位保持 3~4 句；三人同台默认用 `far` + `focus: 5` 群像，近景只给单人特写（`close`/`very-close` + `focus` 指向一个角色），不要三人 `middle` 中景或群像 `zoom` 推近（会挤）。`Focus` 约 0.45/有文本行（官方 Talk 行 0.397）：一场 30 句约 13 次 `Focus` 变化，不要只写 4 个就停。`near` 全场最多 1 次，`close` 约占 22.9% 的有文本行（30 句约 7 次），近景停 1~2 句后回到 `middle` + `focus: 5`；不要连续两句 `close`，也不要停在同一个 `close` 上直到结尾。推近时保持同一侧 `focus`，只改 `camera.distance`，不要换焦点；情绪镜头可以加一次 `zoom` 慢推。
 3. **两人分站两侧**：两人同台用 `left` / `right`，`focus: 5` 框住两人；不要用 `center+right` 或 `center+left`，两个角色会叠在一起。
-   官方底本的两人镜头绝大多数就是 3/7 这一对；`far-left` / `far-right` 是更宽的变体，对话戏会显得中间空太多。三人群像用 `far-left` / `center` / `far-right`，`camera: far`、`focus: 5`、`track: 0`
+   官方底本的两人镜头绝大多数就是 3/7 这一对；`far-left` / `far-right` 是更宽的变体，对话戏会显得中间空太多。三人群像用 `far-left` / `center` / `far-right`，`camera: far`、`focus: 5`、`track: 0`，
+   并且三人同台默认保持 `far`（生成后会把 `middle` 与群像推近强制改回 `far`），单人特写除外
    （AI 默认 `story.maxOnStage: 3`；要严格两人可设 2，第三人换组进出）。`focus` 优先写位置；角色 `focus` 只给
    情绪最重的 1~2 句。
 4. **听者先反应**：听者的表情/动作写 `actions` 的 `at: 0`；说话者的主动作写 `say.motion`。一句最多一个说话者动作、一个听者反应。官方样本没有句中动作，`at` 一律写 0。

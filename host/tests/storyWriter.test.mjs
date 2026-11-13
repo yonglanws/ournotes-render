@@ -520,6 +520,67 @@ test("a third person on stage uses the group layout with a far, centred camera",
   assert.equal(beats[0].track, 0);
 });
 
+test("three people keep the far group shot, while a single-person close-up keeps its zoom", () => {
+  const beats = [
+    { scene: "stage_a", camera: "middle", focus: "a", positions: { a: "left", b: "right" } },
+    { positions: { a: "far-left", b: "center", c: "far-right" }, camera: "middle", focus: "b", track: 1 },
+    { say: "b", text: "二。", camera: "close", focus: "b", zoom: 1.06, zoomDuration: 4 },
+    { say: "a", text: "三。", camera: { distance: "middle", focus: "a" }, zoom: 1.08 },
+    { say: "c", text: "四。", zoom: 1.04 },
+    { say: "a", text: "五。", camera: "close", focus: 5 },
+    { camera: "close", focus: 5 },
+    { positions: { a: "left", b: "right" } },
+    { say: "a", text: "六。", camera: "close", focus: "a" },
+  ];
+  const warnings = [];
+  spreadPositions(beats, 3, warnings);
+  assert.equal(beats[1].camera, "far");
+  assert.equal(beats[1].track, 0);
+  assert.equal(beats[2].camera, "close", "a close-up that names one person is the allowed solo close-up");
+  assert.equal(beats[2].focus, "b");
+  assert.equal(beats[2].zoom, 1.06, "its zoom push-in stays");
+  assert.equal(beats[3].camera.distance, "far");
+  assert.equal(beats[3].focus, 5);
+  assert.equal("zoom" in beats[3], false, "a middle group shot loses its push-in");
+  assert.equal("zoom" in beats[4], false, "a group push-in on the far shot is removed");
+  assert.equal(beats[5].camera, "close", "a close-up without a focus aims at the speaker");
+  assert.equal(beats[5].focus, "a");
+  assert.equal(beats[6].camera, "far", "a camera-only close-up with no person to frame falls back to the group shot");
+  assert.equal(beats[6].focus, 5);
+  assert.equal(beats[8].camera, "close", "once the third person leaves, close-ups are allowed again");
+  assert.ok(warnings.some((w) => w.code === "groupCamera"));
+  assert.ok(warnings.some((w) => w.code === "groupZoom"));
+});
+
+test("a supplied script gets the same three-person framing correction as the AI paths", () => {
+  const catalog = {
+    ...CATALOG,
+    models: [...CATALOG.models, { id: "m_c", name: "立希", character: "taki", group: "taki",
+      motions: ["mtn_idle01_C"], expressions: ["exp_idle01"], defaultMotion: "mtn_idle01_C",
+      defaultExpression: "exp_idle01" }],
+  };
+  const doc = {
+    format: "ournotes.story-script/1", base: "stories/1.json", language: "zh-Hans", title: "测试",
+    cast: { a: { model: "m_a", name: "灯" }, b: { model: "m_b", name: "爽世" }, c: { model: "m_c", name: "立希" } },
+    beats: [
+      { scene: "stage_a", camera: "middle", positions: { a: "left", b: "right" } },
+      { positions: { a: "far-left", b: "center", c: "far-right" }, camera: "middle" },
+      { say: "a", text: "一。", camera: "middle", focus: "a", zoom: 1.06, zoomDuration: 3 },
+      { say: "b", text: "二。", camera: "close", focus: "b", zoom: 1.06, zoomDuration: 3 },
+    ],
+  };
+  const r = prepareScript({ doc, catalog, request: {}, config: CONFIG, logger: quietLogger() });
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.doc.beats[1].camera, "far");
+  assert.equal(r.doc.beats[2].camera, "far");
+  assert.equal("zoom" in r.doc.beats[2], false);
+  assert.equal(r.doc.beats[3].camera, "close", "the solo close-up in a supplied script is kept");
+  assert.equal(r.doc.beats[3].focus, "b");
+  assert.equal(r.doc.beats[3].zoom, 1.06);
+  assert.ok(r.warnings.some((w) => w.code === "groupCamera"));
+  assert.ok(r.warnings.some((w) => w.code === "groupZoom"));
+});
+
 test("a third person on stage is a problem only when the limit is two", () => {
   const beats = [{ positions: { a: "far-left", b: "center", c: "far-right" } }];
   assert.equal(onStageProblems(beats, 2).length, 1);

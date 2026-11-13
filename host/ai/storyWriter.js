@@ -14,7 +14,7 @@ import {
   balanceLineBreaks, buildCastMessages, buildDialogueLengthPrompt, buildDialogueMessages,
   buildDialogueRepairMessages, buildStoryboardMessages, buildStoryboardRepairMessages, fallbackCastPlan,
   mergeStagedScript, modelIndex, normalizeCastPlan, normalizeDialogue, onStageProblems, resolveModel,
-  spreadPositions, countDialogueChars,
+  spreadPositions, enforceGroupShots, countDialogueChars,
 } from "./staged.js";
 
 export class StoryWriterError extends Error {
@@ -262,6 +262,10 @@ export const checkDocument = (doc, catalog) => {
 export const prepareScript = ({ doc, catalog, request = {}, config, logger = console }) => {
   let cur = normalize(doc, { catalog, request, config });
   if (!isObj(cur)) return { errors: [{ path: "", code: "type", message: "a script is a JSON object" }], warnings: [] };
+  // A re-render or retry may carry an older story: apply the same three-person framing rule as the AI paths so a
+  // close-up cannot crop the other two.
+  const groupWarnings = [];
+  enforceGroupShots(cur.beats, config?.story?.maxOnStage, groupWarnings);
   const site = siteFor(catalog);
   for (let round = 0; round < 6; round++) {
     const parsed = parseScript(cur);
@@ -270,7 +274,7 @@ export const prepareScript = ({ doc, catalog, request = {}, config, logger = con
       const checked = checkScript(parsed.script, site);
       problems = checked.errors;
       warnings = checked.warnings;
-      if (!problems.length) return { script: parsed.script, doc: cur, warnings, errors: [] };
+      if (!problems.length) return { script: parsed.script, doc: cur, warnings: [...warnings, ...groupWarnings], errors: [] };
     }
     const fixable = [...problems, ...warnings].filter((p) => Array.isArray(p.fix) && p.fix.length);
     if (!fixable.length) return { errors: problems, warnings };
@@ -281,7 +285,8 @@ export const prepareScript = ({ doc, catalog, request = {}, config, logger = con
   }
   const parsed = parseScript(cur);
   const checked = parsed.errors.length ? { errors: parsed.errors, warnings: [] } : checkScript(parsed.script, site);
-  return { script: parsed.script, doc: cur, errors: checked.errors || [], warnings: checked.warnings || [] };
+  return { script: parsed.script, doc: cur, errors: checked.errors || [],
+           warnings: [...(checked.warnings || []), ...groupWarnings] };
 };
 
 const combineUsage = (calls) => {
