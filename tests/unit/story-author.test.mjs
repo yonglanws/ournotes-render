@@ -9,8 +9,8 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import {
   SCRIPT_FORMAT, applyFixes, checkScript, compileScript, cueLabel, fontFamily, freeSlot, layoutFix, lineGroups,
-  modelActions, musicChoices, nearest, parseScript, plainText, resolveMotion, soundChoices, stageBackground,
-  stageChoices, wrapText, withBrowserFonts,
+  modelActions, musicChoices, nearest, parseScript, plainText, resolveMotion, scriptTexts, soundChoices,
+  stageBackground, stageChoices, wrapText, withBrowserFonts,
 } from "../../scripts/lib/story-author/script.js";
 import { Site } from "../../scripts/lib/story-author/site.js";
 import { compile } from "../../scripts/lib/json-schema.mjs";
@@ -218,8 +218,9 @@ test("a model's motions and expressions; the clip a motion plays at a position",
                      defaultExpression: "exp_idle01" });
   assert.throws(() => actions([]), /Live2DCharacter/);
   const m = ACTIONS.m_a.motions;
-  assert.equal(resolveMotion("mtn_smile01", 3, m), "mtn_smile01_L");
-  assert.equal(resolveMotion("mtn_smile01", 9, m), "mtn_smile01_C");          // no _R: the centre one
+  assert.equal(resolveMotion("mtn_idle01", 3, m), "mtn_idle01_R");           // left side faces right (_R)
+  assert.equal(resolveMotion("mtn_smile01", 3, m), "mtn_smile01_C");          // no _R: the centre one
+  assert.equal(resolveMotion("mtn_smile01", 9, m), "mtn_smile01_L");          // far-right faces left (_L)
   assert.equal(resolveMotion("mtn_idle01_R", 1, m), "mtn_idle01_R");          // a clip name plays as it is
   assert.equal(resolveMotion("mtn_gone01", 5, m), "");
   assert.equal(resolveMotion("", 5, m), "");
@@ -241,7 +242,7 @@ test("the shape of a script: every problem names its JSON pointer, unknown names
     ["/beats/2", "beatKind"], ["/beats/3/narrate", "empty"], ["/beats/5/id", "duplicateId"], ["/beats/6", "type"],
   ]);
   assert.equal(errors[1].suggestion, "language");
-  assert.deepEqual(errors[5].expected, ["near", "middle", "far", "close", "very-close"]);
+  assert.deepEqual(errors[5].expected, ["full", "near", "middle", "far", "close", "very-close", "macro"]);
   assert.equal(errors[5].suggestion, "close");
   assert.deepEqual(errors[6].expected, ["far-left", "left", "center", "right", "far-right"]);
   assert.equal(errors[8].suggestion, "text");
@@ -290,11 +291,11 @@ test("a scene compiles to the game's rows: stage, music, entrances, focus, capti
     { cmd: "Character", TargetName: "b", TargetAssetName: "002_adv/m_b/model/m_b" },
     { cmd: "Stage", TargetAssetName: "st/garden" },
     { cmd: "Bgm", BgmID: 11, Parameter1: "1.5" },
-    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_L", ExpressionName: "exp_smile01" },
+    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_R", ExpressionName: "exp_smile01" },
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 5, CameraDistance: 1 },
     { cmd: "Location", AdvTextID: "custom_location_0" },
-    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: -1, ExpressionName: "exp_smile01" },
+    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_C", MotionFadeIn: -1, ExpressionName: "exp_smile01" },
     { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"], TargetTextColors: ["#FFFFFF"] },
     { cmd: "Talk", AdvTextID: "custom_line_2" },
     { cmd: "Expression", TargetName: "a", ExpressionName: "exp_idle01", MotionFadeIn: -1 },
@@ -332,17 +333,17 @@ test("a second scene fades out, clears the stage and fades in; a positions beat 
   ], { title: "" }));
   assert.deepEqual(strip(c.episode.commands).slice(2), [
     { cmd: "Stage", TargetAssetName: "st/garden" },
-    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_L" },
+    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_R" },
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 5, CameraDistance: 2 },
-    // each Out waits for its fade, then the entrance on the new position
-    { cmd: "Out", TargetName: "a", PositionType: 3, Duration: 0.2 },
-    { cmd: "In", TargetName: "a", PositionType: 5, Duration: 0.2, IsNoWait: 1 },
+    // relocating an already-staged character emits MoveToDirection instead of Out + In
+    { cmd: "MoveToDirection", TargetName: "a", PositionType: 3, Parameter1: "1.05", Duration: 0.5, IsNoWait: 1 },
     { cmd: "Expression", TargetName: "b", ExpressionName: "exp_idle01", MotionFadeIn: -1 },
     { cmd: "Focus", PositionType: 6, CameraDistance: 3, Duration: 0.5, IsNoWait: 1 },
     { cmd: "Talk", AdvTextID: "custom_line_2", TargetName: "b", TargetTextIDs: ["custom_name_b"], TargetTextColors: ["#FFFFFF"] },
+    { cmd: "Talk", AdvTextID: "", IsNoWait: 1 },
     { cmd: "FadeOut", Duration: 1 },
-    { cmd: "Out", TargetName: "a", PositionType: 5 },
+    { cmd: "Out", TargetName: "a", PositionType: 3 },
     { cmd: "Out", TargetName: "b", PositionType: 7 },
     { cmd: "Stage", TargetAssetName: "st/hall" },
     { cmd: "In", TargetName: "b", PositionType: 5, IsNoWait: 1 },
@@ -370,24 +371,27 @@ test("director beats compile to focus, timed actions, fades, pauses and silent a
   ]));
   assert.deepEqual(strip(c.episode.commands).slice(2), [
     { cmd: "Stage", TargetAssetName: "st/garden" },
-    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_L" },
+    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_R" },
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 3, CameraDistance: 3 },
     // the line's own camera (a wider distance eases back over 1.2 s), then the speaker's motion and the reactions
     { cmd: "Focus", PositionType: 7, CameraDistance: 1, Duration: 1.2, IsNoWait: 1 },
-    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: -1 },
+    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_C", MotionFadeIn: -1, ExpressionName: "exp_idle01" },
     { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"], TargetTextColors: ["#FFFFFF"],
       HostActions: [{ at: 0.45, TargetName: "b", MotionFadeIn: 0.15, ExpressionName: "exp_idle01" },
                     { at: 0.6, TargetName: "a", MotionFadeIn: 0.15, LookTargetPosition: 7 }] },
-    // a silent reaction shot, then the transitions
+    // a silent reaction shot, then the transitions (empty Talk closes the open window before FadeOut)
     { cmd: "Expression", TargetName: "b", ExpressionName: "exp_idle01", MotionFadeIn: -1 },
     { cmd: "LookTarget", TargetName: "b", PositionType: 3, Duration: 0.2, IsNoWait: 1 },
     { cmd: "Delay", Duration: 0.4 },
+    { cmd: "Talk", AdvTextID: "", IsNoWait: 1 },
     { cmd: "FadeOut", Duration: 0.8 },
     { cmd: "Delay", Duration: 0.5 },
     { cmd: "Focus", PositionType: 3, CameraDistance: 3, Duration: 1, IsNoWait: 1 },
-    // the second scene: fade, clear, stage, entrance, focus, fade in
+    // the second scene: fade, gaze reset + clear behind black, stage, entrance, focus, fade in
     { cmd: "FadeOut", Duration: 1 },
+    { cmd: "LookTarget", TargetName: "a", Parameter3: "Stop", IsNoWait: 1 },
+    { cmd: "LookTarget", TargetName: "b", Parameter3: "Stop", IsNoWait: 1 },
     { cmd: "Out", TargetName: "a", PositionType: 3 },
     { cmd: "Out", TargetName: "b", PositionType: 7 },
     { cmd: "Stage", TargetAssetName: "st/hall" },
@@ -429,9 +433,9 @@ test("a slow zoom compiles to a Zoom row, with the beat's duration or 1.5 s", ()
   ]));
   const zoomRows = strip(c.episode.commands).filter((r) => r.cmd === "Zoom");
   assert.deepEqual(zoomRows, [
-    { cmd: "Zoom", Parameter1: "1.06", Duration: 4, IsNoWait: 1 },
-    { cmd: "Zoom", Parameter1: "0.94", Duration: 1.5, IsNoWait: 1 },
-    { cmd: "Zoom", Parameter1: "1.1", Duration: 2, IsNoWait: 1 },
+    { cmd: "Zoom", Parameter1: "1.06", Duration: 4, Parameter2: "Linear", IsNoWait: 1 },
+    { cmd: "Zoom", Parameter1: "0.94", Duration: 1.5, Parameter2: "OutSine", IsNoWait: 1 },
+    { cmd: "Zoom", Parameter1: "1.1", Duration: 2, Parameter2: "OutSine", IsNoWait: 1 },
   ]);
   const bad = parseScript({ format: SCRIPT_FORMAT, base: "b", cast: {}, beats: [
     { say: "a", text: "x", zoom: 3 }, { say: "a", text: "y", zoomDuration: 3 },
@@ -480,13 +484,13 @@ test("official camera rows compile in deterministic order with their durations",
   const c = compiled(script([
     { scene: "garden", camera: "middle", focus: 5, positions: { a: "left", b: "right" } },
     { camera: "middle", focus: "a", cameraDuration: 3, focusDuration: 1, track: 0.5, pedestal: -0.2,
-      pan: -5, panFocusSlide: 0.5, dof: 0.5, dofLayers: 2, zoom: 1.2,
+      pan: -5, panFocusSlide: 0.5, dof: 0.5, dofLayers: 2, dofTarget: "b", zoom: 1.2,
       se: "sound_se_adv_door_knock", seDuration: 0.7 },
     { say: "a", text: "One.", look: 0.3, lookY: -0.3, lookDuration: 0.4 },
   ]));
   assert.deepEqual(strip(c.episode.commands).slice(2), [
     { cmd: "Stage", TargetAssetName: "st/garden" },
-    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_L" },
+    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_R" },
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 5, CameraDistance: 2 },
     // one Focus then one Track: the explicit Focus duration wins over cameraDuration for both
@@ -494,19 +498,20 @@ test("official camera rows compile in deterministic order with their durations",
     { cmd: "Track", Parameter1: "0.5", Duration: 1, IsNoWait: 1 },
     // cameraDuration is the fallback for the rows that have no duration of their own
     { cmd: "Pedestal", Parameter1: "-0.2", Duration: 3, IsNoWait: 1 },
-    { cmd: "PanV2", Parameter1: "-5", Duration: 3, IsNoWait: 1, Parameter3: "0.5" },
-    // a character DoF names its on-stage target; both engines resolve PositionType, else TargetName
+    { cmd: "PanV2", Parameter1: "-5", Duration: 3, Parameter2: "OutSine", IsNoWait: 1, Parameter3: "0.5" },
+    // an explicit non-focused character DoF names its on-stage target
     { cmd: "DoF", Parameter1: "0.5", IsNoWait: 1, Duration: 3, CanvasLayers: [2],
-      TargetName: "a", PositionType: 3 },
-    { cmd: "Zoom", Parameter1: "1.2", Duration: 3, IsNoWait: 1 },
+      TargetName: "b", PositionType: 7 },
+    { cmd: "Zoom", Parameter1: "1.2", Duration: 3, Parameter2: "OutSine", IsNoWait: 1 },
     { cmd: "Se", SeID: 12, Duration: 0.7 },
-    // the next say changes the shot, so the character DoF is cleared before it
+    // the next say changes the shot (dof cleared before it), look starts and is closed at episode end
     { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, CanvasLayers: [2],
-      TargetName: "a", PositionType: 3 },
+      TargetName: "b", PositionType: 7 },
     // look is a say field: it follows the camera rows of the beat before it
     { cmd: "Look", TargetName: "a", Parameter1: "0.3", Parameter2: "-0.3", Duration: 0.4, IsNoWait: 1 },
     { cmd: "Talk", AdvTextID: "custom_line_2", TargetName: "a", TargetTextIDs: ["custom_name_a"],
       TargetTextColors: ["#FFFFFF"] },
+    { cmd: "Look", TargetName: "a", Parameter3: "Stop", Duration: 0.2, IsNoWait: 1 },
   ]);
   const rows = c.episode.commands;
   const se = rows.find((r) => r.cmd === "Se");
@@ -525,7 +530,7 @@ test("motion fade/wait and a SE stop reach their rows", () => {
     { action: "b", expression: "exp_idle01", motionFadeIn: 0.75, seStop: true },
   ]));
   assert.deepEqual(strip(c.episode.commands).slice(-4), [
-    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: 0.5, MotionWait: true },
+    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_C", MotionFadeIn: 0.5, MotionWait: true, ExpressionName: "exp_idle01" },
     { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"],
       TargetTextColors: ["#FFFFFF"] },
     { cmd: "Se", Parameter1: "Stop" },
@@ -533,51 +538,50 @@ test("motion fade/wait and a SE stop reach their rows", () => {
   ]);
 });
 
-test("character DoF rows always carry an on-stage target", () => {
+test("DoF defaults to background blur [0] without target, and targets non-focused character when dofTarget is set", () => {
   const c = compiled(script([
     { scene: "garden", positions: { a: "left", b: "right" } },
-    { say: "a", text: "One.", dof: 0.4, dofLayers: 2 },
-    { action: "b", expression: "exp_idle01", dof: 0.6 },
-    { camera: "middle", focus: "b", dof: 0.5 },
+    { say: "a", text: "One.", dof: 0.4 },
+    { action: "b", expression: "exp_idle01", dof: 0.6, dofLayers: 2, dofTarget: "a" },
+    { camera: "middle", focus: "b", dof: 0.5, dofTarget: "a" },
     { camera: "middle", dof: 0.3 },
     { camera: "middle", focus: 5, dof: 0.2, dofLayers: 0 },
     { narrate: "Wind.", dof: 0.1 },
   ]));
   assert.deepEqual(strip(c.episode.commands).filter((r) => r.cmd === "DoF"), [
-    { cmd: "DoF", Parameter1: "0.4", IsNoWait: 1, Duration: 1.5, CanvasLayers: [2],
-      TargetName: "a", PositionType: 3 },
-    { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, CanvasLayers: [2],
-      TargetName: "a", PositionType: 3 },
-    { cmd: "DoF", Parameter1: "0.6", IsNoWait: 1, Duration: 1.5, TargetName: "b", PositionType: 7 },
-    { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, TargetName: "b", PositionType: 7 },
-    { cmd: "DoF", Parameter1: "0.5", IsNoWait: 1, Duration: 1.5, TargetName: "b", PositionType: 7 },
-    { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, TargetName: "b", PositionType: 7 },
-    // no explicit focus: the nearest on-stage character to the current shot is the target
-    { cmd: "DoF", Parameter1: "0.3", IsNoWait: 1, Duration: 1.5, TargetName: "a", PositionType: 3 },
+    { cmd: "DoF", Parameter1: "0.4", IsNoWait: 1, Duration: 1.5, CanvasLayers: [0] },
+    { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, CanvasLayers: [0] },
+    { cmd: "DoF", Parameter1: "0.6", IsNoWait: 1, Duration: 1.5, CanvasLayers: [2], TargetName: "a", PositionType: 3 },
+    { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, CanvasLayers: [2], TargetName: "a", PositionType: 3 },
+    { cmd: "DoF", Parameter1: "0.5", IsNoWait: 1, Duration: 1.5, TargetName: "a", PositionType: 3 },
     { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, TargetName: "a", PositionType: 3 },
-    // background-only DoF needs no character target
+    { cmd: "DoF", Parameter1: "0.3", IsNoWait: 1, Duration: 1.5, CanvasLayers: [0] },
+    { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, CanvasLayers: [0] },
     { cmd: "DoF", Parameter1: "0.2", IsNoWait: 1, Duration: 1.5, CanvasLayers: [0] },
     { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 1, CanvasLayers: [0] },
-    { cmd: "DoF", Parameter1: "0.1", IsNoWait: 1, Duration: 1.5, TargetName: "a", PositionType: 3 },
+    { cmd: "DoF", Parameter1: "0.1", IsNoWait: 1, Duration: 1.5, CanvasLayers: [0] },
+    { cmd: "DoF", Parameter1: "0", IsNoWait: 1, Duration: 0.3, CanvasLayers: [0] },
   ]);
 });
 
-test("a character DoF needs an on-stage target", () => {
+test("DoF polarity rules reject focused-speaker blur, missing dofTarget on dofLayers 2, and off-stage targets", () => {
   const { errors, warnings } = checked(script([
     { scene: "garden", positions: {} },
-    { camera: "middle", dof: 0.5 },
-    { narrate: "Rain.", dof: 0.5 },
+    { camera: "middle", dof: 0.5 },                                 // valid background blur even with empty stage
+    { narrate: "Rain.", dof: 0.5 },                                 // valid background blur
     { scene: "garden", positions: { a: "left", b: "right" } },
-    { camera: "middle", focus: 5, dof: 0.5 },
-    { camera: "middle", focus: "a", dof: 0.5 },
-    { camera: "middle", focus: 5, dof: 0.5, dofLayers: 0 },
+    { say: "a", text: "Bad1.", dof: 0.5, dofLayers: 2 },            // missing dofTarget
+    { say: "a", text: "Bad2.", dof: 0.5, dofTarget: "a" },          // cannot blur focused speaker
+    { camera: "middle", focus: "left", dof: 0.5, dofTarget: "a" },  // cannot blur focused slot occupant
     { positions: { a: "left" } },
-    { say: "b", text: "Off.", dof: 0.5 },
-    { say: "b", text: "Off background.", dof: 0.5, dofLayers: 0 },
+    { say: "a", text: "Bad4.", dof: 0.5, dofTarget: "b" },          // off-stage dofTarget
+    { say: "b", text: "Off.", dof: 0.5 },                           // valid background DoF even if speaker off-stage
   ]));
   assert.deepEqual(codes(errors), [
-    ["/beats/1/dof", "offStage"], ["/beats/2/dof", "offStage"], ["/beats/4/dof", "offStage"],
-    ["/beats/8", "offStage"],
+    ["/beats/4/dofLayers", "missingDofTarget"],
+    ["/beats/5/dofTarget", "dofFocusedSpeaker"],
+    ["/beats/6/dofTarget", "dofFocusedSpeaker"],
+    ["/beats/8/dofTarget", "offStage"],
   ]);
   assert.ok(warnings.some((w) => w.code === "speakerOffStage" && w.path === "/beats/9/say"));
 });
@@ -644,7 +648,7 @@ test("track, focus points and pre-line reactions compile to the game's continuou
   ]));
   assert.deepEqual(strip(c.episode.commands).slice(2), [
     { cmd: "Stage", TargetAssetName: "st/garden" },
-    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_L" },
+    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_R" },
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     // the scene establishes a two-shot with a focus point between the two slots plus a pan
     { cmd: "Focus", PositionType: 5, CameraDistance: 3 },
@@ -654,14 +658,14 @@ test("track, focus points and pre-line reactions compile to the game's continuou
     { cmd: "Focus", PositionType: 2, CameraDistance: 2, Duration: 1.2, IsNoWait: 1 },
     { cmd: "Track", Parameter1: "-0.3", Duration: 1.2, IsNoWait: 1 },
     { cmd: "Expression", TargetName: "b", ExpressionName: "exp_idle01", MotionFadeIn: -1 },
-    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: -1 },
+    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_C", MotionFadeIn: -1, ExpressionName: "exp_idle01" },
     { cmd: "LookTarget", TargetName: "a", PositionType: 7, Duration: 0.2, IsNoWait: 1 },
     { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"], TargetTextColors: ["#FFFFFF"],
       HostActions: [{ at: 0.5, TargetName: "a", MotionFadeIn: 0.15, LookTargetPosition: 7 }] },
-    // the group changes: the camera follows the new center and pans
+    // speaker-group transition resets gaze before Out; b relocates right -> center via MoveToDirection
+    { cmd: "LookTarget", TargetName: "a", Parameter3: "Stop", Duration: 0.2, IsNoWait: 1 },
     { cmd: "Out", TargetName: "a", PositionType: 3, Duration: 0.2 },
-    { cmd: "Out", TargetName: "b", PositionType: 7, Duration: 0.2 },
-    { cmd: "In", TargetName: "b", PositionType: 5, Duration: 0.2, IsNoWait: 1 },
+    { cmd: "MoveToDirection", TargetName: "b", PositionType: 7, Parameter1: "-1.05", Duration: 0.5, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 5, CameraDistance: 2, Duration: 0.5, IsNoWait: 1 },
     { cmd: "Track", Parameter1: "0.2", Duration: 0.5, IsNoWait: 1 },
   ]);
@@ -721,9 +725,11 @@ test("a script's problem names the fix that writes it in", () => {
   assert.equal(by["/beats/3/postions"].suggestion, undefined);       // no near name in this beat's keys
   assert.equal(by["/beats/3/postions"].fix, undefined);              // and so no fix
   assert.deepEqual(by["/beats/3/postions"].expected,
-                   ["id", "narrate", "focus", "camera", "track", "zoom", "zoomDuration", "focusDuration",
-                    "trackDuration", "pedestal", "pedestalDuration", "pan", "panDuration", "panFocusSlide",
-                    "dof", "dofDuration", "dofLayers", "actions"]);
+                   ["id", "narrate", "thought", "ignoreLipSync", "hideTalk", "focus", "camera", "track", "zoom",
+                    "zoomDuration", "focusDuration", "trackDuration", "pedestal", "pedestalDuration", "pan",
+                    "panDuration", "panFocusSlide", "dof", "dofDuration", "dofLayers", "dofTarget", "ease",
+                    "cameraDelay", "focusSharp", "focusTargetHead", "role", "roleDuration", "tilt", "tiltDuration",
+                    "talkWindow", "actions"]);
   assert.equal(parseScript({ format: SCRIPT_FORMAT, zzz: 1 }).errors[0].fix, undefined);
   // a key whose near name is taken is left alone: renaming onto it would lose a value
   const taken = parseScript({ format: SCRIPT_FORMAT, base: "b", cast: {},
@@ -1030,7 +1036,7 @@ test("the commands without a browser: new, check, build; the built story loads",
 test("a character DoF is cleared before the next shot instead of blurring the other person", () => {
   const c = compiled(script([
     { scene: "garden", positions: { a: "left", b: "right" } },
-    { say: "a", text: "One.", dof: 0.4, dofLayers: 2 },
+    { say: "a", text: "One.", dof: 0.4, dofLayers: 2, dofTarget: "b" },
     { say: "b", text: "Two.", camera: "close", focus: "b" },
   ]));
   const rows = strip(c.episode.commands);
@@ -1040,6 +1046,223 @@ test("a character DoF is cleared before the next shot instead of blurring the ot
   assert.ok(set >= 0, "the DoF row is emitted");
   assert.ok(reset > set, "a DoF 0 reset follows the effect");
   assert.ok(focus > reset, "the reset comes before the next shot's Focus row");
-  assert.equal(rows[reset].TargetName, "a");
-  assert.equal(rows[reset].PositionType, 3);
+  assert.equal(rows[reset].TargetName, "b");
+  assert.equal(rows[reset].PositionType, 7);
+});
+
+test("voiceless IgnoreLipSync: 1 on thoughts, explicit flag, and punctuation-only lines", () => {
+  const c = compiled(script([
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    { say: "a", text: "Hello!" },
+    { say: "a", text: "Inner voice.", thought: true },
+    { say: "a", text: "Silent line.", ignoreLipSync: true },
+    { say: "b", text: "……" },
+    { say: "b", text: "…………" },
+    { say: "b", text: "！" },
+    { say: "a", text: "你好。" },
+    { say: "b", text: "……", ignoreLipSync: false },
+  ]));
+  const talks = strip(c.episode.commands).filter((r) => r.cmd === "Talk");
+  assert.deepEqual(
+    talks.map((t) => [t.AdvTextID, t.IgnoreLipSync ?? 0]),
+    [
+      ["custom_line_1", 0],
+      ["custom_line_2", 1],
+      ["custom_line_3", 1],
+      ["custom_line_4", 1],
+      ["custom_line_5", 1],
+      ["custom_line_6", 1],
+      ["custom_line_7", 0],
+      ["custom_line_8", 0],
+    ],
+  );
+});
+
+test("mandatory window-hiding empty Talk beats fire before non-dialogue pauses/cuts and on hideTalk", () => {
+  const c = compiled(script([
+    { scene: "garden", positions: { a: "left" } },
+    { say: "a", text: "One." },
+    { pause: 0.3 },                                              // < 0.6s: stays open
+    { pause: 0.6 },                                              // >= 0.6s: emits empty Talk before Delay
+    { pause: 0.8 },                                              // talk already closed: no duplicate empty Talk
+    { say: "a", text: "Two." },
+    { camera: "close", focus: "a" },                             // standalone camera closes talk
+    { say: "a", text: "Three." },
+    { move: { cast: "a", dir: "left", distance: 0.4 } },         // standalone move closes talk
+    { say: "a", text: "Four." },
+    { se: "sound_se_adv_door_knock" },                           // standalone se closes talk
+    { say: "a", text: "Five.", hideTalk: true },                 // inline hideTalk closes after Talk
+    { hideTalk: true },                                          // standalone hideTalk emits empty Talk
+  ]));
+  const rows = strip(c.episode.commands).filter((r) =>
+    ["Talk", "Delay", "Focus", "MoveToLeft", "Se"].includes(r.cmd));
+  assert.deepEqual(rows.map((r) => (r.cmd === "Talk" ? `Talk:${r.AdvTextID}:${r.IsNoWait ?? 0}` : r.cmd)), [
+    "Focus",
+    "Talk:custom_line_1:0",
+    "Delay",
+    "Talk::1",
+    "Delay",
+    "Delay",
+    "Talk:custom_line_5:0",
+    "Talk::1",
+    "Focus",
+    "Talk:custom_line_7:0",
+    "Talk::1",
+    "MoveToLeft",
+    "Talk:custom_line_9:0",
+    "Talk::1",
+    "Se",
+    "Talk:custom_line_11:0",
+    "Talk::1",
+    "Talk::1",
+  ]);
+});
+
+test("full 3D camera grammar: full/macro, sharp, targetHead, ease, cameraDelay, track clamping, role/tilt", () => {
+  const doc = script([
+    { scene: "garden", camera: "full", positions: { a: "left", b: "right" } },
+    { say: "a", text: "Establishing.", focus: "a", camera: "close", track: 1.5, focusSharp: true,
+      focusTargetHead: true, ease: "OutQuint", cameraDelay: 0.25 },
+    { camera: "macro", focus: "b", track: -2.0, cameraDuration: 5.0, pedestal: 0.4, pan: 10, role: -12,
+      roleDuration: 1.0, tilt: 8, tiltDuration: 4.5, dof: 0.7 },
+    { say: "b", text: "Hold roll off." },
+  ]);
+  const chk = checked(doc);
+  assert.deepEqual(chk.errors, []);
+  assert.equal(chk.warnings.filter((w) => w.code === "trackClamped").length, 2);
+
+  const ep = compileScript(chk.script, SITE, chk.language).episode;
+  const rows = strip(ep.commands);
+
+  const focuses = rows.filter((r) => r.cmd === "Focus");
+  assert.equal(focuses[0].CameraDistance, 0);                    // full === 0 preserved (not defaulted to 2!)
+  assert.equal(focuses[1].CameraDistance, 4);
+  assert.equal(focuses[1].Parameter1, "Sharp");
+  assert.equal(focuses[1].TargetName, "a");                      // focusTargetHead attached TargetName
+  assert.equal(focuses[1].PositionType, 3);
+  assert.equal(focuses[1].Parameter2, "OutQuint");
+  assert.equal(focuses[1].DelaySeconds, 0.25);
+  assert.equal(focuses[2].CameraDistance, 6);                    // macro === 6
+  assert.equal(focuses[2].Parameter2, "Linear");                 // duration >= 4.0 defaults to Linear
+
+  const tracks = rows.filter((r) => r.cmd === "Track");
+  assert.equal(tracks[0].Parameter1, "0.25");                    // clamped at close (4)
+  assert.equal(tracks[0].Parameter2, "OutQuint");
+  assert.equal(tracks[0].DelaySeconds, 0.25);
+  assert.equal(tracks[1].Parameter1, "0");                       // clamped at macro (6)
+  assert.equal(tracks[1].Parameter2, "Linear");
+
+  const pan = rows.find((r) => r.cmd === "PanV2");
+  assert.equal(pan.Parameter2, "Linear");                        // duration 5 >= 4.0 -> Linear
+  const role = rows.find((r) => r.cmd === "Role");
+  assert.equal(role.Parameter1, "-12");
+  const tilt = rows.find((r) => r.cmd === "Tilt");
+  assert.equal(tilt.Parameter1, "8");
+  assert.equal(tilt.Parameter2, "Linear");
+
+  const badHead = checked(script([
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    { say: "a", text: "Ambiguous.", camera: "close", focusTargetHead: true },
+  ]));
+  assert.deepEqual(codes(badHead.errors), [["/beats/1/focusTargetHead", "offStage"]]);
+});
+
+test("spatial 3D blocking: move commands, Z-staggering, slot fallback, angle, look stop and ExpressionName", () => {
+  const c = compiled(script([
+    { scene: "garden", positions: { a: { at: "left", dz: 1.5 }, b: "right" } },
+    { say: "a", text: "Step.", move: { dir: "forward", distance: 0.4, duration: 0.3 }, angle: { z: 10, x: -4 },
+      motion: "mtn_nod01", actions: [{ at: 0.5, cast: "b", motion: "mtn_idle01", lookAt: "a" }] },
+    { move: { cast: "a", dx: 0.2, dy: 0.1, dz: -0.3, duration: 0.4 } },
+    { positions: { c: "left", a: "center", b: "right" } },       // c claims slot 3: a exits slot 3 cleanly then enters 5
+    { say: "c", text: "Hi", look: 0.4 },
+    { say: "c", text: "Straight.", look: "stop" },
+    { say: "b", text: "Looking.", lookAt: "c" },
+    { say: "b", text: "Unlooking.", lookAt: "stop" },
+  ], { cast: { a: { model: "m_a", name: "Ann" }, b: { model: "m_b", name: "Bea" }, c: { model: "m_a", name: "Chi" } } }));
+  const rows = strip(c.episode.commands);
+
+  // Scene entrance Z-staggering
+  assert.ok(rows.some((r) => r.cmd === "MoveToDirection" && r.TargetName === "a" && r.PositionType === 3 && r.Parameter3 === "1.5"));
+  // Directional forward move + Angle + Motion with forced ExpressionName + HostActions Motion with ExpressionName
+  assert.ok(rows.some((r) => r.cmd === "MoveToForward" && r.TargetName === "a" && r.Parameter1 === "0.4" && r.Duration === 0.3));
+  assert.ok(rows.some((r) => r.cmd === "Angle" && r.TargetName === "a" && r.Parameter1 === "10" && r.Parameter2 === "-4"));
+  const motionRow = rows.find((r) => r.cmd === "Motion" && r.TargetName === "a");
+  assert.equal(motionRow.ExpressionName, "exp_idle01");
+  const hostTalk = rows.find((r) => r.cmd === "Talk" && r.HostActions);
+  assert.equal(hostTalk.HostActions[0].ExpressionName, "exp_idle01");
+  // Multi-axis move beat
+  assert.ok(rows.some((r) => r.cmd === "MoveToDirection" && r.Parameter1 === "0.2" && r.Parameter2 === "0.1" && r.Parameter3 === "-0.3"));
+  // Slot reclaim fallback: a left slot 3 via Out (with offset reset) before c In on slot 3 and a In on slot 5
+  const outIdx = rows.findIndex((r) => r.cmd === "Out" && r.TargetName === "a" && r.PositionType === 3);
+  const inCIdx = rows.findIndex((r) => r.cmd === "In" && r.TargetName === "c" && r.PositionType === 3);
+  const inAIdx = rows.findIndex((r) => r.cmd === "In" && r.TargetName === "a" && r.PositionType === 5);
+  assert.ok(outIdx >= 0 && inCIdx > outIdx && inAIdx > outIdx);
+  // Look & LookTarget Stop rows
+  assert.ok(rows.some((r) => r.cmd === "Look" && r.TargetName === "c" && r.Parameter3 === "Stop"));
+  assert.ok(rows.some((r) => r.cmd === "LookTarget" && r.TargetName === "b" && r.Parameter3 === "Stop"));
+});
+
+test("mid-scene BGM, dissolve/rule transitions, SFX beats, and stateful closure linter", () => {
+  const s = script([
+    { scene: "garden", music: "sound_bgm_adv_quiet_morning", stageEnv: { type: "Light", value: 2 },
+      positions: { a: "left", b: "right" } },
+    { talkWindow: "center" },
+    { frame: "adv_frame_letterbox/adv_frame_letterbox_black", frameAction: "Show_anime", frameDuration: 0.4 },
+    { postEffect: "adv_effect_posteffect_reminiscence1", postEffectDuration: 0.5 },
+    { brightness: { target: "cast", value: 0.5, duration: 0.3 } },
+    { brightness: { target: "bg", value: 0.4, duration: 0.3 } },
+    { shake: { target: "ui", power: 4, duration: 0.4 } },
+    { cameraShake: "start", cameraShakeFade: 0.2, cameraShakeStrength: 0.5 },
+    { cameraShake: "start" },                                    // de-duped: must not toggle off
+    { flash: { duration: 0.2 } },
+    { bgmVolume: 0.35, bgmFade: 0.8 },
+    { bgm: "stop" },
+    { subtitles: { text: "Flashback caption.", target: "a" } },
+    { still: { asset: "still_cg_01", fade: 0.5 } },
+    { say: "a", text: "During flashback.", role: -10, tilt: 5 },
+    { scene: "st/hall", transition: "dissolve", transitionDuration: 1.4, positions: { a: "left" } },
+    { say: "a", text: "After dissolve." },
+    { fade: "out", duration: 0.8, fadeRule: "0003", fadeColor: "#ffffff" },
+    { frame: "adv_frame_fog/adv_frame_fog" },
+    { postEffect: "adv_effect_posteffect_monochrome" },
+    { brightness: { target: "bg", value: 0.2 } },
+    { talkWindow: "center" },
+    { subtitles: { text: "Epilogue subtitle." } },
+    { still: { asset: "still_cg_02", fade: 0.3 } },
+    { cameraShake: "start" },
+    { say: "a", text: "Ending with open effects.", role: 15, tilt: -6, dof: 0.6, look: 0.3, angle: { cast: "a", z: 12 } },
+  ]);
+  assert.ok(scriptTexts(parseScript(s).script).includes("Flashback caption."));
+  const c = compiled(s);
+  const rows = strip(c.episode.commands);
+
+  assert.ok(rows.some((r) => r.cmd === "StageEnv" && r.Parameter1 === "Light" && r.Parameter2 === "2"));
+  assert.ok(rows.some((r) => r.cmd === "Shake" && r.Parameter1 === "4" && r.CanvasLayers?.[0] === 9));
+  assert.ok(rows.some((r) => r.cmd === "Flash" && r.Duration === 0.2));
+  assert.ok(rows.some((r) => r.cmd === "SoundVolume" && r.Parameter1 === "Bgm" && r.Parameter2 === "0.35"));
+  assert.ok(rows.some((r) => r.cmd === "Bgm" && r.Parameter1 === "Stop"));
+  // Dissolve Stage row skips FadeOut/FadeIn and sets Stage.Duration = 1.4 while keeping "a"
+  const dissolveStage = rows.find((r) => r.cmd === "Stage" && r.TargetAssetName === "st/hall");
+  assert.equal(dissolveStage.Duration, 1.4);
+  const betweenScenes = rows.slice(rows.findIndex((r) => r.AdvTextID === "custom_line_14"), rows.indexOf(dissolveStage));
+  assert.equal(betweenScenes.some((r) => r.cmd === "FadeOut"), false);
+  // Stateful closure on dissolve closed leaked scene 1 effects cleanly
+  assert.ok(betweenScenes.some((r) => r.cmd === "Role" && r.Parameter1 === "0"));
+  assert.ok(betweenScenes.some((r) => r.cmd === "Tilt" && r.Parameter1 === "0"));
+  assert.ok(betweenScenes.some((r) => r.cmd === "Frame" && r.Parameter2 === "Hide_anime"));
+  assert.ok(betweenScenes.some((r) => r.cmd === "PostEffect" && r.TargetAssetName === "adv_effect_posteffect_reminiscence1"));
+  assert.ok(betweenScenes.some((r) => r.cmd === "CameraShake"));
+  assert.ok(betweenScenes.some((r) => r.cmd === "Still" && r.TargetAssetName === "still_cg_01"));
+  assert.ok(betweenScenes.some((r) => r.cmd === "Subtitles" && r.AdvTextID === ""));
+  assert.ok(betweenScenes.some((r) => r.cmd === "TalkWindow" && r.TargetAssetName === "UIDefaultTalkWindow"));
+  assert.ok(betweenScenes.some((r) => r.cmd === "Brightness" && r.CanvasLayers?.[0] === 0 && r.Parameter1 === "1"));
+  assert.ok(betweenScenes.some((r) => r.cmd === "Brightness" && r.TargetName === "a" && r.Parameter1 === "1"));
+  assert.ok(betweenScenes.some((r) => r.cmd === "Brightness" && r.TargetName === "b" && r.Parameter1 === "1"));
+  // Rule transition normalized uppercase
+  assert.ok(rows.some((r) => r.cmd === "FadeOut" && r.TargetAssetName === "adv_transition_0003/adv_transition_0003" && r.Parameter1 === "#FFFFFF"));
+  // Episode-end closure closed all remaining leaked effects after final line
+  const afterFinalTalk = rows.slice(rows.findIndex((r) => r.AdvTextID === "custom_line_25") + 1);
+  for (const cmd of ["DoF", "Role", "Tilt", "Brightness", "Frame", "PostEffect", "CameraShake", "Look", "Angle", "Still", "Subtitles", "TalkWindow"]) {
+    assert.ok(afterFinalTalk.some((r) => r.cmd === cmd), `expected episode-end closure for ${cmd}`);
+  }
 });

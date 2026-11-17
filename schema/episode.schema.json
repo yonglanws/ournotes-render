@@ -205,7 +205,8 @@
           "type": "string"
         },
         "TargetAssetIndex": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Costume/model variant index on Costume or Character rows."
         },
         "PositionType": {
           "type": "integer"
@@ -217,13 +218,15 @@
           "type": "number"
         },
         "DelaySeconds": {
-          "type": "number"
+          "type": "number",
+          "description": "Pre-execution delay in seconds before starting the command."
         },
         "IsNoWait": {
           "type": [
             "boolean",
             "integer"
-          ]
+          ],
+          "description": "1 or true to run asynchronously without blocking the next command row."
         },
         "IgnoreData": {
           "type": [
@@ -235,16 +238,20 @@
           "type": [
             "boolean",
             "integer"
-          ]
+          ],
+          "description": "1 or true on voiceless/thought Talk rows to suppress Live2D lip movement."
         },
         "Parameter1": {
-          "type": "string"
+          "type": "string",
+          "description": "Primary command parameter (e.g. offset/angle/fade/brightness/Sharp/Stop/htmlColor)."
         },
         "Parameter2": {
-          "type": "string"
+          "type": "string",
+          "description": "Secondary command parameter (e.g. DOTween ease name, Look Y, BGM startSec, Frame state)."
         },
         "Parameter3": {
-          "type": "string"
+          "type": "string",
+          "description": "Tertiary command parameter (e.g. Stop on Look/LookTarget, MoveToDirection dz, panFocusSlide)."
         },
         "Parameter4": {
           "type": "string"

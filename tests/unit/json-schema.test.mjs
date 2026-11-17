@@ -62,18 +62,62 @@ test("the episode schema declares the official command fields the compiler write
   assert.deepEqual(props.MotionWait, { type: ["boolean", "number"] });
   assert.deepEqual(props.CanvasLayers, { type: "array", items: { type: "integer" } });
   assert.deepEqual(props.TargetTextColors, { type: "array", items: { type: "string" } });
+  for (const field of ["Parameter1", "Parameter2", "Parameter3", "DelaySeconds", "IgnoreLipSync", "IsNoWait", "TargetAssetIndex"]) {
+    assert.ok(field in props, `episode.schema.json declares ${field}`);
+  }
   const check = compile(schema);
   const episode = {
-    advId: 0, asset: "", commandCount: 3,
+    advId: 0, asset: "", commandCount: 4,
     commands: [
       { i: 0, cmd: "Motion", raw: 21, TargetName: "a", MotionName: "mtn_smile01", MotionFadeIn: -1, MotionWait: true },
       // the official rows store seconds (0.5, 1, 3.5 …), not a boolean
       { i: 1, cmd: "Motion", raw: 21, TargetName: "b", MotionName: "mtn_nod01", MotionWait: 3.5 },
-      { i: 2, cmd: "DoF", raw: 48, Parameter1: "0.5", Duration: 1.5, CanvasLayers: [0, 2] },
+      { i: 2, cmd: "DoF", raw: 48, Parameter1: "0.5", Parameter2: "OutSine", Duration: 1.5, DelaySeconds: 0.2, CanvasLayers: [0, 2], IsNoWait: 1 },
+      { i: 3, cmd: "Talk", raw: 2, AdvTextID: "t1", TargetName: "a", IgnoreLipSync: 1, TargetTextIDs: ["n1"], TargetTextColors: ["#FFFFFF"] },
     ],
     text: {}, sounds: {}, cuesheets: {}, videos: {}, resources: [],
     master: { _id: 0, _advEpisodeAsset: "", _titleTextId: "", _playbackMode: 0 }, title: null,
   };
   assert.deepEqual(check(episode), []);
   assert.ok(check({ ...episode, commands: [{ i: 0, cmd: "Motion", raw: 21, MotionWait: "wait" }] }).length);
+});
+
+test("story-script.schema.json validates complete story scripts and rejects malformed beats", () => {
+  const schema = JSON.parse(fs.readFileSync(path.join(schemaDir, "story-script.schema.json"), "utf8"));
+  const check = compile(schema);
+  const valid = {
+    format: "ournotes.story-script/1",
+    base: "stories/9.json",
+    language: "en",
+    title: "Rooftop",
+    font: "sans",
+    cast: { a: { model: "m_a", name: "Ann" }, b: { model: "m_b", name: "Bea" } },
+    beats: [
+      { scene: "garden", camera: "full", transition: "fade", fadeRule: "0002", fadeColor: "#000000",
+        positions: { a: { at: "left", dz: 1.2 }, b: "right" }, stageEnv: { type: "Light", value: 1 } },
+      { say: "a", text: "……", thought: true, ignoreLipSync: true, camera: "close", focus: "a", focusSharp: true,
+        focusTargetHead: true, ease: "OutSine", cameraDelay: 0.1, track: 0.2, dof: 0.5, dofTarget: "b",
+        role: -10, tilt: 5, move: { dir: "forward", distance: 0.3 }, angle: { z: 8, x: -3 } },
+      { positions: { a: "center", b: "right" }, moveDuration: 0.4 },
+      { move: { cast: "a", dx: 0.1, dz: 0.5, duration: 0.3 } },
+      { bgm: "stop", bgmFade: 1.5 },
+      { frame: "adv_frame_letterbox/adv_frame_letterbox_black", frameAction: "Show_anime", frameDuration: 0.3 },
+      { postEffect: "adv_effect_posteffect_reminiscence1", postEffectDuration: 0.5 },
+      { brightness: { target: "cast", value: 0.6, duration: 0.2 } },
+      { shake: { target: "ui", power: 3, duration: 0.4 } },
+      { cameraShake: "start", cameraShakeFade: 0.2, cameraShakeStrength: 0.5 },
+      { flash: { duration: 0.2 } },
+      { talkWindow: "center" },
+      { subtitles: { text: "Flashback.", target: "a", duration: 1.5 } },
+      { still: { asset: "still_01", fade: 0.5 } },
+      { camera: "macro", focus: "b", track: 0 },
+      { hideTalk: true },
+      { se: "sound_se_adv_door_knock" },
+      { scene: "hall", transition: "dissolve", transitionDuration: 1.2, positions: { a: "center" } },
+    ],
+  };
+  assert.deepEqual(check(valid), []);
+  assert.ok(check({ ...valid, beats: [{ camera: "unknown" }] }).length > 0);
+  assert.ok(check({ ...valid, beats: [{ say: "a", text: "hi", role: 90 }] }).length > 0);
+  assert.ok(check({ ...valid, beats: [{ brightness: { target: "bg", value: 2 } }] }).length > 0);
 });

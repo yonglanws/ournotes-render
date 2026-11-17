@@ -1,0 +1,728 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/empty-sekai/ournotes-player/main/schema/story-script.schema.json",
+  "title": "Story script (ournotes.story-script/1)",
+  "description": "High-level screenplay and direction DSL compiled by scripts/lib/story-author/script.js into story.json and episode.json.",
+  "type": "object",
+  "required": ["format", "base", "cast", "beats"],
+  "additionalProperties": false,
+  "properties": {
+    "format": { "const": "ournotes.story-script/1" },
+    "base": { "type": "string", "minLength": 1 },
+    "language": { "enum": ["ja", "en", "zh-Hant", "zh-Hans", "ko"] },
+    "title": { "type": "string" },
+    "font": {
+      "anyOf": [
+        { "enum": ["sans", "serif", "rounded"] },
+        {
+          "type": "object",
+          "required": ["family"],
+          "additionalProperties": false,
+          "properties": { "family": { "type": "string", "minLength": 1 } }
+        }
+      ]
+    },
+    "cast": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+      "additionalProperties": { "$ref": "#/$defs/castMember" }
+    },
+    "beats": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/beat" }
+    }
+  },
+  "$defs": {
+    "castId": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "castMember": {
+      "type": "object",
+      "required": ["model", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "model": { "$ref": "#/$defs/nonEmptyString" },
+        "name": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "positionName": { "enum": ["far-left", "left", "center", "right", "far-right"] },
+    "cameraDistance": { "enum": ["full", "near", "middle", "far", "close", "very-close", "macro"] },
+    "easeName": { "enum": ["OutQuad", "OutSine", "Linear", "OutQuint", "InOutSine", "InOutQuad"] },
+    "fadeRule": { "enum": ["0001", "0002", "0003", "0004", "0005"] },
+    "fadeColor": { "enum": ["#000000", "#FFFFFF", "#ffffff"] },
+    "talkWindowName": { "enum": ["default", "center"] },
+    "frameName": { "type": "string", "pattern": "^adv_frame_[A-Za-z0-9_/-]+$" },
+    "postEffectName": { "type": "string", "pattern": "^adv_effect_posteffect_[A-Za-z0-9_/-]+$" },
+    "target": {
+      "anyOf": [
+        { "type": "integer", "minimum": 1, "maximum": 9 },
+        { "$ref": "#/$defs/nonEmptyString" }
+      ]
+    },
+    "lookAtTarget": {
+      "anyOf": [
+        { "const": "stop" },
+        { "type": "integer", "minimum": 1, "maximum": 9 },
+        { "$ref": "#/$defs/nonEmptyString" }
+      ]
+    },
+    "lookValue": {
+      "anyOf": [
+        { "const": "stop" },
+        { "type": "number", "minimum": -1, "maximum": 1 }
+      ]
+    },
+    "cameraSpec": {
+      "anyOf": [
+        { "$ref": "#/$defs/cameraDistance" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "distance": { "$ref": "#/$defs/cameraDistance" },
+            "focus": { "$ref": "#/$defs/target" },
+            "track": { "type": "number", "minimum": -4, "maximum": 4 }
+          }
+        }
+      ]
+    },
+    "positionEntry": {
+      "anyOf": [
+        { "$ref": "#/$defs/positionName" },
+        {
+          "type": "object",
+          "required": ["at"],
+          "additionalProperties": false,
+          "properties": {
+            "at": { "$ref": "#/$defs/positionName" },
+            "motion": { "$ref": "#/$defs/nonEmptyString" },
+            "expression": { "$ref": "#/$defs/nonEmptyString" },
+            "dx": { "type": "number", "minimum": -10, "maximum": 10 },
+            "dy": { "type": "number", "minimum": -10, "maximum": 10 },
+            "dz": { "type": "number", "minimum": -10, "maximum": 10 }
+          }
+        }
+      ]
+    },
+    "positionsMap": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/castId" },
+      "additionalProperties": { "$ref": "#/$defs/positionEntry" }
+    },
+    "actionItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "at": { "type": "number", "minimum": 0, "maximum": 1 },
+        "cast": { "$ref": "#/$defs/castId" },
+        "motion": { "$ref": "#/$defs/nonEmptyString" },
+        "expression": { "$ref": "#/$defs/nonEmptyString" },
+        "lookAt": { "$ref": "#/$defs/lookAtTarget" }
+      }
+    },
+    "moveSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cast": { "$ref": "#/$defs/castId" },
+        "to": { "$ref": "#/$defs/positionName" },
+        "dir": { "enum": ["left", "right", "up", "down", "forward", "back"] },
+        "dx": { "type": "number", "minimum": -10, "maximum": 10 },
+        "dy": { "type": "number", "minimum": -10, "maximum": 10 },
+        "dz": { "type": "number", "minimum": -10, "maximum": 10 },
+        "distance": { "type": "number", "minimum": 0.01, "maximum": 10 },
+        "duration": { "type": "number", "minimum": 0, "maximum": 20 },
+        "wait": { "type": "boolean" }
+      }
+    },
+    "angleSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cast": { "$ref": "#/$defs/castId" },
+        "z": { "type": "number", "minimum": -45, "maximum": 45 },
+        "x": { "type": "number", "minimum": -45, "maximum": 45 },
+        "duration": { "type": "number", "minimum": 0, "maximum": 20 },
+        "delay": { "type": "number", "minimum": 0, "maximum": 20 },
+        "wait": { "type": "boolean" }
+      }
+    },
+    "brightnessSpec": {
+      "type": "object",
+      "required": ["target", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/nonEmptyString" },
+        "value": { "type": "number", "minimum": 0, "maximum": 1 },
+        "duration": { "type": "number", "minimum": 0, "maximum": 10 },
+        "wait": { "type": "boolean" }
+      }
+    },
+    "shakeSpec": {
+      "type": "object",
+      "required": ["power"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/nonEmptyString" },
+        "power": { "type": "number", "minimum": 0.2, "maximum": 10 },
+        "duration": { "type": "number", "minimum": 0.05, "maximum": 10 },
+        "wait": { "type": "boolean" }
+      }
+    },
+    "flashSpec": {
+      "anyOf": [
+        { "const": true },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "duration": { "type": "number", "minimum": 0.05, "maximum": 5 },
+            "wait": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "stageEnvSpec": {
+      "type": "object",
+      "required": ["type", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["All", "Light", "Effect", "PostEffect", "FocusPosition"] },
+        "value": { "type": "integer", "minimum": 0, "maximum": 5 }
+      }
+    },
+    "stillSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "asset": { "type": "string" },
+        "fade": { "type": "number", "minimum": 0, "maximum": 10 },
+        "alpha": { "type": "number", "minimum": 0, "maximum": 1 },
+        "screenAlpha": { "type": "number", "minimum": 0, "maximum": 1 },
+        "index": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "stop": { "type": "boolean" }
+      }
+    },
+    "subtitlesSpec": {
+      "type": "object",
+      "required": ["text"],
+      "additionalProperties": false,
+      "properties": {
+        "text": { "type": "string" },
+        "target": { "$ref": "#/$defs/castId" },
+        "duration": { "type": "number", "minimum": 0.1, "maximum": 60 },
+        "wait": { "type": "boolean" }
+      }
+    },
+    "beat": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["scene"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "scene": { "$ref": "#/$defs/nonEmptyString" },
+            "music": { "$ref": "#/$defs/nonEmptyString" },
+            "bgmFade": { "type": "number", "minimum": 0, "maximum": 10 },
+            "bgmVolume": { "type": "number", "minimum": 0, "maximum": 1 },
+            "bgmStart": { "type": "number", "minimum": 0, "maximum": 600 },
+            "location": { "type": "string" },
+            "positions": { "$ref": "#/$defs/positionsMap" },
+            "transition": { "enum": ["fade", "dissolve"] },
+            "transitionDuration": { "type": "number", "minimum": 0.05, "maximum": 10 },
+            "fadeRule": { "$ref": "#/$defs/fadeRule" },
+            "fadeColor": { "$ref": "#/$defs/fadeColor" },
+            "duration": { "type": "number", "minimum": 0.05, "maximum": 10 },
+            "moveDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "camera": { "$ref": "#/$defs/cameraSpec" },
+            "focus": { "$ref": "#/$defs/target" },
+            "track": { "type": "number", "minimum": -4, "maximum": 4 },
+            "focusDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "trackDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "pedestal": { "type": "number", "minimum": -4, "maximum": 5 },
+            "pedestalDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "pan": { "type": "number", "minimum": -30, "maximum": 30 },
+            "panDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "panFocusSlide": { "type": "number", "minimum": 0, "maximum": 1 },
+            "dof": { "type": "number", "minimum": 0, "maximum": 1 },
+            "dofDuration": { "type": "number", "minimum": 0.5, "maximum": 10 },
+            "dofLayers": { "enum": [0, 2] },
+            "dofTarget": { "$ref": "#/$defs/target" },
+            "ease": { "$ref": "#/$defs/easeName" },
+            "cameraDelay": { "type": "number", "minimum": 0, "maximum": 20 },
+            "focusSharp": { "type": "boolean" },
+            "focusTargetHead": { "type": "boolean" },
+            "role": { "type": "number", "minimum": -30, "maximum": 30 },
+            "roleDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "tilt": { "type": "number", "minimum": -15, "maximum": 15 },
+            "tiltDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "stageEnv": { "$ref": "#/$defs/stageEnvSpec" },
+            "frame": { "$ref": "#/$defs/frameName" },
+            "frameAction": { "enum": ["Show_anime", "Hide_anime"] },
+            "frameDuration": { "type": "number", "minimum": 0, "maximum": 10 },
+            "postEffect": { "$ref": "#/$defs/postEffectName" },
+            "postEffectDuration": { "type": "number", "minimum": 0, "maximum": 10 },
+            "brightness": { "$ref": "#/$defs/brightnessSpec" },
+            "talkWindow": { "$ref": "#/$defs/talkWindowName" },
+            "se": { "$ref": "#/$defs/nonEmptyString" },
+            "seDuration": { "type": "number", "minimum": 0.5, "maximum": 10 },
+            "seDelay": { "type": "number", "minimum": 0, "maximum": 10 },
+            "seStop": { "type": "boolean" },
+            "motionFadeIn": { "type": "number", "minimum": -1, "maximum": 2 },
+            "motionWait": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["positions"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "positions": { "$ref": "#/$defs/positionsMap" },
+            "camera": { "$ref": "#/$defs/cameraSpec" },
+            "focus": { "$ref": "#/$defs/target" },
+            "track": { "type": "number", "minimum": -4, "maximum": 4 },
+            "focusDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "trackDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "moveDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "ease": { "$ref": "#/$defs/easeName" },
+            "cameraDelay": { "type": "number", "minimum": 0, "maximum": 20 },
+            "focusSharp": { "type": "boolean" },
+            "focusTargetHead": { "type": "boolean" },
+            "dof": { "type": "number", "minimum": 0, "maximum": 1 },
+            "dofDuration": { "type": "number", "minimum": 0.5, "maximum": 10 },
+            "dofLayers": { "enum": [0, 2] },
+            "dofTarget": { "$ref": "#/$defs/target" },
+            "motionFadeIn": { "type": "number", "minimum": -1, "maximum": 2 },
+            "motionWait": { "type": "boolean" },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["say", "text"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "say": { "$ref": "#/$defs/nonEmptyString" },
+            "text": { "$ref": "#/$defs/nonEmptyString" },
+            "thought": { "type": "boolean" },
+            "ignoreLipSync": { "type": "boolean" },
+            "hideTalk": { "type": "boolean" },
+            "motion": { "$ref": "#/$defs/nonEmptyString" },
+            "expression": { "$ref": "#/$defs/nonEmptyString" },
+            "lookAt": { "$ref": "#/$defs/lookAtTarget" },
+            "focus": { "$ref": "#/$defs/target" },
+            "camera": { "$ref": "#/$defs/cameraSpec" },
+            "track": { "type": "number", "minimum": -4, "maximum": 4 },
+            "zoom": { "type": "number", "minimum": 0.7, "maximum": 2.5 },
+            "zoomDuration": { "type": "number", "minimum": 0.2, "maximum": 20 },
+            "focusDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "trackDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "pedestal": { "type": "number", "minimum": -4, "maximum": 5 },
+            "pedestalDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "pan": { "type": "number", "minimum": -30, "maximum": 30 },
+            "panDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "panFocusSlide": { "type": "number", "minimum": 0, "maximum": 1 },
+            "dof": { "type": "number", "minimum": 0, "maximum": 1 },
+            "dofDuration": { "type": "number", "minimum": 0.5, "maximum": 10 },
+            "dofLayers": { "enum": [0, 2] },
+            "dofTarget": { "$ref": "#/$defs/target" },
+            "ease": { "$ref": "#/$defs/easeName" },
+            "cameraDelay": { "type": "number", "minimum": 0, "maximum": 20 },
+            "focusSharp": { "type": "boolean" },
+            "focusTargetHead": { "type": "boolean" },
+            "role": { "type": "number", "minimum": -30, "maximum": 30 },
+            "roleDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "tilt": { "type": "number", "minimum": -15, "maximum": 15 },
+            "tiltDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "look": { "$ref": "#/$defs/lookValue" },
+            "lookY": { "type": "number", "minimum": -1, "maximum": 1 },
+            "lookDuration": { "type": "number", "minimum": 0.2, "maximum": 10 },
+            "move": { "$ref": "#/$defs/moveSpec" },
+            "angle": { "$ref": "#/$defs/angleSpec" },
+            "bgm": { "$ref": "#/$defs/nonEmptyString" },
+            "bgmFade": { "type": "number", "minimum": 0, "maximum": 10 },
+            "bgmVolume": { "type": "number", "minimum": 0, "maximum": 1 },
+            "bgmStart": { "type": "number", "minimum": 0, "maximum": 600 },
+            "frame": { "$ref": "#/$defs/frameName" },
+            "frameAction": { "enum": ["Show_anime", "Hide_anime"] },
+            "frameDuration": { "type": "number", "minimum": 0, "maximum": 10 },
+            "frameStop": { "type": "boolean" },
+            "postEffect": { "$ref": "#/$defs/postEffectName" },
+            "postEffectDuration": { "type": "number", "minimum": 0, "maximum": 10 },
+            "postEffectStop": { "type": "boolean" },
+            "brightness": { "$ref": "#/$defs/brightnessSpec" },
+            "shake": { "$ref": "#/$defs/shakeSpec" },
+            "cameraShake": { "enum": ["start", "stop"] },
+            "cameraShakeFade": { "type": "number", "minimum": 0, "maximum": 10 },
+            "cameraShakeStrength": { "type": "number", "minimum": 0.01, "maximum": 10 },
+            "flash": { "$ref": "#/$defs/flashSpec" },
+            "talkWindow": { "$ref": "#/$defs/talkWindowName" },
+            "se": { "$ref": "#/$defs/nonEmptyString" },
+            "seDuration": { "type": "number", "minimum": 0.5, "maximum": 10 },
+            "seDelay": { "type": "number", "minimum": 0, "maximum": 10 },
+            "seStop": { "type": "boolean" },
+            "motionFadeIn": { "type": "number", "minimum": -1, "maximum": 2 },
+            "motionWait": { "type": "boolean" },
+            "actions": { "type": "array", "maxItems": 12, "items": { "$ref": "#/$defs/actionItem" } }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["narrate"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "narrate": { "$ref": "#/$defs/nonEmptyString" },
+            "thought": { "type": "boolean" },
+            "ignoreLipSync": { "type": "boolean" },
+            "hideTalk": { "type": "boolean" },
+            "focus": { "$ref": "#/$defs/target" },
+            "camera": { "$ref": "#/$defs/cameraSpec" },
+            "track": { "type": "number", "minimum": -4, "maximum": 4 },
+            "zoom": { "type": "number", "minimum": 0.7, "maximum": 2.5 },
+            "zoomDuration": { "type": "number", "minimum": 0.2, "maximum": 20 },
+            "focusDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "trackDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "pedestal": { "type": "number", "minimum": -4, "maximum": 5 },
+            "pedestalDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "pan": { "type": "number", "minimum": -30, "maximum": 30 },
+            "panDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "panFocusSlide": { "type": "number", "minimum": 0, "maximum": 1 },
+            "dof": { "type": "number", "minimum": 0, "maximum": 1 },
+            "dofDuration": { "type": "number", "minimum": 0.5, "maximum": 10 },
+            "dofLayers": { "enum": [0, 2] },
+            "dofTarget": { "$ref": "#/$defs/target" },
+            "ease": { "$ref": "#/$defs/easeName" },
+            "cameraDelay": { "type": "number", "minimum": 0, "maximum": 20 },
+            "focusSharp": { "type": "boolean" },
+            "focusTargetHead": { "type": "boolean" },
+            "role": { "type": "number", "minimum": -30, "maximum": 30 },
+            "roleDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "tilt": { "type": "number", "minimum": -15, "maximum": 15 },
+            "tiltDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "talkWindow": { "$ref": "#/$defs/talkWindowName" },
+            "actions": { "type": "array", "maxItems": 12, "items": { "$ref": "#/$defs/actionItem" } }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["action"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "action": { "$ref": "#/$defs/castId" },
+            "motion": { "$ref": "#/$defs/nonEmptyString" },
+            "expression": { "$ref": "#/$defs/nonEmptyString" },
+            "lookAt": { "$ref": "#/$defs/lookAtTarget" },
+            "look": { "$ref": "#/$defs/lookValue" },
+            "lookY": { "type": "number", "minimum": -1, "maximum": 1 },
+            "lookDuration": { "type": "number", "minimum": 0.2, "maximum": 10 },
+            "move": { "$ref": "#/$defs/moveSpec" },
+            "angle": { "$ref": "#/$defs/angleSpec" },
+            "dof": { "type": "number", "minimum": 0, "maximum": 1 },
+            "dofDuration": { "type": "number", "minimum": 0.5, "maximum": 10 },
+            "dofLayers": { "enum": [0, 2] },
+            "dofTarget": { "$ref": "#/$defs/target" },
+            "duration": { "type": "number", "minimum": 0.01, "maximum": 10 },
+            "se": { "$ref": "#/$defs/nonEmptyString" },
+            "seDuration": { "type": "number", "minimum": 0.5, "maximum": 10 },
+            "seDelay": { "type": "number", "minimum": 0, "maximum": 10 },
+            "seStop": { "type": "boolean" },
+            "motionFadeIn": { "type": "number", "minimum": -1, "maximum": 2 },
+            "motionWait": { "type": "boolean" },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["camera"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "camera": { "$ref": "#/$defs/cameraSpec" },
+            "focus": { "$ref": "#/$defs/target" },
+            "track": { "type": "number", "minimum": -4, "maximum": 4 },
+            "zoom": { "type": "number", "minimum": 0.7, "maximum": 2.5 },
+            "zoomDuration": { "type": "number", "minimum": 0.2, "maximum": 20 },
+            "cameraDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "focusDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "trackDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "pedestal": { "type": "number", "minimum": -4, "maximum": 5 },
+            "pedestalDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "pan": { "type": "number", "minimum": -30, "maximum": 30 },
+            "panDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "panFocusSlide": { "type": "number", "minimum": 0, "maximum": 1 },
+            "dof": { "type": "number", "minimum": 0, "maximum": 1 },
+            "dofDuration": { "type": "number", "minimum": 0.5, "maximum": 10 },
+            "dofLayers": { "enum": [0, 2] },
+            "dofTarget": { "$ref": "#/$defs/target" },
+            "ease": { "$ref": "#/$defs/easeName" },
+            "cameraDelay": { "type": "number", "minimum": 0, "maximum": 20 },
+            "focusSharp": { "type": "boolean" },
+            "focusTargetHead": { "type": "boolean" },
+            "role": { "type": "number", "minimum": -30, "maximum": 30 },
+            "roleDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "tilt": { "type": "number", "minimum": -15, "maximum": 15 },
+            "tiltDuration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "se": { "$ref": "#/$defs/nonEmptyString" },
+            "seDuration": { "type": "number", "minimum": 0.5, "maximum": 10 },
+            "seDelay": { "type": "number", "minimum": 0, "maximum": 10 },
+            "seStop": { "type": "boolean" },
+            "duration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["fade"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "fade": { "enum": ["out", "in"] },
+            "duration": { "type": "number", "minimum": 0.01, "maximum": 10 },
+            "fadeRule": { "$ref": "#/$defs/fadeRule" },
+            "fadeColor": { "$ref": "#/$defs/fadeColor" },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["pause"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "pause": { "type": "number", "minimum": 0.01, "maximum": 60 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["move"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "move": { "$ref": "#/$defs/moveSpec" },
+            "duration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["bgm"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "bgm": { "$ref": "#/$defs/nonEmptyString" },
+            "bgmFade": { "type": "number", "minimum": 0, "maximum": 10 },
+            "bgmVolume": { "type": "number", "minimum": 0, "maximum": 1 },
+            "bgmStart": { "type": "number", "minimum": 0, "maximum": 600 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["bgmFade"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "bgmFade": { "type": "number", "minimum": 0, "maximum": 10 },
+            "bgmVolume": { "type": "number", "minimum": 0, "maximum": 1 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["bgmVolume"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "bgmVolume": { "type": "number", "minimum": 0, "maximum": 1 },
+            "bgmFade": { "type": "number", "minimum": 0, "maximum": 10 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["angle"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "angle": { "$ref": "#/$defs/angleSpec" },
+            "duration": { "type": "number", "minimum": 0, "maximum": 20 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["still"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "still": { "$ref": "#/$defs/stillSpec" },
+            "duration": { "type": "number", "minimum": 0, "maximum": 10 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["subtitles"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "subtitles": { "$ref": "#/$defs/subtitlesSpec" },
+            "duration": { "type": "number", "minimum": 0.1, "maximum": 60 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["frame"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "frame": { "$ref": "#/$defs/frameName" },
+            "frameAction": { "enum": ["Show_anime", "Hide_anime"] },
+            "frameDuration": { "type": "number", "minimum": 0, "maximum": 10 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["frameStop"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "frameStop": { "const": true },
+            "frame": { "$ref": "#/$defs/frameName" },
+            "frameDuration": { "type": "number", "minimum": 0, "maximum": 10 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["postEffect"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "postEffect": { "$ref": "#/$defs/postEffectName" },
+            "postEffectDuration": { "type": "number", "minimum": 0, "maximum": 10 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["postEffectStop"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "postEffectStop": { "const": true },
+            "postEffect": { "$ref": "#/$defs/postEffectName" },
+            "postEffectDuration": { "type": "number", "minimum": 0, "maximum": 10 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["brightness"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "brightness": { "$ref": "#/$defs/brightnessSpec" },
+            "duration": { "type": "number", "minimum": 0, "maximum": 10 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["shake"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "shake": { "$ref": "#/$defs/shakeSpec" },
+            "duration": { "type": "number", "minimum": 0.05, "maximum": 10 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["cameraShake"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "cameraShake": { "enum": ["start", "stop"] },
+            "cameraShakeFade": { "type": "number", "minimum": 0, "maximum": 10 },
+            "cameraShakeStrength": { "type": "number", "minimum": 0.01, "maximum": 10 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["flash"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "flash": { "$ref": "#/$defs/flashSpec" },
+            "duration": { "type": "number", "minimum": 0.05, "maximum": 5 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["stageEnv"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "stageEnv": { "$ref": "#/$defs/stageEnvSpec" },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["talkWindow"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "talkWindow": { "$ref": "#/$defs/talkWindowName" },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["se"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "se": { "$ref": "#/$defs/nonEmptyString" },
+            "seDuration": { "type": "number", "minimum": 0.5, "maximum": 10 },
+            "seDelay": { "type": "number", "minimum": 0, "maximum": 10 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["seStop"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "seStop": { "const": true },
+            "seDuration": { "type": "number", "minimum": 0.5, "maximum": 10 },
+            "seDelay": { "type": "number", "minimum": 0, "maximum": 10 },
+            "hideTalk": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["hideTalk"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/nonEmptyString" },
+            "hideTalk": { "const": true }
+          }
+        }
+      ]
+    }
+  }
+}
