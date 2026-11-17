@@ -13,6 +13,7 @@
 #   description  what is visible: time of day, indoors/outdoors, mood, what fits here
 #   tags         short facets, shown in the prompt
 #   kind: title  a title-card backdrop (black/blank); never offered as a scene
+#   kind: shared a neutral/public venue offered to any cast even under castOnly filtering
 # music:
 #   name / mood / use
 # sounds:
@@ -26,30 +27,37 @@ stages:
     description: 水濑女子学园的天台连廊，两侧玻璃护栏，远处是城市高楼和晴空。适合放学前后、谈心、看风景；角色不属于这所学校时不要选。
   adv_bkg_stage_000084:
     name: 夜晚的住宅街路口
+    kind: shared
     tags: [夜晚, 室外, 街道, 安静]
     description: 夜里的住宅区斑马线路口，路灯、行道树和亮着窗的公寓。适合回家路上、等人、夜谈。
   adv_bkg_stage_000101:
     name: 夜间停车场
+    kind: shared
     tags: [夜晚, 室外, 街道, 冷清]
     description: 夜晚的室外停车场，绿色 PARKING SPACE 灯牌和空车位，四周是树与建筑阴影。适合分别、偶遇、短暂停留。
   adv_bkg_stage_000152:
     name: RiNG 入口大厅
+    kind: shared
     tags: [傍晚, 室内, 公共空间, 暖光]
     description: RiNG 的入口大厅，木色墙面，有沙发、自动贩卖机、楼梯和暖色吊灯。适合等人、休息、演出前后碰面。
   adv_bkg_stage_000153:
     name: RiNG 咖啡厅
+    kind: shared
     tags: [白天, 室内, 餐饮, 明亮]
     description: RiNG 的咖啡厅，白天采光很好，绿植、木桌和高脚吧台，窗外明亮。适合吃饭、闲聊、庆祝。
   adv_bkg_stage_000164:
     name: 傍晚的家庭餐厅
+    kind: shared
     tags: [傍晚, 夜晚, 室内, 餐饮, 暖光]
     description: 暖色灯光的家庭餐厅内景，木地板、成排桌椅和吊灯，窗边偏暖。适合久坐聊天、复盘、说心里话。
   adv_bkg_stage_000180:
     name: 夜晚的卧室
+    kind: shared
     tags: [夜晚, 室内, 房间, 安静]
     description: 只开着一盏台灯的卧室，深蓝窗帘、床、书桌和书架，整体偏暗。适合独处、打电话、回忆、睡前。
   adv_bkg_stage_000189:
     name: 夜间的空旷走廊
+    kind: shared
     tags: [夜晚, 室内, 走廊, 冷清]
     description: 昏暗的空走廊，有楼梯、电梯和冷白灯，没有人。适合演出散场后、迷路、低声交谈。
   adv_bkg_stage_000218:

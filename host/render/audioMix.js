@@ -63,25 +63,29 @@ export const mixAudio = async ({ report, cuesDir, sampleRate = 48000, signal = n
     const src = await load(play.soundId);
     if (!src) continue;
     const cueDuration = src.frames / sampleRate;
-    const startSec = Math.max(0, Number(play.startSec) || 0);
     const speed = rateOf(play);
+    const rawT = Number(play.t) || 0;
+    const playT = Math.max(0, rawT);
+    const offsetSec = Math.max(0, Number(play.offsetSeconds) || 0) + (rawT < 0 ? -rawT : 0);
+    const startSec = Math.max(0, Number(play.startSec) || 0) + offsetSec * speed;
     const stop = stopOf(events, play.id, play.t);
-    const startFrame = Math.round(play.t * sampleRate);
+    const startFrame = Math.round(playT * sampleRate);
     if (startFrame >= total) continue;
     const gain = (Number(play.volume) || 1) * busGain(play);
     const fadeIn = play.isAutoCrossFade || play.forceFadeIn ? Math.max(0, Number(play.crossFade) || 0) : 0;
+    const stopOffset = stop ? Math.max(0, Number(stop.offsetSeconds) || 0) : 0;
     const fadeOut = stop && stop.fadeOut ? Math.max(0, Number(stop.dur) || 0) : 0;
-    const stopAt = stop ? stop.t + (stop.fadeOut ? Math.max(0, Number(stop.dur) || 0) : 0) : null;
+    const stopAt = stop ? Math.max(0, stop.t + fadeOut - stopOffset) : null;
     let endSec;
     if (stopAt != null) endSec = stopAt;
     else if (play.loop) endSec = duration;
-    else endSec = Math.min(duration, play.t + Math.max(0, cueDuration - startSec) / speed);
+    else endSec = Math.min(duration, playT + Math.max(0, cueDuration - startSec) / speed);
     endSec = Math.min(duration, endSec);
     const endFrame = Math.min(total, Math.round(endSec * sampleRate));
     const loop = cueOfLoop(src.cue, cueDuration);
     let wrote = false;
     for (let i = 0; startFrame + i < endFrame; i++) {
-      const t = play.t + i / sampleRate;
+      const t = playT + i / sampleRate;
       let pos = startSec + (i / sampleRate) * speed;
       if (play.loop) {
         if (pos >= loop.end) {
@@ -91,7 +95,8 @@ export const mixAudio = async ({ report, cuesDir, sampleRate = 48000, signal = n
         }
       } else if (pos >= cueDuration) break;
       let g = gain;
-      if (fadeIn > 0 && t - play.t < fadeIn) g *= (t - play.t) / fadeIn;
+      const elapsed = (t - playT) + offsetSec;
+      if (fadeIn > 0 && elapsed < fadeIn) g *= elapsed / fadeIn;
       if (fadeOut > 0 && stop) {
         const left = stopAt - t;
         if (left <= 0) break;

@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,11 +30,116 @@ const TYPES = {
   ".css": "text/css", ".png": "image/png", ".webp": "image/webp", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
   ".glsl": "text/plain", ".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".flac": "audio/flac", ".wav": "audio/wav",
   ".ogg": "audio/ogg", ".aac": "audio/aac", ".map": "application/json", ".bin": "application/octet-stream",
+  ".ttf": "font/ttf", ".otf": "font/otf", ".woff": "font/woff", ".woff2": "font/woff2", ".ttc": "font/collection",
 };
 const typeOf = (p) => TYPES[path.extname(p).toLowerCase()] || "application/octet-stream";
 const encOf = (p) => (p.endsWith(".gz") ? "gzip" : p.endsWith(".br") ? "br" : null);
 const JW = /^[a-z0-9][a-z0-9-]{2,80}$/;
 const SOUND_EXT = new Set(["wav", "m4a", "mp3", "flac", "ogg", "aac", "opus", "bin"]);
+const FONT_EXT_FORMAT = new Map([
+  [".woff2", "woff2"], [".woff", "woff"], [".ttf", "truetype"], [".otf", "opentype"], [".ttc", "truetype"],
+]);
+
+const FONT_MATCHERS = [
+  { re: /^NotoSansSC[-_.]|^NotoSansCJKsc[-_.]/i, family: "Noto Sans SC" },
+  { re: /^NotoSerifSC[-_.]|^NotoSerifCJKsc[-_.]/i, family: "Noto Serif SC" },
+  { re: /^NotoSansJP[-_.]|^NotoSansCJKjp[-_.]/i, family: "Noto Sans JP" },
+  { re: /^NotoSerifJP[-_.]|^NotoSerifCJKjp[-_.]/i, family: "Noto Serif JP" },
+  { re: /^NotoSansTC[-_.]|^NotoSansCJKtc[-_.]/i, family: "Noto Sans TC" },
+  { re: /^NotoSerifTC[-_.]|^NotoSerifCJKtc[-_.]/i, family: "Noto Serif TC" },
+  { re: /^NotoSansKR[-_.]|^NotoSansCJKkr[-_.]/i, family: "Noto Sans KR" },
+  { re: /^NotoSerifKR[-_.]|^NotoSerifCJKkr[-_.]/i, family: "Noto Serif KR" },
+  { re: /^NotoSans[-_.]/i, family: "Noto Sans" },
+  { re: /^NotoSerif[-_.]/i, family: "Noto Serif" },
+  { re: /^SourceHanSansSC/i, family: "Noto Sans SC", fallback: true },
+  { re: /^SourceHanSansJP|^SourceHanSans/i, family: "Noto Sans JP", fallback: true },
+  { re: /^SourceHanSerifSC/i, family: "Noto Serif SC", fallback: true },
+  { re: /^SourceHanSerifJP|^SourceHanSerif/i, family: "Noto Serif JP", fallback: true },
+  { re: /^MiSans/i, family: "Noto Sans SC", fallback: true },
+  { re: /^NotoSansCJK/i, family: "Noto Sans SC", fallback: true },
+];
+
+const inferFontFace = (filename, explicit = false) => {
+  const ext = path.extname(filename).toLowerCase();
+  const format = FONT_EXT_FORMAT.get(ext);
+  if (!format) return null;
+  for (const m of FONT_MATCHERS) {
+    if (m.re.test(filename)) return { family: m.family, format, fallback: !!m.fallback };
+  }
+  if (!explicit) return null;
+  const stem = path.basename(filename, ext).replace(/[-_](VF|Regular|Bold|Medium|Light|Normal)$/i, "");
+  return { family: stem.replace(/[_-]+/g, " ").trim() || "CustomCJK", format, fallback: false };
+};
+
+const weightOfFont = (filename) => {
+  if (/[-_.]VF\b|Variable/i.test(filename)) return "100 900";
+  if (/Bold/i.test(filename)) return "700";
+  if (/Medium/i.test(filename)) return "500";
+  return "400";
+};
+
+const scanFontDir = (dir, { explicit = false, depth = 0, maxDepth = 2, out = [] } = {}) => {
+  if (!dir || depth > maxDepth || !fs.existsSync(dir)) return out;
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      if (depth < maxDepth) scanFontDir(full, { explicit, depth: depth + 1, maxDepth, out });
+    } else if (e.isFile()) {
+      const info = inferFontFace(e.name, explicit);
+      if (info) out.push({ name: e.name, file: full, ...info });
+    }
+  }
+  return out;
+};
+
+const buildFontRoutes = ({ site = "", fontsDir = "" } = {}) => {
+  const localDirs = [
+    fontsDir ? path.resolve(fontsDir) : "",
+    site ? path.join(site, "fonts") : "",
+    path.join(PACKAGE_DIR, "host", "assets", "fonts"),
+    path.join(PACKAGE_DIR, "resources", "fonts"),
+    path.join(PACKAGE_DIR, "cache", "fonts"),
+  ].filter(Boolean);
+  const sysDirs = process.platform === "win32"
+    ? [
+        path.join(process.env.WINDIR || "C:\\Windows", "Fonts"),
+        process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Microsoft", "Windows", "Fonts") : "",
+      ].filter(Boolean)
+    : process.platform === "darwin"
+      ? ["/Library/Fonts", "/System/Library/Fonts", path.join(os.homedir(), "Library", "Fonts")]
+      : ["/usr/share/fonts", "/usr/local/share/fonts", path.join(os.homedir(), ".local", "share", "fonts"),
+         path.join(os.homedir(), ".fonts")];
+
+  const found = [];
+  for (const dir of localDirs) scanFontDir(dir, { explicit: true, maxDepth: 2, out: found });
+  for (const dir of sysDirs) scanFontDir(dir, { explicit: false, maxDepth: 3, out: found });
+
+  const primaryFamilies = new Set(found.filter((f) => !f.fallback).map((f) => f.family));
+  const files = new Map();
+  const seenFamily = new Set();
+  const rules = [];
+  for (const item of found) {
+    if (item.fallback && primaryFamilies.has(item.family)) continue;
+    if (!/^[A-Za-z0-9_.-]+$/.test(item.name)) continue;
+    const dedupKey = `${item.family}:${weightOfFont(item.name)}`;
+    if (seenFamily.has(dedupKey)) continue;
+    seenFamily.add(dedupKey);
+    let routeName = item.name;
+    if (files.has(routeName) && files.get(routeName) !== item.file) {
+      const ext = path.extname(item.name);
+      routeName = `${path.basename(item.name, ext)}-${files.size}${ext}`;
+    }
+    files.set(routeName, item.file);
+    const safeFamily = item.family.replace(/["\\]/g, "");
+    rules.push(
+      `@font-face { font-family: "${safeFamily}"; src: url("/fonts/${encodeURIComponent(routeName)}") ` +
+      `format("${item.format}"); font-weight: ${weightOfFont(item.name)}; font-style: normal; font-display: block; }`
+    );
+  }
+  return { files, css: rules.join("\n") };
+};
 
 const below = (dir, rel) => {
   const parts = String(rel).split("/");
@@ -69,22 +175,24 @@ const sendFile = (res, file, type = null) => {
   });
 };
 
-// opts: { site, files: Map(logical site path -> Buffer|string), core, motionsync, outputDir, logger }
+// opts: { site, files: Map(logical site path -> Buffer|string), core, motionsync, outputDir, fontsDir, logger }
 // -> { url, jobsDir, createJob(config), close() }
 export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_CORE_URL, motionsync = "",
-                                   outputDir, logger = console }) => new Promise((resolve, reject) => {
+                                   outputDir, fontsDir = "", logger = console }) => new Promise((resolve, reject) => {
   const jobs = new Map();
   const coreFile = core && !/^https?:\/\//i.test(core) ? path.resolve(core) : null;
   const motionFile = motionsync && !/^https?:\/\//i.test(motionsync) ? path.resolve(motionsync) : null;
   // an empty core string means "load none" (the smoke page needs no Live2D runtime)
   const coreUrl = core === "" ? "" : coreFile ? "/core.js" : (core || CUBISM_CORE_URL);
   const motionUrl = motionFile ? "/motionsync.js" : (motionsync || "");
+  const fontRoutes = buildFontRoutes({ site, fontsDir });
   const jobsDir = path.join(outputDir, "jobs");
   fs.mkdirSync(jobsDir, { recursive: true });
 
   const escapeAttr = (s) => String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
   const page = `<!doctype html><html><head><meta charset="utf-8"><title>ournotes render</title>` +
-    `<link rel="icon" href="data:,"><style>html,body{margin:0;background:#000}canvas{display:block}</style></head>` +
+    `<link rel="icon" href="data:,"><link rel="stylesheet" href="/fonts.css">` +
+    `<style>html,body{margin:0;background:#000}canvas{display:block}</style></head>` +
     `<body>` + (coreUrl ? `<script src="${escapeAttr(coreUrl)}"></script>` : "") +
     (motionUrl ? `<script src="${escapeAttr(motionUrl)}"></script>` : "") +
     `<script type="module">import { run, reportResult } from "/host/render/page.js";` +
@@ -152,6 +260,14 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
 
       if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, "method not allowed");
       if (p === "/page.html") return send(res, 200, page, "text/html");
+      if (p === "/fonts.css") return send(res, 200, fontRoutes.css, "text/css; charset=utf-8");
+      if (p.startsWith("/fonts/")) {
+        const name = decodeURIComponent(p.slice(7));
+        if (!name || name.includes("/") || name.includes("\\") || name.includes("..") || name.includes("\0"))
+          return send(res, 403, "forbidden");
+        const f = fontRoutes.files.get(name);
+        return f ? sendFile(res, f) : send(res, 404, "font not found");
+      }
       if (p === "/core.js" && coreFile) return sendFile(res, coreFile);
       if (p === "/motionsync.js" && motionFile) return sendFile(res, motionFile);
 
@@ -169,7 +285,11 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
       // ---- the published site-format engine, wherever the package manager put it -----------------------------
       if (p.startsWith(SITE_ENGINE_PREFIX)) {
         const rel = decodeURIComponent(p.slice(SITE_ENGINE_PREFIX.length));
-        const f = SITE_ENGINE_DIR ? below(SITE_ENGINE_DIR, rel) : null;
+        if (!SITE_ENGINE_DIR) return send(res, 404, "site engine is not installed");
+        if (rel === "src/story/browser-font.js") {
+          return sendFile(res, path.join(PACKAGE_DIR, "src", "story", "browser-font.js"));
+        }
+        const f = below(SITE_ENGINE_DIR, rel);
         return f ? sendFile(res, f) : send(res, 404, "site engine is not installed");
       }
 

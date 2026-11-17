@@ -77,12 +77,35 @@ export function signedDistance(mask, cols, rows) {
   return out;
 }
 
-// the alpha texels of a cell: `mask` is cols x rows fine pixels (k per texel, top row first); -> Uint8Array of
-// (cols / k) x (rows / k) texels, top row first; zeros for an empty raster
+// the alpha texels of a cell: `mask` is cols x rows fine pixels (k per texel, top row first; either binary 0/1 or
+// smooth 0..255 alpha coverage); -> Uint8Array of (cols / k) x (rows / k) texels, top row first; zeros for empty
 export function sdfTexels(mask, cols, rows, k, spread) {
   const tc = cols / k, tr = rows / k, out = new Uint8Array(tc * tr);
   if (!mask.some((m) => m)) return out;
-  const d = signedDistance(mask, cols, rows), lo = (k - 1) >> 1, hi = (k >> 1) + 1, cnt = (hi - lo) * (hi - lo);
+  let d;
+  if (mask.some((m) => m > 1)) {
+    const n = cols * rows, bin = new Uint8Array(n);
+    let hasInside = false;
+    for (let i = 0; i < n; i++) {
+      if (mask[i] >= 128) { bin[i] = 1; hasInside = true; }
+    }
+    if (hasInside) {
+      d = signedDistance(bin, cols, rows);
+      for (let i = 0; i < n; i++) {
+        const a = mask[i];
+        if (a > 0 && a < 255 && Math.abs(d[i]) <= 1.5) d[i] = (a / 255 - 0.5) * 2;
+      }
+    } else {
+      const any = new Uint8Array(n);
+      for (let i = 0; i < n; i++) any[i] = mask[i] > 0 ? 1 : 0;
+      const toAny = squaredDistance(any, cols, rows);
+      d = new Float32Array(n);
+      for (let i = 0; i < n; i++) d[i] = mask[i] > 0 ? (mask[i] / 255 - 0.5) * 2 : -Math.sqrt(toAny[i]);
+    }
+  } else {
+    d = signedDistance(mask, cols, rows);
+  }
+  const lo = (k - 1) >> 1, hi = (k >> 1) + 1, cnt = (hi - lo) * (hi - lo);
   for (let i = 0; i < tr; i++) {
     for (let j = 0; j < tc; j++) {
       let s = 0;
@@ -96,7 +119,7 @@ export function sdfTexels(mask, cols, rows, k, spread) {
 
 // A rasterizer over Canvas 2D (OffscreenCanvas, else a canvas element): metrics(cp) -> {advance, xMin, xMax, yMin, yMax}
 // of the glyph at the point size in pixels (y up from the baseline), mask(cp, grid) -> Uint8Array of grid.cols x
-// grid.rows pixels (top row first, 1 where the glyph's alpha reaches one half). grid = {k, x0, yTop, cols, rows}: the
+// grid.rows pixels (top row first, 0..255 anti-aliased alpha coverage). grid = {k, x0, yTop, cols, rows}: the
 // pixels cover x from x0 on and y from yTop down, k pixels per unit, the glyph's origin and baseline at (0, 0).
 export function canvasRasterizer({ family, weight = "normal", style = "normal", pointSize, createCanvas }) {
   const make = createCanvas || ((w, h) => {
@@ -121,7 +144,7 @@ export function canvasRasterizer({ family, weight = "normal", style = "normal", 
       ctx.clearRect(0, 0, g.cols, g.rows);
       ctx.fillText(String.fromCodePoint(cp), -g.x0 * g.k, g.yTop * g.k);
       const px = ctx.getImageData(0, 0, g.cols, g.rows).data, out = new Uint8Array(g.cols * g.rows);
-      for (let i = 0; i < out.length; i++) out[i] = px[i * 4 + 3] >= 128 ? 1 : 0;
+      for (let i = 0; i < out.length; i++) out[i] = px[i * 4 + 3];
       return out;
     },
   };

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { sdfTexels } from "../../src/story/browser-font.js";
 import { createPageServer } from "../render/pageServer.js";
 import { quietLogger, tmpDir } from "./helpers.mjs";
 
@@ -73,6 +74,43 @@ test("a job accepts JPEG frames and a final report", async () => {
     const report = await job.result;
     assert.equal(report.frames, 1);
     assert.equal((await result).status, 200);
+  } finally {
+    await server.close();
+  }
+});
+
+test("pageServer serves bundled webfonts cleanly, blocks traversal, and overrides browser-font.js", async () => {
+  const fontsDir = tmpDir("ournotes-page-fonts-");
+  const output = tmpDir("ournotes-page-out-");
+  fs.writeFileSync(path.join(fontsDir, "NotoSansCJKsc-Regular.woff2"), Buffer.from("wOF2mock"));
+  const server = await createPageServer({ site: "", files: new Map(), core: "", fontsDir, outputDir: output,
+                                          logger: quietLogger() });
+  try {
+    const css = await fetch(`${server.url}/fonts.css`);
+    assert.equal(css.status, 200);
+    assert.match(css.headers.get("content-type"), /text\/css/);
+    const cssText = await css.text();
+    assert.match(cssText, /@font-face/);
+    assert.match(cssText, /url\("\/fonts\/NotoSansCJKsc-Regular\.woff2"\)/);
+
+    const fontRes = await fetch(`${server.url}/fonts/NotoSansCJKsc-Regular.woff2`);
+    assert.equal(fontRes.status, 200);
+    assert.match(fontRes.headers.get("content-type"), /font\/woff2/);
+    assert.deepEqual(Buffer.from(await fontRes.arrayBuffer()), Buffer.from("wOF2mock"));
+
+    const miss = await fetch(`${server.url}/fonts/..%2fetc%2fpasswd`);
+    assert.equal(miss.status, 403);
+
+    // Patched runtime override ensures site-format uses smooth browser-font rasterization without binary alpha clip.
+    const siteBrowserFont = await fetch(`${server.url}/site-engine/src/story/browser-font.js`);
+    assert.equal(siteBrowserFont.status, 200);
+    const body = await siteBrowserFont.text();
+    assert.ok(!body.includes(">= 128 ? 1 : 0"));
+
+    // Anti-aliased partial coverage in sdfTexels produces intermediate SDF values strictly between solid & empty.
+    const solid = sdfTexels(new Uint8Array([0, 255, 255]), 3, 1, 1, 2);
+    const soft = sdfTexels(new Uint8Array([0, 192, 255]), 3, 1, 1, 2);
+    assert.ok(soft[1] < solid[1] && soft[1] > 128, "partial alpha refines SDF ramp smoothly");
   } finally {
     await server.close();
   }

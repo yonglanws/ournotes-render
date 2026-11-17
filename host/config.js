@@ -47,9 +47,9 @@ const DEFAULTS = {
     },
     emotion: { enabled: false, labels: [], presets: [] },
   },
-  video: { width: 1300, height: 600, fps: 30, jpegQuality: 92, crf: 20, preset: "veryfast", encoder: "auto",
+  video: { width: 1300, height: 600, fps: 30, jpegQuality: 98, crf: 20, preset: "veryfast", encoder: "auto",
            audioBitrate: "192k", maxDurationSec: 600, audioSampleRate: 48000, watermark: "", ffmpegPath: "" },
-  render: { gpu: false, chrome: "", chromeArgs: [], core: "", motionsync: "", taskTimeoutMs: 1800000,
+  render: { preset: "standard", gpu: false, chrome: "", chromeArgs: [], core: "", motionsync: "", taskTimeoutMs: 1800000,
             settleFrames: 0 },
   queue: { concurrency: 1, maxSize: 20, taskTimeoutMs: 3600000, retentionMs: 3600000,
            cleanupIntervalMs: 600000, outputMaxAgeHours: 24 },
@@ -180,7 +180,7 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
     ["llm", "baseUrl"], ["llm", "model"], ["llm", "apiKeyEnv"], ["llm", "reasoningEffort"],
     ["tts", "provider"], ["tts", "baseUrl"], ["tts", "apiKeyEnv"], ["tts", "textLang"], ["tts", "promptLang"],
     ["tts", "voicesFile"], ["tts", "mediaType"], ["video", "ffmpegPath"], ["video", "preset"], ["video", "encoder"],
-    ["video", "audioBitrate"], ["video", "watermark"], ["render", "chrome"], ["render", "core"],
+    ["video", "audioBitrate"], ["video", "watermark"], ["render", "preset"], ["render", "chrome"], ["render", "core"],
     ["render", "motionsync"],
   ]) {
     const obj = disk[section];
@@ -251,6 +251,7 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   if (env("OURNOTES_IRODORI_NUM_STEPS") !== undefined) {
     cfg.tts.irodori.numSteps = num(env("OURNOTES_IRODORI_NUM_STEPS"), cfg.tts.irodori.numSteps);
   }
+  set(cfg.render, "preset", env("OURNOTES_RENDER_PRESET"));
   set(cfg.render, "chrome", env("OURNOTES_CHROME"));
   set(cfg.render, "core", env("OURNOTES_CORE"));
   set(cfg, "logLevel", env("OURNOTES_LOG_LEVEL"));
@@ -268,12 +269,31 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   if (cfg.video.ffmpegPath) cfg.video.ffmpegPath = abs(cfg.video.ffmpegPath);
   cfg.tts.voicesFile = cfg.tts.voicesFile ? abs(cfg.tts.voicesFile) : "";
 
-  // numbers and ranges
+  // render presets and numbers/ranges
+  const RENDER_PRESETS = {
+    standard: { width: 1300, height: 600 },
+    best: { width: 1920, height: 886 },
+  };
+  const renderPreset = String(cfg.render.preset || "standard").trim().toLowerCase();
+  if (!Object.hasOwn(RENDER_PRESETS, renderPreset)) {
+    warnings.push({ path: "render.preset",
+                    message: `unknown render preset ${JSON.stringify(cfg.render.preset)}; use standard or best` });
+    cfg.render.preset = "standard";
+  } else {
+    cfg.render.preset = renderPreset;
+  }
+  const presetSize = RENDER_PRESETS[cfg.render.preset];
+  const diskVideo = isObj(disk.video) ? disk.video : {};
+  const usesStandardDefaults = diskVideo.width === 1300 && diskVideo.height === 600;
+  if (cfg.render.preset === "best") {
+    if (diskVideo.width === undefined || usesStandardDefaults) cfg.video.width = presetSize.width;
+    if (diskVideo.height === undefined || usesStandardDefaults) cfg.video.height = presetSize.height;
+  }
   cfg.server.port = Math.max(1, Math.min(65535, Math.round(num(cfg.server.port, 9881))));
-  cfg.video.width = Math.max(320, Math.min(7680, Math.round(num(cfg.video.width, 1300))));
-  cfg.video.height = Math.max(180, Math.min(4320, Math.round(num(cfg.video.height, 600))));
+  cfg.video.width = Math.max(320, Math.min(7680, Math.round(num(cfg.video.width, presetSize.width))));
+  cfg.video.height = Math.max(180, Math.min(4320, Math.round(num(cfg.video.height, presetSize.height))));
   cfg.video.fps = Math.max(1, Math.min(30, Math.round(num(cfg.video.fps, 30))));
-  cfg.video.jpegQuality = Math.max(30, Math.min(100, Math.round(num(cfg.video.jpegQuality, 92))));
+  cfg.video.jpegQuality = Math.max(30, Math.min(100, Math.round(num(cfg.video.jpegQuality, 98))));
   cfg.video.crf = Math.max(0, Math.min(51, Math.round(num(cfg.video.crf, 20))));
   cfg.video.maxDurationSec = Math.max(1, num(cfg.video.maxDurationSec, 600));
   cfg.video.audioSampleRate = Math.max(8000, Math.round(num(cfg.video.audioSampleRate, 48000)));

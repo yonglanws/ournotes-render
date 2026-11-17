@@ -177,10 +177,10 @@ tts:
 # 视频输出
 # ---------------------------------------------------------------------------
 video:
-  width: 1300                # 游戏 ADV 视口是 13:6；1300x600 与 story-author 一致
+  width: 1300                # 游戏 ADV 视口是 13:6；standard 为 1300x600，render.preset: best 为 1920x886
   height: 600
   fps: 30                    # 故事引擎固定 30 步/秒，保持 30
-  jpegQuality: 92            # 帧暂存质量，只影响中间文件
+  jpegQuality: 98            # 帧暂存质量，只影响中间文件
   crf: 20                    # x264 CRF（越小越清晰）
   preset: veryfast
   encoder: auto              # auto | nvidia | amd | intel | libx264
@@ -194,6 +194,7 @@ video:
 # 无头浏览器渲染
 # ---------------------------------------------------------------------------
 render:
+  preset: standard           # standard (1300x600) | best (1920x886)
   gpu: false                 # false = SwiftShader 软件渲染，跨机器结果一致；true 用 GPU
   chrome: ""                 # Chrome/Chromium/Edge 可执行文件；留空自动查找（env: OURNOTES_CHROME）
   chromeArgs: []             # 额外 Chrome 启动参数；Linux + NVIDIA 无头渲染用 [--use-angle=vulkan]

@@ -6,11 +6,15 @@
 // same script format, and the product path compiles it with the same script library.
 import crypto from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import path from "node:path";
+import tls from "node:tls";
 import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { compileScript, checkScript, cueLabel, fontFamily, parseScript, withBrowserFonts } from "../../scripts/lib/story-author/script.js";
 import { STORY_LANGUAGES } from "../../src/story/params.js";
+import { resolvePublicUrl } from "../net/urlGuard.js";
 import { applyMusicGuide, applySoundGuide, applyStageGuide, loadResourceGuide } from "../story/resourceGuide.js";
 
 const FIELD = (language) => {
@@ -62,32 +66,54 @@ const unique = (list) => [...new Set(list)];
 const TTS_SHEET = "ournotes_tts";
 const TTS_SHEET_ID = 900001;
 const TTS_SOUND_BASE = 900000;
+const PUNCT_ONLY_RE = /^[\s….。、？！?!—～~（）()「」『』]+$/u;
+
+const talkRowText = (episode, row, field = "") => {
+  const rec = (row.AdvTextID && episode.text && episode.text[row.AdvTextID]) || row.lines || null;
+  if (!rec || typeof rec !== "object") return "";
+  const candidates = field ? [field, ...Object.keys(rec)] : Object.keys(rec);
+  for (const key of candidates) {
+    const val = rec[key];
+    if (typeof val === "string" && val.length) return val.replace(/<[^>]*>/g, "");
+  }
+  return "";
+};
 
 // Adds synthesized voices to a site episode: one TTS cue sheet under audio/ournotes_tts, one WAV per Talk line, and
-// VoiceIDs/voiceCues on the row. The site engine then plays the real waveforms (and MotionSync reads them).
-const addSiteVoices = ({ site, episode, voices }) => {
-  if (!voices || !voices.size) return { files: {} };
+// VoiceIDs/voiceCues on the row. Also marks voiceless punctuation/ellipsis-only Talk rows with IgnoreLipSync: 1 so
+// 0.1.8 does not flap mouths silently.
+export const addSiteVoices = ({ site, episode, voices, field = "" }) => {
   const files = {}, cues = {};
-  episode.sounds = { ...(episode.sounds || {}) };
-  episode.cuesheets = { ...(episode.cuesheets || {}) };
-  episode.cuesheets[TTS_SHEET_ID] = { _cueSheetName: TTS_SHEET };
-  for (const [beat, audio] of voices) {
-    const row = episode.commands.find((c) => c.cmd === "Talk" && c.AdvTextID === `custom_line_${beat}`);
-    if (!row) continue;
-    const cue = audio.cueName || `tts_line_${beat}`;
-    const name = `${cue}.wav`;
-    const bytes = fs.readFileSync(audio.file);
-    files[`audio/${TTS_SHEET}/${name}`] = writeAsset(site, bytes, "wav");
-    cues[cue] = { file: name, sampleRate: audio.sampleRate, samples: audio.samples, channels: audio.channels,
-                  categories: ["Voice"] };
-    const soundId = TTS_SOUND_BASE + Number(beat);
-    episode.sounds[soundId] = { _id: soundId, _category: 2, _soundCueSheetID: TTS_SHEET_ID, _cueName: cue,
-                                _cacheType: 0, _audioSyncedTimerEnabled: false, _isRandomPitch: false,
-                                _minPitch: 0, _maxPitch: 0, _note: "" };
-    row.VoiceIDs = [soundId];
-    row.voiceCues = [cue];
+  if (voices && voices.size) {
+    episode.sounds = { ...(episode.sounds || {}) };
+    episode.cuesheets = { ...(episode.cuesheets || {}) };
+    episode.cuesheets[TTS_SHEET_ID] = { _cueSheetName: TTS_SHEET };
+    for (const [beat, audio] of voices) {
+      const row = episode.commands.find((c) => c.cmd === "Talk" && c.AdvTextID === `custom_line_${beat}`);
+      if (!row) continue;
+      const cue = audio.cueName || `tts_line_${beat}`;
+      const name = `${cue}.wav`;
+      const bytes = fs.readFileSync(audio.file);
+      files[`audio/${TTS_SHEET}/${name}`] = writeAsset(site, bytes, "wav");
+      cues[cue] = { file: name, sampleRate: audio.sampleRate, samples: audio.samples, channels: audio.channels,
+                    categories: ["Voice"] };
+      const soundId = TTS_SOUND_BASE + Number(beat);
+      episode.sounds[soundId] = { _id: soundId, _category: 2, _soundCueSheetID: TTS_SHEET_ID, _cueName: cue,
+                                  _cacheType: 0, _audioSyncedTimerEnabled: false, _isRandomPitch: false,
+                                  _minPitch: 0, _maxPitch: 0, _note: "" };
+      row.VoiceIDs = [soundId];
+      row.voiceCues = [cue];
+    }
+    files[`audio/${TTS_SHEET}/cues.json`] = writeAsset(site, Buffer.from(JSON.stringify(cues)));
   }
-  files[`audio/${TTS_SHEET}/cues.json`] = writeAsset(site, Buffer.from(JSON.stringify(cues)));
+  for (const row of episode.commands || []) {
+    if (row.cmd !== "Talk") continue;
+    const hasVoice = (Array.isArray(row.VoiceIDs) && row.VoiceIDs.length > 0) ||
+                     (Array.isArray(row.voiceCues) && row.voiceCues.length > 0);
+    if (hasVoice) continue;
+    const text = talkRowText(episode, row, field);
+    if (text && PUNCT_ONLY_RE.test(text)) row.IgnoreLipSync = 1;
+  }
   return { files };
 };
 
@@ -164,17 +190,214 @@ const readSoundRows = (site, manifest, episode) => {
   return { music, sounds };
 };
 
+const isSafeRelPath = (rel) => {
+  if (!rel || typeof rel !== "string" || rel.includes("\0") || rel.startsWith("/") || rel.startsWith("\\")) return false;
+  return !rel.split(/[\\/]/).some((seg) => seg === "" || seg === "." || seg === "..");
+};
+
+const addAliasKey = (map, rawKey, canonical) => {
+  if (!rawKey) return;
+  const k = String(rawKey);
+  if (!map.has(k)) map.set(k, canonical);
+  const lower = k.toLowerCase();
+  if (!map.has(lower)) map.set(lower, canonical);
+  const tail = k.includes("/") ? k.split("/").pop() : k;
+  if (tail && !map.has(tail)) map.set(tail, canonical);
+  if (tail && !map.has(tail.toLowerCase())) map.set(tail.toLowerCase(), canonical);
+  const shortPe = tail.replace(/^adv_effect_posteffect_/i, "");
+  if (shortPe && shortPe !== tail) {
+    if (!map.has(shortPe)) map.set(shortPe, canonical);
+    if (!map.has(shortPe.toLowerCase())) map.set(shortPe.toLowerCase(), canonical);
+  }
+};
+
+const hasEntryKey = (container, name) => (
+  container instanceof Map ? container.has(name) : Boolean(container && Object.hasOwn(container, name))
+);
+
+const resolveAliasKey = (map, aliasMap, name) => {
+  if (!name) return "";
+  if (hasEntryKey(map, name)) return name;
+  const direct = aliasMap.get(name) || aliasMap.get(String(name).toLowerCase());
+  if (direct && hasEntryKey(map, direct)) return direct;
+  return "";
+};
+
+const indexAnimDoc = (doc) => {
+  const controllers = new Map(), clips = new Map();
+  const walk = (x) => {
+    if (Array.isArray(x)) { for (const v of x) walk(v); return; }
+    if (!x || typeof x !== "object") return;
+    if (typeof x.controller === "string" && Array.isArray(x.layers) && !controllers.has(x.controller)) {
+      controllers.set(x.controller, x);
+    } else if (typeof x.clip === "string" && Object.keys(x).length > 1 && !clips.has(x.clip)) {
+      clips.set(x.clip, x);
+    }
+    for (const v of Object.values(x)) walk(v);
+  };
+  walk(doc);
+  return { controllers, clips };
+};
+
+// Re-hydrates Animator stub references ({ controller: name } / { clip: name }) from the donor doc so a frame,
+// effect or still stays self-contained when copied into another manifest.
+const inlineAnimRefs = (node, anim, seenCtrl = new Set(), seenClip = new Set()) => {
+  if (Array.isArray(node)) return node.map((v) => inlineAnimRefs(v, anim, seenCtrl, seenClip));
+  if (!node || typeof node !== "object") return node;
+  if (typeof node.controller === "string" && !Array.isArray(node.layers) && !seenCtrl.has(node.controller)) {
+    const full = anim.controllers.get(node.controller);
+    if (full) {
+      seenCtrl.add(node.controller);
+      return inlineAnimRefs(structuredClone(full), anim, seenCtrl, seenClip);
+    }
+  }
+  if (typeof node.clip === "string" && Object.keys(node).length === 1 && !seenClip.has(node.clip)) {
+    const full = anim.clips.get(node.clip);
+    if (full) {
+      seenClip.add(node.clip);
+      return inlineAnimRefs(structuredClone(full), anim, seenCtrl, seenClip);
+    }
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(node)) out[k] = inlineAnimRefs(v, anim, seenCtrl, seenClip);
+  return out;
+};
+
+const readShadersMap = (site, manifest) => {
+  const entry = manifest.files && manifest.files["shaders/shaders.json"];
+  if (!entry) return new Map();
+  let list;
+  try { list = readEntry(site, entry); } catch { return new Map(); }
+  if (!Array.isArray(list)) return new Map();
+  const files = manifest.files || {};
+  const map = new Map();
+  for (const rec of list) {
+    if (!rec || typeof rec.name !== "string") continue;
+    const shaderFiles = {};
+    if (rec.parsed && files[`shaders/${rec.parsed}`]) shaderFiles[`shaders/${rec.parsed}`] = files[`shaders/${rec.parsed}`];
+    for (const v of rec.variants || []) {
+      if (v && v.file && files[`shaders/${v.file}`]) shaderFiles[`shaders/${v.file}`] = files[`shaders/${v.file}`];
+    }
+    map.set(rec.name, { rec, files: shaderFiles });
+  }
+  return map;
+};
+
+const collectDeps = (node, donorFiles, donorShaders) => {
+  const files = {};
+  const shaders = new Map();
+  const seen = new Set();
+  const walk = (x, prop = "") => {
+    if (typeof x === "string") {
+      if (x && donorFiles[x] && !files[x]) files[x] = donorFiles[x];
+      if (x && !x.startsWith("textures/") && donorFiles[`textures/${x}`] && !files[`textures/${x}`]) {
+        files[`textures/${x}`] = donorFiles[`textures/${x}`];
+      }
+      if ((prop === "shader" || donorShaders.has(x)) && donorShaders.has(x) && !shaders.has(x)) {
+        shaders.set(x, donorShaders.get(x));
+      }
+      return;
+    }
+    if (!x || typeof x !== "object" || seen.has(x)) return;
+    seen.add(x);
+    if (Array.isArray(x)) {
+      for (const v of x) walk(v, prop);
+      return;
+    }
+    for (const [k, v] of Object.entries(x)) walk(v, k);
+  };
+  walk(node);
+  return { files, shaders };
+};
+
+const readSplitParts = (site, entry, keys) => {
+  if (!entry) return {};
+  if (Array.isArray(entry.parts)) {
+    const out = {};
+    for (const key of keys) {
+      const part = entry.parts.find(([k]) => k === key);
+      out[key] = part ? JSON.parse(readAsset(site, part[1]).toString()) : {};
+    }
+    return out;
+  }
+  const doc = readEntry(site, entry);
+  const out = {};
+  for (const key of keys) out[key] = doc[key] || {};
+  return out;
+};
+
+// Rewrites named parts of a split asset (`scene.json` -> `stages`, `ui/ui.json` -> `transitions`/`textures`),
+// preserving the exact `size` delta required by manifest /2 split readers.
+const writeSplitParts = (site, entry, updates) => {
+  if (Array.isArray(entry.parts)) {
+    let size = Number.isFinite(Number(entry.size)) ? Number(entry.size) : undefined;
+    const parts = entry.parts.map(([key, asset, partSize, stored]) => {
+      if (!(key in updates)) return [key, asset, partSize, stored].filter((value) => value !== undefined);
+      const written = writeAsset(site, Buffer.from(JSON.stringify(updates[key])));
+      if (size !== undefined) size += written.size - (Number(partSize) || 0);
+      return [key, written.asset, written.size, written.stored];
+    });
+    for (const [key, data] of Object.entries(updates)) {
+      if (!entry.parts.some(([k]) => k === key)) {
+        const written = writeAsset(site, Buffer.from(JSON.stringify(data)));
+        if (size !== undefined) size += written.size + key.length + 4;
+        parts.push([key, written.asset, written.size, written.stored]);
+      }
+    }
+    return size === undefined ? { parts } : { parts, size };
+  }
+  const doc = readEntry(site, entry);
+  Object.assign(doc, updates);
+  return writeAsset(site, Buffer.from(JSON.stringify(doc)));
+};
+
+const uiEntryOf = (manifest, preferredLang = "") => {
+  const langs = manifest.languages || {};
+  const candidates = [];
+  if (preferredLang && langs[preferredLang]?.files?.["ui/ui.json"]) {
+    candidates.push({ entry: langs[preferredLang].files["ui/ui.json"], files: langs[preferredLang].files });
+  }
+  for (const [code, langObj] of Object.entries(langs)) {
+    if (code !== preferredLang && langObj?.files?.["ui/ui.json"]) {
+      candidates.push({ entry: langObj.files["ui/ui.json"], files: langObj.files });
+    }
+  }
+  if (manifest.files?.["ui/ui.json"]) {
+    candidates.push({ entry: manifest.files["ui/ui.json"], files: manifest.files });
+  }
+  return candidates;
+};
+
+const readUiTransitions = (site, manifest, preferredLang = "") => {
+  const out = new Map();
+  const baseFiles = manifest.files || {};
+  for (const { entry, files: scopeFiles } of uiEntryOf(manifest, preferredLang)) {
+    let uiParts;
+    try { uiParts = readSplitParts(site, entry, ["transitions", "textures"]); } catch { continue; }
+    const transitions = uiParts.transitions || {};
+    const uiTextures = uiParts.textures || {};
+    for (const [addr, tr] of Object.entries(transitions)) {
+      if (!tr || out.has(addr)) continue;
+      const texName = tr._texture?.texture || "";
+      const texMeta = texName ? uiTextures[texName] || null : null;
+      const texFiles = {};
+      if (texMeta?.file) {
+        const relUi = texMeta.file.startsWith("ui/") ? texMeta.file : `ui/${texMeta.file}`;
+        const hit = scopeFiles[relUi] || baseFiles[relUi] || scopeFiles[texMeta.file] || baseFiles[texMeta.file];
+        if (hit) texFiles[relUi] = hit;
+      }
+      out.set(addr, { addr, transition: tr, textureName: texName, textureMeta: texMeta, files: texFiles });
+    }
+  }
+  return out;
+};
+
 // The stage prefabs of a story's own scene.json. The map is split out of a multi-part asset, so only the `stages`
 // part has to be read (and later rewritten).
 const readSceneStages = (site, manifest) => {
   const entry = manifest.files && manifest.files["scene.json"];
   if (!entry) return { entry: null, stages: {} };
-  if (Array.isArray(entry.parts)) {
-    const part = entry.parts.find(([key]) => key === "stages");
-    return { entry, stages: part ? JSON.parse(readAsset(site, part[1]).toString()) : {} };
-  }
-  const scene = readEntry(site, entry);
-  return { entry, stages: scene.stages || {} };
+  return { entry, stages: readSplitParts(site, entry, ["stages"]).stages || {} };
 };
 
 const textureEntries = (manifest, id) => Object.fromEntries(Object.entries(manifest.files || {})
@@ -201,51 +424,129 @@ const castKeysOf = (site, manifest) => {
   }
 };
 
-// Every story of the site contributes its locations and sounds to one pool, so a new episode is not limited to the
-// handful of backgrounds its base story happened to use. The base story is added first, in its own command order, so
-// its captions and ordering win; a donor only fills in the prefab/texture/audio entries the new manifest must copy.
-//
-// A location is also owned: the first story that uses it casts the characters it belongs to. A school rooftop from a
-// story about another band is not offered to this story's cast (the guide names the place, but the model still picked
-// 水濑女子学园's rooftop for MyGO when both were listed). Sounds are not filtered: a BGM or SE is not tied to a cast.
-const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = true, castOnly = true } = {}) => {
+// Every story of the site contributes its locations, sounds, frames, post-effects, particle effects, stills,
+// rule transitions and shaders to one pool, so a new episode is not limited to what its base story happened to use.
+// Shared neutral venues (`kind: shared` in resourceGuide) are kept even with `castOnly: true`.
+const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = true, castOnly = true, guide = null } = {}) => {
   const stages = [], music = [], sounds = [];
   const stageIds = new Set(), musicCues = new Set(), soundCues = new Set();
-  const stageFiles = new Map(), stagePrefabs = new Map(), soundFiles = new Map();
+  const stageFiles = new Map(), stagePrefabs = new Map(), stageShaders = new Map(), soundFiles = new Map();
   const stageCasts = new Map();
+  const frames = new Map(), frameAliases = new Map();
+  const postEffects = new Map(), postEffectAliases = new Map();
+  const effectInstances = new Map(), effectAssets = new Map(), effectAliases = new Map();
+  const stills = new Map(), stillAliases = new Map();
+  const transitions = new Map(), transitionAliases = new Map();
   const seen = new Set([baseRel]);
 
+  const poolExtras = (manifest) => {
+    const files = manifest.files || {};
+    const shaders = readShadersMap(site, manifest);
+
+    if (files["frames.json"]) {
+      try {
+        const doc = readEntry(site, files["frames.json"]);
+        const anim = indexAnimDoc(doc);
+        for (const [key, rawEntry] of Object.entries(doc.frames || {})) {
+          addAliasKey(frameAliases, key, key);
+          if (frames.has(key)) continue;
+          const entry = inlineAnimRefs(structuredClone(rawEntry), anim);
+          frames.set(key, { key, entry, deps: collectDeps(entry, files, shaders) });
+        }
+      } catch { /* partially cached donor */ }
+    }
+
+    if (files["posteffects.json"]) {
+      try {
+        const doc = readEntry(site, files["posteffects.json"]);
+        for (const [key, profile] of Object.entries(doc.postEffects || {})) {
+          addAliasKey(postEffectAliases, key, key);
+          if (postEffects.has(key)) continue;
+          postEffects.set(key, { key, profile, deps: collectDeps(profile, files, shaders) });
+        }
+      } catch { /* partially cached donor */ }
+    }
+
+    if (files["effects.json"]) {
+      try {
+        const doc = readEntry(site, files["effects.json"]);
+        const anim = indexAnimDoc(doc);
+        const resolvedEffects = new Map();
+        for (const [assetName, rawEntry] of Object.entries(doc.effects || {})) {
+          addAliasKey(effectAliases, assetName, assetName);
+          const entry = inlineAnimRefs(structuredClone(rawEntry), anim);
+          const deps = collectDeps(entry, files, shaders);
+          resolvedEffects.set(assetName, { assetName, entry, deps });
+          if (!effectAssets.has(assetName)) effectAssets.set(assetName, { assetName, entry, deps });
+        }
+        for (const [targetName, assetName] of Object.entries(doc.instances || {})) {
+          addAliasKey(effectAliases, targetName, targetName);
+          if (effectInstances.has(targetName)) continue;
+          const resolved = resolvedEffects.get(assetName) || effectAssets.get(assetName);
+          if (resolved) effectInstances.set(targetName, { targetName, ...resolved });
+        }
+      } catch { /* partially cached donor */ }
+    }
+
+    if (files["stills.json"]) {
+      try {
+        const doc = readEntry(site, files["stills.json"]);
+        const anim = indexAnimDoc(doc);
+        for (const [key, rawEntry] of Object.entries(doc.stills || {})) {
+          addAliasKey(stillAliases, key, key);
+          if (stills.has(key)) continue;
+          const entry = inlineAnimRefs(structuredClone(rawEntry), anim);
+          stills.set(key, { key, entry, deps: collectDeps(entry, files, shaders) });
+        }
+      } catch { /* partially cached donor */ }
+    }
+
+    for (const [addr, item] of readUiTransitions(site, manifest, baseManifest.language)) {
+      addAliasKey(transitionAliases, addr, addr);
+      if (!transitions.has(addr)) transitions.set(addr, item);
+    }
+  };
+
   const addStory = (manifest, episode, stageOrder = []) => {
-    const scene = readSceneStages(site, manifest);
-    const cast = castKeysOf(site, manifest);
-    const keys = Object.keys(scene.stages);
-    if (stageOrder.length) {
-      keys.sort((a, b) => stageOrder.indexOf(a.split("/").pop()) - stageOrder.indexOf(b.split("/").pop()));
-    }
-    for (const key of keys) {
-      const id = key.split("/").pop();
-      if (!stagePrefabs.has(key)) stagePrefabs.set(key, scene.stages[key]);
-      const files = textureEntries(manifest, id);
-      if (!stageIds.has(id)) {
-        stageIds.add(id);
-        stages.push({ key, id, caption: "" });
-        stageCasts.set(key, cast);
+    const donorShaders = readShadersMap(site, manifest);
+    if (manifest.files?.["scene.json"]) {
+      const scene = readSceneStages(site, manifest);
+      const cast = castKeysOf(site, manifest);
+      const keys = Object.keys(scene.stages);
+      if (stageOrder.length) {
+        keys.sort((a, b) => stageOrder.indexOf(a.split("/").pop()) - stageOrder.indexOf(b.split("/").pop()));
       }
-      if (!(stageFiles.get(key) || {}).length && Object.keys(files).length) stageFiles.set(key, files);
+      for (const key of keys) {
+        const id = key.split("/").pop();
+        if (!stagePrefabs.has(key)) stagePrefabs.set(key, scene.stages[key]);
+        if (!stageShaders.has(key) && donorShaders.size) {
+          stageShaders.set(key, collectDeps(scene.stages[key], manifest.files || {}, donorShaders).shaders);
+        }
+        const files = textureEntries(manifest, id);
+        if (!stageIds.has(id)) {
+          stageIds.add(id);
+          stages.push({ key, id, caption: "" });
+          stageCasts.set(key, cast);
+        }
+        if (!stageFiles.has(key) && Object.keys(files).length) stageFiles.set(key, files);
+      }
     }
-    const rows = readSoundRows(site, manifest, episode);
-    for (const item of rows.music) {
-      if (musicCues.has(item.cue)) continue;
-      musicCues.add(item.cue);
-      music.push(item);
-      soundFiles.set(item.sheet, item.audio);
+    if (episode) {
+      const rows = readSoundRows(site, manifest, episode);
+      for (const item of rows.music) {
+        if (musicCues.has(item.cue)) continue;
+        musicCues.add(item.cue);
+        music.push(item);
+        soundFiles.set(item.sheet, item.audio);
+      }
+      for (const item of rows.sounds) {
+        if (soundCues.has(item.cue)) continue;
+        soundCues.add(item.cue);
+        sounds.push(item);
+        soundFiles.set(item.sheet, item.audio);
+      }
     }
-    for (const item of rows.sounds) {
-      if (soundCues.has(item.cue)) continue;
-      soundCues.add(item.cue);
-      sounds.push(item);
-      soundFiles.set(item.sheet, item.audio);
-    }
+    poolExtras(manifest);
   };
 
   const baseOrder = readStageRows(baseEpisode, field).map((stage) => stage.id);
@@ -262,26 +563,39 @@ const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = t
       if (manifest.format !== "ournotes.story-manifest/2" || !manifest.files || !manifest.files["episode.json"]) continue;
       let episode;
       try { episode = readEntry(site, manifest.files["episode.json"]); } catch { continue; }
-      // A partially downloaded donor can still fail while reading scene/texture assets; one bad story must not take
-      // down the whole catalog (and with it every script-generation request).
       try { addStory(manifest, episode); } catch { continue; }
     }
+    const bundlePath = path.join(site, "official-bundles.json");
+    if (fs.existsSync(bundlePath)) {
+      try {
+        const bundle = JSON.parse(fs.readFileSync(bundlePath, "utf8"));
+        if (bundle && bundle.files) poolExtras(bundle);
+      } catch { /* ignore corrupt bundle cache */ }
+    }
   }
-  // Only the base story's captions are used: a donor's chapter title describes the donor's scene, not the place.
   const baseStages = readStageRows(baseEpisode, field);
   const captions = new Map(baseStages.map((stage) => [stage.id, stage.caption]));
   const baseCast = castKeysOf(site, baseManifest);
   const baseIds = new Set(baseStages.map((stage) => stage.id));
+  const isSharedStage = (stage) => {
+    const entry = guide?.stages?.get(stage.id) || guide?.stages?.get(stage.key);
+    return entry?.kind === "shared" || entry?.kind === "neutral" || entry?.shared === true;
+  };
   const offered = castOnly && baseCast.size
-    ? stages.filter((stage) => baseIds.has(stage.id) || !stageCasts.get(stage.key)?.size ||
+    ? stages.filter((stage) => baseIds.has(stage.id) || isSharedStage(stage) || !stageCasts.get(stage.key)?.size ||
         [...stageCasts.get(stage.key)].some((key) => baseCast.has(key)))
     : stages;
   for (const stage of offered) stage.caption = captions.get(stage.id) || "";
-  return { stages: offered, music, sounds, stageFiles, stagePrefabs, soundFiles,
-           baseSceneStages: readSceneStages(site, baseManifest).stages };
+  return {
+    stages: offered, music, sounds, stageFiles, stagePrefabs, stageShaders, soundFiles,
+    frames, frameAliases, postEffects, postEffectAliases,
+    effectInstances, effectAssets, effectAliases,
+    stills, stillAliases, transitions, transitionAliases,
+    baseSceneStages: readSceneStages(site, baseManifest).stages,
+  };
 };
 
-// The vocabulary of a site-format story: its stages, BGM, SE cues and every model's actions.
+// The vocabulary of a site-format story: its stages, BGM, SE cues, visual effects and every model's actions.
 export const readSiteCatalog = (site, baseRel, language = "", { guide = null, pool = true } = {}) => {
   const book = guide || loadResourceGuide(site);
   const baseManifest = JSON.parse(fs.readFileSync(path.join(site, baseRel), "utf8"));
@@ -290,13 +604,10 @@ export const readSiteCatalog = (site, baseRel, language = "", { guide = null, po
   const lang = language || baseManifest.language;
   const field = FIELD(lang);
   const baseEpisode = readEntry(site, baseManifest.files["episode.json"]);
-  const poolData = readSitePool(site, baseRel, baseManifest, baseEpisode, field, { all: pool });
-  // The guide is what makes an id choosable: a human name, what the picture is, and the facets the prompt reasons
-  // about. Title-card backdrops are dropped instead of offered: they render as a black screen.
+  const poolData = readSitePool(site, baseRel, baseManifest, baseEpisode, field, { all: pool, guide: book });
   const stageList = poolData.stages.map((stage) => applyStageGuide(stage, book)).filter(Boolean);
   const music = poolData.music.map((item) => applyMusicGuide(item, book));
   const sounds = poolData.sounds.map((item) => applySoundGuide(item, book));
-  // The compiler reads the donor rows and cue sheets from the episode it was given, so merge them in.
   baseEpisode.sounds ||= {};
   baseEpisode.cuesheets ||= {};
   for (const item of [...music, ...sounds]) {
@@ -329,30 +640,233 @@ export const readSiteCatalog = (site, baseRel, language = "", { guide = null, po
   const base = {
     language: lang, languages: unique([lang, ...(baseManifest.story?.languages || []), ...Object.keys(baseManifest.languages || {})]),
     stages: stageList, music: music.map(strip), sounds: sounds.map(strip),
+    frames: [...poolData.frames.keys()],
+    postEffects: [...poolData.postEffects.keys()],
+    effects: unique([...poolData.effectInstances.keys(), ...poolData.effectAssets.keys()]),
+    stills: [...poolData.stills.keys()],
+    transitions: [...poolData.transitions.keys()],
     episode: baseEpisode,
     story: baseStory,
   };
   return { baseManifest, baseEpisode, base, lang, field, models: modelIds, actions, modelKeys, guide: book, pool: poolData };
 };
 
-// A scene.json entry with its `stages` replaced. The asset is split into named parts (player, cameraManager, …), so
-// only the stages part is rewritten; a single-file scene is rewritten whole.
-const writeSceneStages = (site, entry, stages) => {
-  if (Array.isArray(entry.parts)) {
-    const current = entry.parts.find(([key]) => key === "stages");
-    const written = writeAsset(site, Buffer.from(JSON.stringify(stages)));
-    // `size` is the byte length of the rebuilt `{"player":…,"stages":…}` text, not the sum of the parts: keep it exact
-    // by applying the stages delta to the original value.
-    const oldSize = current ? Number(current[2]) || 0 : 0;
-    const size = Number.isFinite(Number(entry.size)) ? Number(entry.size) - oldSize + written.size : undefined;
-    const parts = entry.parts.map(([key, asset, partSize, stored]) => key === "stages"
-      ? [key, written.asset, written.size, written.stored]
-      : [key, asset, partSize, stored].filter((value) => value !== undefined));
-    return size === undefined ? { parts } : { parts, size };
+// Resolves pooled stages, audio sheets, frames, post-effects, effects, stills, rule transitions, shaders,
+// fonts and TTS voices referenced by `episode.commands` into `manifest` and `story.json`.
+export const bundleSiteEpisodeAssets = ({
+  site, catalog, manifest, baseManifest, episode, lang, castModels = {}, voices = null,
+}) => {
+  const activeCmds = (episode.commands || []).filter((c) => !c.IgnoreData);
+  const usedStages = new Set(activeCmds.filter((c) => c.cmd === "Stage" && c.TargetAssetName).map((c) => c.TargetAssetName));
+  const usedFrames = unique(activeCmds.filter((c) => c.cmd === "Frame" && (c.TargetAssetName || "").trim()).map((c) => c.TargetAssetName));
+  const usedPostEffects = unique(activeCmds.filter((c) => c.cmd === "PostEffect" && (c.TargetAssetName || "").trim()).map((c) => c.TargetAssetName));
+  const usedEffects = unique(activeCmds.filter((c) => c.cmd === "Effect" && (c.TargetName || "").trim()).map((c) => c.TargetName));
+  const usedStills = unique(activeCmds.filter((c) => c.cmd === "Still" && (c.TargetAssetName || "").trim()).map((c) => c.TargetAssetName));
+  const usedTransitions = unique(activeCmds
+    .filter((c) => (c.cmd === "FadeIn" || c.cmd === "FadeOut") && (c.TargetAssetName || "").trim())
+    .map((c) => c.TargetAssetName));
+  const usedSheets = new Set(Object.values(episode.cuesheets || {})
+    .map((sheet) => sheet && sheet._cueSheetName).filter(Boolean));
+  const baseStoryEntry = baseManifest.files["story.json"];
+  const storyIndex = baseStoryEntry ? readEntry(site, baseStoryEntry) : null;
+  const langFiles = manifest.languages[lang].files;
+
+  const usedFiles = {};
+  const addedShaders = new Map();
+  const absorbDeps = (deps) => {
+    if (!deps) return;
+    Object.assign(usedFiles, deps.files || {});
+    for (const [name, info] of deps.shaders || []) {
+      if (!addedShaders.has(name)) addedShaders.set(name, info);
+    }
+  };
+
+  for (const key of usedStages) {
+    Object.assign(usedFiles, catalog.pool.stageFiles.get(key) || {});
+    for (const [name, info] of catalog.pool.stageShaders.get(key) || []) {
+      if (!addedShaders.has(name)) addedShaders.set(name, info);
+    }
   }
-  const scene = readEntry(site, entry);
-  scene.stages = stages;
-  return writeAsset(site, Buffer.from(JSON.stringify(scene)));
+  for (const sheet of usedSheets) Object.assign(usedFiles, catalog.pool.soundFiles.get(sheet) || {});
+
+  const baseSceneStages = catalog.pool.baseSceneStages || {};
+  const addedStages = [...usedStages].filter((key) => !(key in baseSceneStages));
+  let sceneEntry = baseManifest.files["scene.json"];
+  if (addedStages.length && sceneEntry) {
+    const merged = { ...baseSceneStages };
+    for (const key of addedStages) {
+      const prefab = catalog.pool.stagePrefabs.get(key);
+      if (prefab) merged[key] = prefab;
+    }
+    sceneEntry = writeSplitParts(site, sceneEntry, { stages: merged });
+  }
+
+  const extraJsonFiles = {};
+  if (usedFrames.length) {
+    const doc = baseManifest.files["frames.json"]
+      ? readEntry(site, baseManifest.files["frames.json"])
+      : { frames: {} };
+    doc.frames = { ...(doc.frames || {}) };
+    let dirty = false;
+    for (const req of usedFrames) {
+      const canonical = resolveAliasKey(catalog.pool.frames, catalog.pool.frameAliases, req);
+      const item = canonical ? catalog.pool.frames.get(canonical) : null;
+      if (!item) continue;
+      if (!(req in doc.frames)) {
+        doc.frames[req] = item.entry;
+        dirty = true;
+      }
+      if (canonical && canonical !== req && !(canonical in doc.frames)) {
+        doc.frames[canonical] = item.entry;
+        dirty = true;
+      }
+      absorbDeps(item.deps);
+    }
+    if (dirty) {
+      extraJsonFiles["frames.json"] = writeAsset(site, Buffer.from(JSON.stringify(doc)));
+    }
+  }
+
+  if (usedPostEffects.length) {
+    const doc = baseManifest.files["posteffects.json"]
+      ? readEntry(site, baseManifest.files["posteffects.json"])
+      : { postEffects: {} };
+    doc.postEffects = { ...(doc.postEffects || {}) };
+    let dirty = false;
+    for (const req of usedPostEffects) {
+      const canonical = resolveAliasKey(catalog.pool.postEffects, catalog.pool.postEffectAliases, req);
+      const item = canonical ? catalog.pool.postEffects.get(canonical) : null;
+      if (!item) continue;
+      if (!(req in doc.postEffects)) {
+        doc.postEffects[req] = { ...item.profile, name: req };
+        dirty = true;
+      }
+      if (canonical && canonical !== req && !(canonical in doc.postEffects)) {
+        doc.postEffects[canonical] = item.profile;
+        dirty = true;
+      }
+      absorbDeps(item.deps);
+    }
+    if (dirty) {
+      extraJsonFiles["posteffects.json"] = writeAsset(site, Buffer.from(JSON.stringify(doc)));
+    }
+  }
+
+  if (usedEffects.length) {
+    const doc = baseManifest.files["effects.json"]
+      ? readEntry(site, baseManifest.files["effects.json"])
+      : { instances: {}, effects: {} };
+    doc.instances = { ...(doc.instances || {}) };
+    doc.effects = { ...(doc.effects || {}) };
+    let dirty = false;
+    for (const req of usedEffects) {
+      let item = null;
+      const instKey = resolveAliasKey(catalog.pool.effectInstances, catalog.pool.effectAliases, req);
+      if (instKey) item = catalog.pool.effectInstances.get(instKey);
+      else {
+        const assetKey = resolveAliasKey(catalog.pool.effectAssets, catalog.pool.effectAliases, req);
+        if (assetKey) item = catalog.pool.effectAssets.get(assetKey);
+      }
+      if (!item) continue;
+      if (doc.instances[req] !== item.assetName) { doc.instances[req] = item.assetName; dirty = true; }
+      if (!(item.assetName in doc.effects)) { doc.effects[item.assetName] = item.entry; dirty = true; }
+      absorbDeps(item.deps);
+    }
+    if (dirty) {
+      extraJsonFiles["effects.json"] = writeAsset(site, Buffer.from(JSON.stringify(doc)));
+    }
+  }
+
+  if (usedStills.length) {
+    const doc = baseManifest.files["stills.json"]
+      ? readEntry(site, baseManifest.files["stills.json"])
+      : { stills: {} };
+    doc.stills = { ...(doc.stills || {}) };
+    let dirty = false;
+    for (const req of usedStills) {
+      const canonical = resolveAliasKey(catalog.pool.stills, catalog.pool.stillAliases, req);
+      const item = canonical ? catalog.pool.stills.get(canonical) : null;
+      if (!item) continue;
+      if (!(req in doc.stills)) { doc.stills[req] = item.entry; dirty = true; }
+      if (canonical && canonical !== req && !(canonical in doc.stills)) {
+        doc.stills[canonical] = item.entry;
+        dirty = true;
+      }
+      absorbDeps(item.deps);
+    }
+    if (dirty) {
+      extraJsonFiles["stills.json"] = writeAsset(site, Buffer.from(JSON.stringify(doc)));
+    }
+  }
+
+  if (usedTransitions.length) {
+    const uiScope = langFiles["ui/ui.json"] ? langFiles : manifest.files;
+    const uiEntry = uiScope && uiScope["ui/ui.json"];
+    if (uiEntry) {
+      const uiParts = readSplitParts(site, uiEntry, ["transitions", "textures"]);
+      const nextTransitions = { ...(uiParts.transitions || {}) };
+      const nextTextures = { ...(uiParts.textures || {}) };
+      let dirty = false;
+      for (const req of usedTransitions) {
+        const canonical = resolveAliasKey(catalog.pool.transitions, catalog.pool.transitionAliases, req);
+        const item = canonical ? catalog.pool.transitions.get(canonical) : null;
+        if (!item) continue;
+        if (!(req in nextTransitions)) { nextTransitions[req] = item.transition; dirty = true; }
+        if (canonical && canonical !== req && !(canonical in nextTransitions)) {
+          nextTransitions[canonical] = item.transition;
+          dirty = true;
+        }
+        if (item.textureName && item.textureMeta && !(item.textureName in nextTextures)) {
+          nextTextures[item.textureName] = item.textureMeta;
+          dirty = true;
+        }
+        Object.assign(usedFiles, item.files || {});
+      }
+      if (dirty) {
+        uiScope["ui/ui.json"] = writeSplitParts(site, uiEntry, { transitions: nextTransitions, textures: nextTextures });
+      }
+    }
+  }
+
+  if (addedShaders.size) {
+    const existingList = baseManifest.files["shaders/shaders.json"]
+      ? readEntry(site, baseManifest.files["shaders/shaders.json"])
+      : [];
+    const mergedList = Array.isArray(existingList) ? [...existingList] : [];
+    const have = new Set(mergedList.map((r) => r && r.name).filter(Boolean));
+    let dirty = false;
+    for (const [name, info] of addedShaders) {
+      if (!have.has(name)) {
+        mergedList.push(info.rec);
+        have.add(name);
+        Object.assign(usedFiles, info.files || {});
+        dirty = true;
+      }
+    }
+    if (dirty) extraJsonFiles["shaders/shaders.json"] = writeAsset(site, Buffer.from(JSON.stringify(mergedList)));
+  }
+
+  let storyEntry = null;
+  if (storyIndex) {
+    storyIndex.models = { ...(storyIndex.models || {}), ...castModels };
+    if (voices && voices.size) storyIndex.audio = { ...(storyIndex.audio || {}), [TTS_SHEET]: `audio/${TTS_SHEET}` };
+    for (const sheet of usedSheets) {
+      storyIndex.audio = { ...(storyIndex.audio || {}), [sheet]: `audio/${sheet}` };
+    }
+    if (extraJsonFiles["frames.json"] || baseManifest.files["frames.json"]) storyIndex.frames = "frames.json";
+    if (extraJsonFiles["posteffects.json"] || baseManifest.files["posteffects.json"]) storyIndex.postEffects = "posteffects.json";
+    if (extraJsonFiles["effects.json"] || baseManifest.files["effects.json"]) storyIndex.effects = "effects.json";
+    if (extraJsonFiles["stills.json"] || baseManifest.files["stills.json"]) storyIndex.stills = "stills.json";
+    storyEntry = writeAsset(site, Buffer.from(JSON.stringify(storyIndex)));
+  }
+
+  const ttsFiles = addSiteVoices({ site, episode, voices, field: catalog.field }).files;
+  const episodeEntry = writeAsset(site, Buffer.from(JSON.stringify(episode)));
+  manifest.files = { ...baseManifest.files, ...usedFiles, ...extraJsonFiles, ...ttsFiles,
+                     ...(sceneEntry !== baseManifest.files["scene.json"] ? { "scene.json": sceneEntry } : {}),
+                     ...(storyEntry ? { "story.json": storyEntry } : {}),
+                     "episode.json": episodeEntry };
+  return manifest;
 };
 
 // The rows and texts of `script` as a new story of `site`; `advId` names it, `outRel` is its manifest path.
@@ -386,73 +900,33 @@ export const buildSiteStory = ({ site, baseRel, script, advId, language = "", ti
   };
   if (title && !episode.text.custom_title) episode.text.custom_title = { [catalog.field]: title };
   if (episode.title && !episode.master._titleTextId) episode.master._titleTextId = "custom_title";
-  // The resources this episode actually uses. A stage from another story needs its prefab, texture and scene entry;
-  // a BGM/SE sheet from another story needs its cue sheet and audio files. Everything else stays out of the manifest.
-  const usedStages = new Set(episode.commands.filter((c) => c.cmd === "Stage" && c.TargetAssetName)
-    .map((c) => c.TargetAssetName));
-  const usedSheets = new Set(Object.values(episode.cuesheets || {})
-    .map((sheet) => sheet && sheet._cueSheetName).filter(Boolean));
+
   const baseManifest = catalog.baseManifest;
-  // The new episode may cast models the base story never used (another band in the same site). The story index lists
-  // the model keys of the episode, and manifest.models maps each id to its model manifest, so both have to grow.
-  const baseStoryEntry = baseManifest.files["story.json"];
-  const storyIndex = baseStoryEntry ? readEntry(site, baseStoryEntry) : null;
   const castModels = compiled.story?.parts?.models || {};
-  let storyEntry = null;
-  if (storyIndex) {
-    // The site story index is flat (`models`, not `parts.models`): add the cast model keys the base story lacks.
-    storyIndex.models = { ...(storyIndex.models || {}), ...castModels };
-    if (voices && voices.size) storyIndex.audio = { ...(storyIndex.audio || {}), [TTS_SHEET]: `audio/${TTS_SHEET}` };
-    // Sounds borrowed from another story have to be listed in the index's audio map as well.
-    for (const sheet of usedSheets) {
-      storyIndex.audio = { ...(storyIndex.audio || {}), [sheet]: `audio/${sheet}` };
-    }
-    storyEntry = writeAsset(site, Buffer.from(JSON.stringify(storyIndex)));
-  }
+  const manifest = JSON.parse(JSON.stringify(baseManifest));
+  manifest.advId = Number(advId) || advId;
+  manifest.language = lang;
+  manifest.languages = { [lang]: JSON.parse(JSON.stringify(baseManifest.languages?.[lang] || { files: {} })) };
+  manifest.models = { ...(baseManifest.models || {}) };
   const modelIndex = (() => {
     try {
       const doc = JSON.parse(fs.readFileSync(path.join(site, "models.json"), "utf8"));
       return new Map((doc.models || []).map((m) => [m.id, m.manifest]));
     } catch { return new Map(); }
   })();
-  const manifest = JSON.parse(JSON.stringify(baseManifest));
-  manifest.advId = Number(advId) || advId;
-  manifest.language = lang;
-  manifest.languages = { [lang]: JSON.parse(JSON.stringify(baseManifest.languages?.[lang] || { files: {} })) };
-  manifest.models = { ...(baseManifest.models || {}) };
   for (const modelId of Object.values(castModels)) {
     const rel = modelIndex.get(modelId);
     if (rel) manifest.models[modelId] = rel;
   }
-  // The site's font atlas only has the base story's characters. Replace it with the same font product in browser-font
-  // mode, so the director script's new lines draw with the machine's font family instead of missing glyphs.
+
   const langFiles = manifest.languages[lang].files;
   if (langFiles && langFiles["ui/fonts.json"]) {
     const fonts = readEntry(site, langFiles["ui/fonts.json"]);
     const browser = withBrowserFonts(fonts, fontFamily(parsed.script.font, checked.language));
     langFiles["ui/fonts.json"] = writeAsset(site, Buffer.from(JSON.stringify(browser)));
   }
-  const usedFiles = {};
-  for (const key of usedStages) Object.assign(usedFiles, catalog.pool.stageFiles.get(key) || {});
-  for (const sheet of usedSheets) Object.assign(usedFiles, catalog.pool.soundFiles.get(sheet) || {});
-  // A stage the base story never used needs its prefab in scene.json, not only its texture in the file map.
-  const baseSceneStages = catalog.pool.baseSceneStages || {};
-  const addedStages = [...usedStages].filter((key) => !(key in baseSceneStages));
-  let sceneEntry = baseManifest.files["scene.json"];
-  if (addedStages.length) {
-    const merged = { ...baseSceneStages };
-    for (const key of addedStages) {
-      const prefab = catalog.pool.stagePrefabs.get(key);
-      if (prefab) merged[key] = prefab;
-    }
-    sceneEntry = writeSceneStages(site, sceneEntry, merged);
-  }
-  const ttsFiles = addSiteVoices({ site, episode, voices }).files;
-  const episodeEntry = writeAsset(site, Buffer.from(JSON.stringify(episode)));
-  manifest.files = { ...baseManifest.files, ...usedFiles, ...ttsFiles,
-                     ...(sceneEntry !== baseManifest.files["scene.json"] ? { "scene.json": sceneEntry } : {}),
-                     ...(storyEntry ? { "story.json": storyEntry } : {}),
-                     "episode.json": episodeEntry };
+
+  bundleSiteEpisodeAssets({ site, catalog, manifest, baseManifest, episode, lang, castModels, voices });
   if (voices && voices.size) {
     manifest.audio = true;
     manifest.audioFormat = "wav";
@@ -481,8 +955,567 @@ export const buildSiteStory = ({ site, baseRel, script, advId, language = "", ti
            voices: voices ? voices.size : 0 };
 };
 
+export const OFFICIAL_BUNDLE_BASE_URL = "https://storage.bdon.moe/moenotes";
+export const OFFICIAL_ASSET_SEED_EPISODES = [
+  "10000", "10004", "10013", "10019", "10021", "10023", "10025", "10028", "10037", "10040", "10041", "10043",
+];
+export const DEFAULT_OFFICIAL_ASSET_TARGETS = Object.freeze({
+  frames: [
+    "adv_frame_fill_white",
+    "adv_frame_letterbox_white",
+    "adv_frame_glitch_1",
+    "adv_frame_glitch_2",
+    "adv_frame_lensflare_1",
+    "adv_frame_moyamoya",
+    "adv_frame_comic_speedline_white",
+  ],
+  postEffects: [
+    "monochrome",
+    "vignette",
+    "vignette2",
+    "motion_blur",
+    "blur",
+    "sepia",
+    "chromatic_aberration",
+  ],
+  transitions: [
+    "adv_transition_0002",
+    "adv_transition_0003",
+    "adv_transition_0004",
+    "adv_transition_0005",
+  ],
+});
+
+const noProxyMatch = (hostname, noProxy) => {
+  if (!noProxy) return false;
+  const host = String(hostname || "").toLowerCase();
+  for (const raw of String(noProxy).split(",")) {
+    const token = raw.trim().toLowerCase();
+    if (!token) continue;
+    if (token === "*") return true;
+    const bare = token.replace(/^\[(.*)\]$/, "$1").split(":")[0].replace(/^\./, "");
+    if (host === bare || host.endsWith(`.${bare}`)) return true;
+  }
+  return false;
+};
+
+const selectProxyUrl = (targetUrl) => {
+  const u = new URL(targetUrl);
+  if (noProxyMatch(u.hostname, process.env.NO_PROXY || process.env.no_proxy || "")) return "";
+  if (u.protocol === "https:") {
+    return process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || "";
+  }
+  if (u.protocol === "http:") {
+    return process.env.HTTP_PROXY || process.env.http_proxy || "";
+  }
+  return "";
+};
+
+const readStreamBuffer = (res) => new Promise((resolve, reject) => {
+  const chunks = [];
+  res.on("data", (chunk) => chunks.push(chunk));
+  res.on("end", () => resolve(Buffer.concat(chunks)));
+  res.on("error", reject);
+});
+
+const requestViaHttpProxy = (targetUrl, proxyUrl, timeoutMs) => new Promise((resolve, reject) => {
+  const target = new URL(targetUrl);
+  const proxy = new URL(proxyUrl);
+  const targetPort = Number(target.port) || (target.protocol === "https:" ? 443 : 80);
+  const proxyPort = Number(proxy.port) || (proxy.protocol === "https:" ? 443 : 80);
+  const proxyAuth = proxy.username || proxy.password
+    ? `Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString("base64")}`
+    : "";
+  let settled = false;
+  const fail = (err) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    reject(err);
+  };
+  const timer = setTimeout(() => fail(new Error(`proxy request timed out (${timeoutMs}ms)`)), timeoutMs);
+
+  if (target.protocol === "http:" && proxy.protocol === "http:") {
+    const req = http.request({
+      host: proxy.hostname,
+      port: proxyPort,
+      method: "GET",
+      path: target.toString(),
+      headers: {
+        Host: target.host,
+        ...(proxyAuth ? { "Proxy-Authorization": proxyAuth } : {}),
+      },
+    }, async (res) => {
+      try {
+        const body = await readStreamBuffer(res);
+        settled = true;
+        clearTimeout(timer);
+        resolve({ status: res.statusCode || 0, location: res.headers.location || "", body });
+      } catch (e) { fail(e); }
+    });
+    req.on("error", fail);
+    req.end();
+    return;
+  }
+
+  const connectHeaders = { Host: `${target.hostname}:${targetPort}` };
+  if (proxyAuth) connectHeaders["Proxy-Authorization"] = proxyAuth;
+  const connectReq = (proxy.protocol === "https:" ? https : http).request({
+    host: proxy.hostname,
+    port: proxyPort,
+    method: "CONNECT",
+    path: `${target.hostname}:${targetPort}`,
+    headers: connectHeaders,
+  });
+  connectReq.on("connect", (res, socket) => {
+    if (res.statusCode !== 200) {
+      socket.destroy();
+      fail(new Error(`proxy CONNECT failed (${res.statusCode})`));
+      return;
+    }
+    const tlsSocket = target.protocol === "https:"
+      ? tls.connect({ socket, servername: target.hostname })
+      : socket;
+    const reqOpts = {
+      createConnection: () => tlsSocket,
+      host: target.hostname,
+      port: targetPort,
+      method: "GET",
+      path: `${target.pathname}${target.search}`,
+      headers: { Host: target.host, Connection: "close" },
+    };
+    const inner = (target.protocol === "https:" ? https : http).request(reqOpts, async (innerRes) => {
+      try {
+        const body = await readStreamBuffer(innerRes);
+        settled = true;
+        clearTimeout(timer);
+        resolve({ status: innerRes.statusCode || 0, location: innerRes.headers.location || "", body });
+      } catch (e) { fail(e); }
+    });
+    inner.on("error", fail);
+    inner.end();
+  });
+  connectReq.on("error", fail);
+  connectReq.end();
+});
+
+const fetchRemoteBytes = async (url, { timeoutMs = 15000, allowPrivateUrl = false, proxyUrl = "" } = {}) => {
+  let current = url;
+  for (let hops = 0; hops < 5; hops++) {
+    if (!allowPrivateUrl) await resolvePublicUrl(current, "official asset url");
+    const proxy = proxyUrl || selectProxyUrl(current);
+    let status = 0, location = "", body = null;
+    if (proxy) {
+      const res = await requestViaHttpProxy(current, proxy, timeoutMs);
+      status = res.status;
+      location = res.location;
+      body = res.body;
+    } else {
+      const res = await fetch(current, { redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
+      status = res.status;
+      location = res.headers.get("location") || "";
+      if (status >= 200 && status < 300) body = Buffer.from(await res.arrayBuffer());
+    }
+    if (status >= 300 && status < 400 && location) {
+      current = new URL(location, current).toString();
+      continue;
+    }
+    if (status < 200 || status >= 300) throw new Error(`HTTP ${status} for ${current}`);
+    return body || Buffer.alloc(0);
+  }
+  throw new Error(`too many redirects fetching ${url}`);
+};
+
+const decodeRemoteAsset = (raw, relAsset) => {
+  if (relAsset.endsWith(".gz")) return zlib.gunzipSync(raw);
+  if (relAsset.endsWith(".br")) return zlib.brotliDecompressSync(raw);
+  return raw;
+};
+
+const extOfRelPath = (rel) => {
+  const clean = String(rel || "").replace(/\.(gz|br)$/i, "");
+  const dot = path.posix.extname(clean).replace(/^\./, "").toLowerCase();
+  return dot || "bin";
+};
+
+const collectLocalAssetsPool = (site) => {
+  const frames = new Map(), frameAliases = new Map();
+  const postEffects = new Map(), postEffectAliases = new Map();
+  const effectInstances = new Map(), effectAssets = new Map(), effectAliases = new Map();
+  const stills = new Map(), stillAliases = new Map();
+  const transitions = new Map(), transitionAliases = new Map();
+
+  const absorbManifest = (manifest) => {
+    const files = manifest?.files || {};
+    if (files["frames.json"]) {
+      try {
+        const doc = readEntry(site, files["frames.json"]);
+        for (const k of Object.keys(doc.frames || {})) { frames.set(k, true); addAliasKey(frameAliases, k, k); }
+      } catch { /* ignore */ }
+    }
+    if (files["posteffects.json"]) {
+      try {
+        const doc = readEntry(site, files["posteffects.json"]);
+        for (const k of Object.keys(doc.postEffects || {})) {
+          postEffects.set(k, true); addAliasKey(postEffectAliases, k, k);
+        }
+      } catch { /* ignore */ }
+    }
+    if (files["effects.json"]) {
+      try {
+        const doc = readEntry(site, files["effects.json"]);
+        for (const k of Object.keys(doc.instances || {})) {
+          effectInstances.set(k, true); addAliasKey(effectAliases, k, k);
+        }
+        for (const k of Object.keys(doc.effects || {})) {
+          effectAssets.set(k, true); addAliasKey(effectAliases, k, k);
+        }
+      } catch { /* ignore */ }
+    }
+    if (files["stills.json"]) {
+      try {
+        const doc = readEntry(site, files["stills.json"]);
+        for (const k of Object.keys(doc.stills || {})) { stills.set(k, true); addAliasKey(stillAliases, k, k); }
+      } catch { /* ignore */ }
+    }
+    for (const [addr] of readUiTransitions(site, manifest)) {
+      transitions.set(addr, true);
+      addAliasKey(transitionAliases, addr, addr);
+    }
+  };
+
+  const storiesDir = path.join(site, "stories");
+  for (const name of fs.existsSync(storiesDir) ? fs.readdirSync(storiesDir).sort() : []) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const m = JSON.parse(fs.readFileSync(path.join(storiesDir, name), "utf8"));
+      if (m && m.files) absorbManifest(m);
+    } catch { /* ignore */ }
+  }
+  const bundlePath = path.join(site, "official-bundles.json");
+  if (fs.existsSync(bundlePath)) {
+    try {
+      const m = JSON.parse(fs.readFileSync(bundlePath, "utf8"));
+      if (m && m.files) absorbManifest(m);
+    } catch { /* ignore */ }
+  }
+  return { frames, frameAliases, postEffects, postEffectAliases, effectInstances, effectAssets,
+           effectAliases, stills, stillAliases, transitions, transitionAliases };
+};
+
+// Fetches and caches missing official Frame, PostEffect, Effect, Still, rule Transition and shader/texture blobs
+// from `storage.bdon.moe/moenotes` (or custom `baseUrl`) into `<site>/official-bundles.json` + `<site>/assets/`.
+// Supports proxy env (`NODE_USE_ENV_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`) and falls back gracefully when offline.
+export const ensureOfficialAssetBundles = async ({
+  site,
+  baseUrl = OFFICIAL_BUNDLE_BASE_URL,
+  targets = DEFAULT_OFFICIAL_ASSET_TARGETS,
+  seedEpisodes = OFFICIAL_ASSET_SEED_EPISODES,
+  scanIndex = true,
+  maxIndexEpisodes = 60,
+  timeoutMs = 15000,
+  allowPrivateUrl = false,
+  proxyUrl = "",
+} = {}) => {
+  if (!site) throw new Error("ensureOfficialAssetBundles: site directory is required");
+  const cleanBase = String(baseUrl || OFFICIAL_BUNDLE_BASE_URL).replace(/\/+$/, "");
+  const want = {
+    frames: unique(targets?.frames || []),
+    postEffects: unique(targets?.postEffects || []),
+    effects: unique(targets?.effects || []),
+    stills: unique(targets?.stills || []),
+    transitions: unique(targets?.transitions || []),
+  };
+  const local = collectLocalAssetsPool(site);
+  const missing = {
+    frames: want.frames.filter((k) => !resolveAliasKey(local.frames, local.frameAliases, k)),
+    postEffects: want.postEffects.filter((k) => !resolveAliasKey(local.postEffects, local.postEffectAliases, k)),
+    effects: want.effects.filter((k) => !resolveAliasKey(local.effectInstances, local.effectAliases, k) &&
+                                        !resolveAliasKey(local.effectAssets, local.effectAliases, k)),
+    stills: want.stills.filter((k) => !resolveAliasKey(local.stills, local.stillAliases, k)),
+    transitions: want.transitions.filter((k) => !resolveAliasKey(local.transitions, local.transitionAliases, k)),
+  };
+  const remainingCount = () => missing.frames.length + missing.postEffects.length + missing.effects.length +
+    missing.stills.length + missing.transitions.length;
+  const flatMissing = () => ({
+    frames: [...missing.frames],
+    postEffects: [...missing.postEffects],
+    effects: [...missing.effects],
+    stills: [...missing.stills],
+    transitions: [...missing.transitions],
+  });
+
+  const bundlePath = path.join(site, "official-bundles.json");
+  if (!remainingCount()) {
+    return {
+      ok: true, offline: false, cached: [],
+      missing: flatMissing(),
+      bundleFile: fs.existsSync(bundlePath) ? "official-bundles.json" : "",
+    };
+  }
+
+  let bundle = { format: "ournotes.official-bundles/1", source: cleanBase, updatedAt: "", files: {} };
+  if (fs.existsSync(bundlePath)) {
+    try {
+      const prev = JSON.parse(fs.readFileSync(bundlePath, "utf8"));
+      if (prev && typeof prev === "object" && prev.files) bundle = prev;
+    } catch { /* rebuild bundle index cleanly */ }
+  }
+  const bundleFiles = bundle.files = { ...(bundle.files || {}) };
+  const readBundleJson = (rel, initVal) => {
+    if (!bundleFiles[rel]) return initVal;
+    try { return readEntry(site, bundleFiles[rel]); } catch { return initVal; }
+  };
+  const framesDoc = readBundleJson("frames.json", { frames: {} });
+  framesDoc.frames ||= {};
+  const postEffectsDoc = readBundleJson("posteffects.json", { postEffects: {} });
+  postEffectsDoc.postEffects ||= {};
+  const effectsDoc = readBundleJson("effects.json", { instances: {}, effects: {} });
+  effectsDoc.instances ||= {};
+  effectsDoc.effects ||= {};
+  const stillsDoc = readBundleJson("stills.json", { stills: {} });
+  stillsDoc.stills ||= {};
+  const uiDoc = readBundleJson("ui/ui.json", { transitions: {}, textures: {} });
+  uiDoc.transitions ||= {};
+  uiDoc.textures ||= {};
+  const shadersList = readBundleJson("shaders/shaders.json", []);
+  const shaderMap = new Map(Array.isArray(shadersList) ? shadersList.filter((r) => r?.name).map((r) => [r.name, r]) : []);
+
+  const fetchOpts = { timeoutMs, allowPrivateUrl, proxyUrl };
+  const remoteRawCache = new Map();
+  const cached = [];
+  const errors = [];
+  let dirtyFrames = false, dirtyPost = false, dirtyEffects = false, dirtyStills = false, dirtyUi = false, dirtyShaders = false;
+
+  const downloadEntryRaw = async (entry) => {
+    if (!entry || !isSafeRelPath(entry.asset)) throw new Error("invalid remote asset path");
+    if (remoteRawCache.has(entry.asset)) return remoteRawCache.get(entry.asset);
+    const bytes = await fetchRemoteBytes(`${cleanBase}/${entry.asset}`, fetchOpts);
+    const raw = decodeRemoteAsset(bytes, entry.asset);
+    remoteRawCache.set(entry.asset, raw);
+    return raw;
+  };
+  const readRemoteJson = async (entry) => JSON.parse((await downloadEntryRaw(entry)).toString("utf8"));
+
+  const mirrorRemoteFile = async (rel, entry) => {
+    if (!entry || !isSafeRelPath(rel) || !isSafeRelPath(entry.asset)) return;
+    if (bundleFiles[rel]) return;
+    const raw = await downloadEntryRaw(entry);
+    bundleFiles[rel] = writeAsset(site, raw, extOfRelPath(rel));
+  };
+
+  const mirrorRemoteShaders = async (remoteManifest, wantedNames) => {
+    if (!wantedNames.size || !remoteManifest.files?.["shaders/shaders.json"]) return;
+    let list;
+    try { list = await readRemoteJson(remoteManifest.files["shaders/shaders.json"]); } catch { return; }
+    if (!Array.isArray(list)) return;
+    const byName = new Map(list.filter((r) => r?.name).map((r) => [r.name, r]));
+    for (const name of wantedNames) {
+      if (shaderMap.has(name) || !byName.has(name)) continue;
+      const rec = byName.get(name);
+      if (rec.parsed && remoteManifest.files[`shaders/${rec.parsed}`]) {
+        await mirrorRemoteFile(`shaders/${rec.parsed}`, remoteManifest.files[`shaders/${rec.parsed}`]);
+      }
+      for (const v of rec.variants || []) {
+        if (v?.file && remoteManifest.files[`shaders/${v.file}`]) {
+          await mirrorRemoteFile(`shaders/${v.file}`, remoteManifest.files[`shaders/${v.file}`]);
+        }
+      }
+      shaderMap.set(name, rec);
+      dirtyShaders = true;
+    }
+  };
+
+  const mirrorNodeDeps = async (node, remoteManifest) => {
+    const rFiles = remoteManifest.files || {};
+    const remoteShaderNames = new Set();
+    if (rFiles["shaders/shaders.json"]) {
+      try {
+        const list = await readRemoteJson(rFiles["shaders/shaders.json"]);
+        if (Array.isArray(list)) for (const rec of list) if (rec?.name) remoteShaderNames.add(rec.name);
+      } catch { /* ignore */ }
+    }
+    const fakeShaders = new Map([...remoteShaderNames].map((n) => [n, true]));
+    const deps = collectDeps(node, rFiles, fakeShaders);
+    for (const [rel, entry] of Object.entries(deps.files)) await mirrorRemoteFile(rel, entry);
+    await mirrorRemoteShaders(remoteManifest, new Set(deps.shaders.keys()));
+  };
+
+  const processManifest = async (remoteManifest) => {
+    const rFiles = remoteManifest?.files || {};
+    if (missing.frames.length && rFiles["frames.json"]) {
+      const doc = await readRemoteJson(rFiles["frames.json"]);
+      const aliases = new Map();
+      for (const k of Object.keys(doc.frames || {})) addAliasKey(aliases, k, k);
+      const anim = indexAnimDoc(doc);
+      const stillLeft = [];
+      for (const req of missing.frames) {
+        const canonical = resolveAliasKey(doc.frames || {}, aliases, req);
+        if (!canonical) { stillLeft.push(req); continue; }
+        const hydrated = inlineAnimRefs(structuredClone(doc.frames[canonical]), anim);
+        await mirrorNodeDeps(hydrated, remoteManifest);
+        framesDoc.frames[canonical] = hydrated;
+        if (canonical !== req) framesDoc.frames[req] = hydrated;
+        dirtyFrames = true;
+        cached.push(canonical);
+      }
+      missing.frames = stillLeft;
+    }
+
+    if (missing.postEffects.length && rFiles["posteffects.json"]) {
+      const doc = await readRemoteJson(rFiles["posteffects.json"]);
+      const aliases = new Map();
+      for (const k of Object.keys(doc.postEffects || {})) addAliasKey(aliases, k, k);
+      const stillLeft = [];
+      for (const req of missing.postEffects) {
+        const canonical = resolveAliasKey(doc.postEffects || {}, aliases, req);
+        if (!canonical) { stillLeft.push(req); continue; }
+        const prof = structuredClone(doc.postEffects[canonical]);
+        await mirrorNodeDeps(prof, remoteManifest);
+        postEffectsDoc.postEffects[canonical] = prof;
+        if (canonical !== req) postEffectsDoc.postEffects[req] = { ...prof, name: req };
+        dirtyPost = true;
+        cached.push(canonical);
+      }
+      missing.postEffects = stillLeft;
+    }
+
+    if (missing.effects.length && rFiles["effects.json"]) {
+      const doc = await readRemoteJson(rFiles["effects.json"]);
+      const aliases = new Map();
+      for (const k of [...Object.keys(doc.instances || {}), ...Object.keys(doc.effects || {})]) addAliasKey(aliases, k, k);
+      const anim = indexAnimDoc(doc);
+      const stillLeft = [];
+      for (const req of missing.effects) {
+        const instKey = resolveAliasKey(doc.instances || {}, aliases, req);
+        const assetKey = instKey ? doc.instances[instKey] : resolveAliasKey(doc.effects || {}, aliases, req);
+        const rawEntry = assetKey && doc.effects?.[assetKey];
+        if (!rawEntry) { stillLeft.push(req); continue; }
+        const hydrated = inlineAnimRefs(structuredClone(rawEntry), anim);
+        await mirrorNodeDeps(hydrated, remoteManifest);
+        effectsDoc.effects[assetKey] = hydrated;
+        effectsDoc.instances[instKey || req] = assetKey;
+        if (req !== (instKey || req)) effectsDoc.instances[req] = assetKey;
+        dirtyEffects = true;
+        cached.push(instKey || assetKey);
+      }
+      missing.effects = stillLeft;
+    }
+
+    if (missing.stills.length && rFiles["stills.json"]) {
+      const doc = await readRemoteJson(rFiles["stills.json"]);
+      const aliases = new Map();
+      for (const k of Object.keys(doc.stills || {})) addAliasKey(aliases, k, k);
+      const anim = indexAnimDoc(doc);
+      const stillLeft = [];
+      for (const req of missing.stills) {
+        const canonical = resolveAliasKey(doc.stills || {}, aliases, req);
+        if (!canonical) { stillLeft.push(req); continue; }
+        const hydrated = inlineAnimRefs(structuredClone(doc.stills[canonical]), anim);
+        await mirrorNodeDeps(hydrated, remoteManifest);
+        stillsDoc.stills[canonical] = hydrated;
+        if (canonical !== req) stillsDoc.stills[req] = hydrated;
+        dirtyStills = true;
+        cached.push(canonical);
+      }
+      missing.stills = stillLeft;
+    }
+
+    if (missing.transitions.length) {
+      const langScope = remoteManifest.languages?.[remoteManifest.language]?.files
+        || Object.values(remoteManifest.languages || {})[0]?.files || {};
+      const uiEntry = langScope["ui/ui.json"] || rFiles["ui/ui.json"];
+      if (uiEntry) {
+        let transitions = {}, uiTextures = {};
+        if (Array.isArray(uiEntry.parts)) {
+          const tPart = uiEntry.parts.find(([k]) => k === "transitions");
+          const texPart = uiEntry.parts.find(([k]) => k === "textures");
+          if (tPart?.[1]) transitions = await readRemoteJson({ asset: tPart[1] });
+          if (texPart?.[1]) uiTextures = await readRemoteJson({ asset: texPart[1] });
+        } else {
+          const fullUi = await readRemoteJson(uiEntry);
+          transitions = fullUi.transitions || {};
+          uiTextures = fullUi.textures || {};
+        }
+        const aliases = new Map();
+        for (const k of Object.keys(transitions)) addAliasKey(aliases, k, k);
+        const stillLeft = [];
+        for (const req of missing.transitions) {
+          const canonical = resolveAliasKey(transitions, aliases, req);
+          if (!canonical) { stillLeft.push(req); continue; }
+          const tr = transitions[canonical];
+          const texName = tr._texture?.texture || "";
+          const texMeta = texName ? uiTextures[texName] : null;
+          if (texMeta?.file) {
+            const relUi = texMeta.file.startsWith("ui/") ? texMeta.file : `ui/${texMeta.file}`;
+            const blobEntry = langScope[relUi] || rFiles[relUi] || langScope[texMeta.file] || rFiles[texMeta.file];
+            if (blobEntry) await mirrorRemoteFile(relUi, blobEntry);
+          }
+          uiDoc.transitions[canonical] = tr;
+          if (canonical !== req) uiDoc.transitions[req] = tr;
+          if (texName && texMeta) uiDoc.textures[texName] = texMeta;
+          dirtyUi = true;
+          cached.push(canonical);
+        }
+        missing.transitions = stillLeft;
+      }
+    }
+  };
+
+  const seenManifests = new Set();
+  const queue = (seedEpisodes || []).map((ep) => `stories/${String(ep).replace(/\.json$/i, "")}.json`);
+  let scannedIndex = false;
+
+  for (let i = 0; i < queue.length && remainingCount() > 0; i++) {
+    const rel = queue[i];
+    if (!isSafeRelPath(rel) || seenManifests.has(rel)) continue;
+    seenManifests.add(rel);
+    try {
+      const m = JSON.parse((await fetchRemoteBytes(`${cleanBase}/${rel}`, fetchOpts)).toString("utf8"));
+      await processManifest(m);
+    } catch (e) {
+      errors.push(`${rel}: ${e.message}`);
+    }
+    if (i === queue.length - 1 && remainingCount() > 0 && scanIndex && !scannedIndex) {
+      scannedIndex = true;
+      try {
+        const index = JSON.parse((await fetchRemoteBytes(`${cleanBase}/stories.json`, fetchOpts)).toString("utf8"));
+        const list = (Array.isArray(index.stories) ? index.stories : [])
+          .filter((s) => s && s.manifest && (s.playbackMode === undefined || s.playbackMode === 0));
+        for (const item of list.slice(0, maxIndexEpisodes)) {
+          if (!seenManifests.has(item.manifest)) queue.push(item.manifest);
+        }
+      } catch (e) {
+        errors.push(`stories.json: ${e.message}`);
+      }
+    }
+  }
+
+  if (dirtyFrames) bundleFiles["frames.json"] = writeAsset(site, Buffer.from(JSON.stringify(framesDoc)));
+  if (dirtyPost) bundleFiles["posteffects.json"] = writeAsset(site, Buffer.from(JSON.stringify(postEffectsDoc)));
+  if (dirtyEffects) bundleFiles["effects.json"] = writeAsset(site, Buffer.from(JSON.stringify(effectsDoc)));
+  if (dirtyStills) bundleFiles["stills.json"] = writeAsset(site, Buffer.from(JSON.stringify(stillsDoc)));
+  if (dirtyUi) bundleFiles["ui/ui.json"] = writeAsset(site, Buffer.from(JSON.stringify(uiDoc)));
+  if (dirtyShaders) bundleFiles["shaders/shaders.json"] = writeAsset(site, Buffer.from(JSON.stringify([...shaderMap.values()])));
+  if (cached.length || fs.existsSync(bundlePath)) {
+    bundle.updatedAt = new Date().toISOString();
+    fs.mkdirSync(site, { recursive: true });
+    writeAtomic(bundlePath, JSON.stringify(bundle, null, 2));
+  }
+
+  return {
+    ok: remainingCount() === 0,
+    offline: errors.length > 0 && cached.length === 0,
+    error: errors[0] || "",
+    errors,
+    cached: unique(cached),
+    missing: flatMissing(),
+    bundleFile: fs.existsSync(bundlePath) ? "official-bundles.json" : "",
+  };
+};
+
 export const parseArgs = (argv) => {
-  const o = { site: "", base: "", script: "", adv: "", out: "", lang: "", title: "", list: false };
+  const o = { site: "", base: "", script: "", adv: "", out: "", lang: "", title: "", list: false, ensureAssets: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--site") o.site = argv[++i] || "";
@@ -493,6 +1526,7 @@ export const parseArgs = (argv) => {
     else if (a === "--lang") o.lang = argv[++i] || "";
     else if (a === "--title") o.title = argv[++i] || "";
     else if (a === "--list") o.list = true;
+    else if (a === "--ensure-assets") o.ensureAssets = true;
     else throw new Error(`unknown argument ${a}`);
   }
   if (!o.site) throw new Error("--site is required (a site-format story site directory)");
@@ -505,6 +1539,7 @@ export const parseArgs = (argv) => {
 const main = async () => {
   const o = parseArgs(process.argv.slice(2));
   const site = path.resolve(o.site);
+  if (o.ensureAssets) await ensureOfficialAssetBundles({ site });
   if (o.list) {
     const c = readSiteCatalog(site, o.base, o.lang);
     console.log(JSON.stringify({
@@ -512,6 +1547,11 @@ const main = async () => {
       stages: c.base.stages,
       music: c.base.music,
       sounds: c.base.sounds,
+      frames: c.base.frames,
+      postEffects: c.base.postEffects,
+      effects: c.base.effects,
+      stills: c.base.stills,
+      transitions: c.base.transitions,
       models: c.models.map((id) => ({ id, ...c.actions.get(id) })),
     }, null, 2));
     return;

@@ -169,7 +169,7 @@ class SiteRecordingAudio extends RecordingAudio {
   // made; MotionSync pulls once per frame, so each pull is that frame's slice.
   pcmSource(info) {
     const dec = this._decoded.get(String(info.soundId));
-    if (!dec) return { sampleRate: 48000, pull: () => new Float32Array(0) };
+    if (!dec) return { sampleRate: 48000, hasPcm: false, pull: () => new Float32Array(0) };
     const sr = dec.sampleRate;
     const startSec = Math.max(0, Number(info.startSec) || 0);
     const speed = Number(info.speed) > 0 ? Number(info.speed) : 1;
@@ -180,6 +180,7 @@ class SiteRecordingAudio extends RecordingAudio {
     };
     return {
       sampleRate: sr,
+      hasPcm: true,
       pull: () => {
         const cur = at();
         const out = cur > last ? dec.data.subarray(last, cur) : new Float32Array(0);
@@ -187,8 +188,10 @@ class SiteRecordingAudio extends RecordingAudio {
         return out;
       },
       latest: (n) => {
-        const cur = at(), from = Math.max(0, cur - Math.max(0, Math.round(n) || 0));
-        return dec.data.subarray(from, cur);
+        const rawCur = Math.round((startSec + Math.max(0, this.loop.time - info.t0) * speed) * sr);
+        const to = Math.min(dec.data.length, rawCur);
+        const from = Math.max(0, rawCur - Math.max(0, Math.round(n) || 0));
+        return to > from ? dec.data.subarray(from, to) : new Float32Array(0);
       },
     };
   }
@@ -263,11 +266,45 @@ const runSmoke = async (job) => {
            seconds: Math.round((performance.now() - t0) / 100) / 10 };
 };
 
+const preloadBrowserFonts = async (store) => {
+  const fontsApi = globalThis.document?.fonts;
+  if (!fontsApi) return;
+  const families = new Set(['"Noto Sans SC"', '"Noto Serif SC"', '"Noto Sans JP"', '"Noto Serif JP"']);
+  try {
+    const doc = store.has?.("ui/fonts.json") ? store.json("ui/fonts.json") : null;
+    for (const f of Object.values(doc?.fonts || {})) {
+      if (f?.browser?.family) families.add(String(f.browser.family));
+    }
+  } catch { /* no ui/fonts.json */ }
+  if (typeof fontsApi.load === "function") {
+    await Promise.all([...families].map((fam) =>
+      Promise.resolve(fontsApi.load(`normal 64px ${fam}`, "あア漢한Aa0")).catch(() => {})
+    ));
+  }
+  await fontsApi.ready;
+};
+
+const makePcmRmsAnalyzer = (src) => ({
+  isAvailable: true,
+  getOpenInfo() {
+    const sr = src.sampleRate || 48000;
+    const buf = src.latest(Math.max(1, Math.round(sr * 0.04)));
+    if (!buf || !buf.length) return { openY: 0 };
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+    const rms = Math.sqrt(sum / buf.length);
+    return { openY: rms > 0.004 ? Math.min(1, rms * 4) : 0 };
+  },
+});
+
 export const run = async (job) => {
   if (job.kind === "smoke") return runSmoke(job);
   const t0 = performance.now();
-  const width = Math.max(64, Math.round(job.width || 1300));
-  const height = Math.max(64, Math.round(job.height || 600));
+  const preset = String(job.preset || job.renderPreset || "standard").toLowerCase();
+  const defaultW = preset === "best" ? 1920 : 1300;
+  const defaultH = preset === "best" ? 886 : 600;
+  const width = Math.max(64, Math.round(job.width || defaultW));
+  const height = Math.max(64, Math.round(job.height || defaultH));
   const fps = Math.max(1, Math.min(30, Math.round(job.fps || 30)));
   const stepPerFrame = 30 % fps === 0 ? 30 / fps : 1;
   const outFps = 30 % fps === 0 ? fps : 30;
@@ -286,6 +323,7 @@ export const run = async (job) => {
   const store = engine
     ? await engine.assets.loadStoryStore(job.manifest, { lang: job.lang || undefined })
     : await loadStoryStore(job.manifest, { lang: job.lang || undefined });
+  await preloadBrowserFonts(store);
   let cues = {};
   if (!siteEngine) cues = await uploadCues(job.jobId, store, new StoryData(store));
   const canvas = Object.assign(document.createElement("canvas"), { width, height });
@@ -309,9 +347,13 @@ export const run = async (job) => {
     : (resolve, loop, { assets }) => new RecordingAudio(resolve, loop, { assets, sounds: true });
   const Session = engine ? engine.session.StorySession : StorySession;
   let sessionRef = null;
+  let currentTalkLength = 12;
+  let cancelHostActions = null;
   // The site engine (0.1.8) has no HostActions of its own: the host runs a line's timed actions on its clock here.
   const scheduleSiteActions = (session, c) => {
-    if (!siteEngine || !session || c.cmd !== "Talk" || !Array.isArray(c.HostActions) || !c.HostActions.length) return;
+    if (!siteEngine || !session || c.cmd !== "Talk") return;
+    if (cancelHostActions) { cancelHostActions(); cancelHostActions = null; }
+    if (!Array.isArray(c.HostActions) || !c.HostActions.length) return;
     const loop = session.loop, start = loop.time;
     let text = "", voice = 0;
     try { text = session.ctx.localize(c.AdvTextID) || ""; } catch { /* no text */ }
@@ -322,27 +364,61 @@ export const run = async (job) => {
     const typed = [...text].length * 0.04;
     const body = Math.max(1.6, voice ? voice + 0.6 : typed);
     const list = [...c.HostActions].filter((a) => a && Number.isFinite(a.at)).sort((a, b) => a.at - b.at);
+    let stopped = false;
+    cancelHostActions = () => { stopped = true; };
     const run = async () => {
       for (const a of list) {
-        while (!session.ended && loop.time < start + Math.max(0, Math.min(1, a.at)) * body)
+        while (!stopped && !session.ended && loop.time < start + Math.max(0, Math.min(1, a.at)) * body)
           await loop.yield("Update");
-        if (session.ended || loop.time > start + body + 0.1) return;
+        if (stopped || session.ended || loop.time > start + body + 0.1) return;
         const ch = session.characters.get(a.TargetName);
         if (!ch || !ch.isShowing) continue;
+        const fadeIn = a.MotionFadeIn ?? -1;
         if (a.MotionName) {
           session.core.motions.playMotion(ch, { TargetName: a.TargetName, MotionName: a.MotionName,
-            ExpressionName: a.ExpressionName || "", MotionFadeIn: a.MotionFadeIn || 0 }, false);
+            ExpressionName: a.ExpressionName || "", MotionFadeIn: fadeIn }, false);
         } else if (a.ExpressionName) {
-          ch.playExpression(a.ExpressionName, a.MotionFadeIn || 0);
+          ch.playExpression(a.ExpressionName, fadeIn);
         }
-        if (a.LookTargetPosition) {
+        if (a.LookTargetPosition === "stop" || a.LookTargetPosition === "Stop") {
+          const dur = Math.max(0, Number(a.LookDuration ?? a.Duration ?? 0.2));
+          ch.smoothChangeToLook(ch.originalLookX, ch.originalLookY, dur)
+            .then(() => { if (ch.isAlive) ch.setLookEnabled(false); }).catch(() => {});
+        } else if (a.LookTargetPosition) {
           const target = session.ctx.session.positionToCharacter.get(a.LookTargetPosition);
           if (target && target.isAlive) {
             const head = target.headPosition(), own = ch.headPosition();
+            const dur = Math.max(0, Number(a.LookDuration ?? a.Duration ?? 0.2));
             ch.setLookEnabled(true);
             ch.smoothChangeToLook(Math.min(1, Math.max(-1, (head.x - own.x) * 0.2)),
-                                  Math.min(1, Math.max(-1, head.y - own.y)), 0.2);
+                                  Math.min(1, Math.max(-1, head.y - own.y)), dur);
           }
+        }
+        if (a.Look !== undefined && a.Look !== null) {
+          if (a.Look === "stop" || a.Look === "Stop" || (typeof a.Look === "object" && !Array.isArray(a.Look) && a.Look.stop)) {
+            const dur = Math.max(0, Number(a.Look?.duration ?? a.LookDuration ?? a.Duration ?? 0.2));
+            ch.smoothChangeToLook(ch.originalLookX, ch.originalLookY, dur)
+              .then(() => { if (ch.isAlive) ch.setLookEnabled(false); }).catch(() => {});
+          } else {
+            const lx = Array.isArray(a.Look) ? a.Look[0] : (a.Look.x ?? a.Look.Parameter1 ?? 0);
+            const ly = Array.isArray(a.Look) ? a.Look[1] : (a.Look.y ?? a.Look.Parameter2 ?? 0);
+            const dur = Math.max(0, Number((Array.isArray(a.Look) ? a.Look[2] : a.Look.duration) ??
+              a.LookDuration ?? a.Duration ?? 0.2));
+            ch.setLookEnabled(true);
+            ch.smoothChangeToLook(Math.min(1, Math.max(-1, Number(lx) || 0)),
+                                  Math.min(1, Math.max(-1, Number(ly) || 0)), dur);
+          }
+        }
+        if (a.Angle !== undefined && a.Angle !== null) {
+          const zDeg = Array.isArray(a.Angle) ? Number(a.Angle[0]) || 0
+            : typeof a.Angle === "object" ? Number(a.Angle.zDeg ?? a.Angle.z ?? a.Angle.angle ?? 0) || 0
+              : Number(a.Angle) || 0;
+          const bodyDeg = typeof a.Angle === "object" && !Array.isArray(a.Angle)
+            ? Number(a.Angle.body ?? a.Angle.x ?? 0) || 0 : Number(a.AngleBody ?? 0) || 0;
+          const dur = Math.max(0, Number((Array.isArray(a.Angle) ? a.Angle[1] : a.Angle?.duration) ??
+            a.AngleDuration ?? a.Duration ?? 0.5));
+          ch.setOverrideAngleEnabled(true, true);
+          ch.smoothRotateToAngle(zDeg, bodyDeg, dur);
         }
       }
     };
@@ -358,14 +434,62 @@ export const run = async (job) => {
         const seconds = sessionRef ? sessionRef.time : 0;
         timeline.push({ i: c.i, cmd: c.cmd, seconds: Math.round(seconds * 1000) / 1000 });
       }
+      if (c && c.cmd === "Talk" && c.AdvTextID && c.AdvTextID !== "0" && sessionRef) {
+        let text = "", voiceSec = 0;
+        try { text = sessionRef.ctx.localize(c.AdvTextID) || ""; } catch { /* no text */ }
+        for (const id of c.VoiceIDs || []) {
+          try {
+            const m = sessionRef.audio.cueOf(id).meta;
+            if (m && m.sampleRate) voiceSec = Math.max(voiceSec, m.samples / m.sampleRate);
+          } catch { /* no cue */ }
+        }
+        const chars = [...String(text).replace(/<[^>]*>/g, "")].length;
+        currentTalkLength = Math.max(1, chars, Math.ceil(voiceSec / 0.14));
+      }
       scheduleSiteActions(sessionRef, c);
     },
     onLine: (e) => lines.push({ index: e.index, time: sessionRef ? Math.round(sessionRef.time * 1000) / 1000 : 0,
                                 speaker: e.speaker, text: e.text }),
   });
   sessionRef = s;
+  const crilips = s.ctx?.story?.crilips ?? s.story?.crilips;
+  if (siteEngine && s.characters && !crilips) {
+    for (const ch of s.characters.values()) {
+      if (!ch || ch.isMotionSyncEnabled !== false) continue;
+      const origSetAnalyzer = ch.setLipsAnalyzer.bind(ch);
+      const origSetEnabled = ch.setLipSyncEnabled.bind(ch);
+      let needsPseudo = false;
+      ch.setLipsAnalyzer = (analyzer) => {
+        if (!analyzer) {
+          needsPseudo = false;
+          return origSetAnalyzer(null);
+        }
+        if (typeof analyzer.getOpenInfo === "function") {
+          needsPseudo = false;
+          return origSetAnalyzer(analyzer);
+        }
+        if (analyzer.hasPcm && typeof analyzer.latest === "function") {
+          needsPseudo = false;
+          return origSetAnalyzer(makePcmRmsAnalyzer(analyzer));
+        }
+        needsPseudo = true;
+        origSetAnalyzer(null);
+        if (ch.isLipSyncEnabled) ch.startTimedPseudoLipSync(currentTalkLength, s.speed ? s.speed / 10 : 1, 1);
+      };
+      ch.setLipSyncEnabled = (flag, usePseudo = false) => {
+        origSetEnabled(flag, usePseudo);
+        if (flag && !usePseudo && needsPseudo) {
+          ch.startTimedPseudoLipSync(currentTalkLength, s.speed ? s.speed / 10 : 1, 1);
+        } else if (!flag) {
+          needsPseudo = false;
+          ch.stopTimedPseudoLipSync();
+        }
+      };
+    }
+  }
   const audio = s.audio;
   if (siteEngine) cues = await uploadCuesSite(job.jobId, store, audio);
+  const quality = Math.max(0.3, Math.min(1, (job.jpegQuality || 98) / 100));
   let frames = 0, steps = 0, ended = false, storySeconds = 0, videoStart = null;
   try {
     while (!s.ended && frames < maxFrames) {
@@ -375,7 +499,7 @@ export const run = async (job) => {
       for (let i = 0; i < settle; i++) await s.step({ draw: false });
       if (frames === 0) videoStart = s.time;                 // the story clock at the first encoded frame
       s.render();
-      await uploadFrame(job.jobId, canvas, Math.max(0.3, Math.min(1, (job.jpegQuality || 92) / 100)), frames);
+      await uploadFrame(job.jobId, canvas, quality, frames);
       frames++;
       if (frames % 60 === 0) reportProgress(job.jobId, frames, s.time);
       if (frames % 300 === 0) console.log(`job ${job.jobId}: ${frames} frames, ${s.time.toFixed(1)} s of story`);
@@ -385,20 +509,30 @@ export const run = async (job) => {
     if (!frames) {
       if (videoStart == null) videoStart = s.time;
       s.render();
-      await uploadFrame(job.jobId, canvas, 0.9, 0);
+      await uploadFrame(job.jobId, canvas, quality, 0);
       frames = 1;
     }
   } finally {
+    if (cancelHostActions) cancelHostActions();
     await s.dispose();
     if (audio && typeof audio.close === "function") { try { await audio.close(); } catch { /* already closed */ } }
   }
   events.push(...(audio.events || []));
   // The MP4 starts at the first captured frame, which is later than story time 0 (model warmup and loading steps run
-  // before the capture loop). The audit cuts against the video, so shift the command and line clocks by that pre-roll.
+  // before the capture loop). The audit cuts against the video, so shift the command, line and audio clocks by that pre-roll.
   const start = videoStart == null ? 0 : videoStart;
   const toVideo = (value) => Math.max(0, Math.round((value - start) * 1000) / 1000);
   for (const entry of timeline) { entry.storySeconds = entry.seconds; entry.seconds = toVideo(entry.seconds); }
   for (const line of lines) { line.storyTime = line.time; line.time = toVideo(line.time); }
+  for (const event of events) {
+    event.storyT = event.t;
+    if (event.t >= start) {
+      event.t = +(event.t - start).toFixed(6);
+    } else {
+      event.offsetSeconds = +(((event.offsetSeconds || 0) + (start - event.t)).toFixed(6));
+      event.t = 0;
+    }
+  }
   const seconds = Math.round((performance.now() - t0) / 100) / 10;
   console.log(`job ${job.jobId}: ${frames} frames, ${ended ? "ended" : "stopped at the limit"}, ${events.length} audio events`);
   return { frames, fps: outFps, width, height, ended, storySeconds: Math.round(storySeconds * 1000) / 1000,

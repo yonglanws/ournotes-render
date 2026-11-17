@@ -112,20 +112,27 @@ const encoderOrder = (choice, crf, preset) => {
 const escapeDrawText = (s) => String(s).replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\\'")
   .replace(/%/g, "\\%").replace(/\n/g, "\\n");
 
+export const BT709_FLAGS = Object.freeze(["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]);
+
+export const buildEncodeTail = ({ width, config, audio = null }) => {
+  const vf = [];
+  if (config?.watermark) {
+    const size = Math.max(16, Math.round(width * 0.018));
+    vf.push(`drawtext=text='${escapeDrawText(config.watermark)}':x=w-tw-24:y=20:fontsize=${size}:fontcolor=white@0.6`);
+  }
+  vf.push("scale=out_color_matrix=bt709:out_range=tv", "format=yuv420p");
+  const tail = ["-vf", vf.join(","), ...BT709_FLAGS, "-movflags", "+faststart", "-shortest"];
+  if (audio) tail.push("-c:a", "aac", "-b:a", config?.audioBitrate || "192k");
+  return tail;
+};
+
 // frames: path pattern with %06d; audio: optional WAV; output: .mp4
 export const encodeVideo = async ({ frames, audio = null, output, fps, width, height, config, signal = null,
                                     logger = console }) => {
   if (!fs.existsSync(frames.replace(/%06d/, "000000"))) throw new Error(`no captured frames at ${frames}`);
-  const vf = [];
-  if (config.watermark) {
-    const size = Math.max(16, Math.round(width * 0.018));
-    vf.push(`drawtext=text='${escapeDrawText(config.watermark)}':x=w-tw-24:y=20:fontsize=${size}:fontcolor=white@0.6`);
-  }
-  vf.push("format=yuv420p");
   const base = ["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-framerate", String(fps), "-i", frames];
   if (audio) base.push("-i", audio);
-  const tail = ["-vf", vf.join(","), "-movflags", "+faststart", "-shortest"];
-  if (audio) tail.push("-c:a", "aac", "-b:a", config.audioBitrate || "192k");
+  const tail = buildEncodeTail({ width, config, audio });
   const errors = [];
   for (const enc of encoderOrder(config.encoder, config.crf, config.preset)) {
     const args = [...base, "-c:v", enc.codec, ...enc.args, ...tail, output];

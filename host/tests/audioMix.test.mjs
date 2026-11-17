@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { loadConfig } from "../config.js";
 import { mixAudio } from "../render/audioMix.js";
-import { configureFfmpeg, probeWav } from "../render/ffmpeg.js";
+import { BT709_FLAGS, buildEncodeTail, configureFfmpeg, probeWav } from "../render/ffmpeg.js";
 import { quietLogger, sineWav, tmpDir } from "./helpers.mjs";
 
 configureFfmpeg();
@@ -74,4 +75,85 @@ test("nothing played means no audio track", async () => {
   const out = await mixAudio({ report: { frames: 30, fps: 30, events: [], cues: {} }, cuesDir: dir,
                                sampleRate: 48000, logger: quietLogger() });
   assert.equal(out, null);
+});
+
+const stepWav = (file, { silentSeconds = 0.367, soundSeconds = 1.633, sampleRate = 48000, freq = 440 } = {}) => {
+  const n0 = Math.round(silentSeconds * sampleRate);
+  const n1 = Math.round(soundSeconds * sampleRate);
+  const total = n0 + n1;
+  const buf = Buffer.alloc(44 + total * 2);
+  buf.write("RIFF", 0); buf.writeUInt32LE(36 + total * 2, 4); buf.write("WAVE", 8);
+  buf.write("fmt ", 12); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(1, 22); buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(sampleRate * 2, 28); buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34);
+  buf.write("data", 36); buf.writeUInt32LE(total * 2, 40);
+  for (let i = n0; i < total; i++) {
+    const s = Math.sin(2 * Math.PI * freq * (i / sampleRate)) * 0.5;
+    buf.writeInt16LE(Math.round(s * 32767), 44 + i * 2);
+  }
+  fs.writeFileSync(file, buf);
+};
+
+test("videoStart=0.367 warmup offsetSeconds trims intro, advances fadeIn, and keeps post-warmup cues aligned", async () => {
+  const dir = tmpDir(), cues = path.join(dir, "cues");
+  fs.mkdirSync(cues);
+  // First 0.367s is silence; audio begins at 0.367s inside cue 1.
+  stepWav(path.join(cues, "1.wav"), { silentSeconds: 0.367, soundSeconds: 1.633 });
+  cue(path.join(cues, "2.wav"), { freq: 660, seconds: 1 });
+  const videoStart = 0.367;
+  const report = {
+    frames: 60, fps: 30,
+    events: [
+      { type: "play", t: 0, offsetSeconds: videoStart, storyT: 0, id: 1, soundId: 1, startSec: 0,
+        loop: false, speed: 1, crossFade: videoStart * 2, isAutoCrossFade: false, forceFadeIn: true,
+        category: 0, cueCategories: ["Bgm"], volume: 1 },
+      { type: "play", t: +(1.367 - videoStart).toFixed(6), storyT: 1.367, id: 2, soundId: 2, startSec: 0,
+        loop: false, speed: 1, category: 2, cueCategories: ["Voice"], volume: 1 },
+    ],
+    cues: {
+      "1": { file: "1.wav", sampleRate: 48000, samples: 96000, channels: 1, categories: ["Bgm"] },
+      "2": { file: "2.wav", sampleRate: 48000, samples: 48000, channels: 1, categories: ["Voice"] },
+    },
+  };
+  const out = await mixAudio({ report, cuesDir: cues, sampleRate: 48000, logger: quietLogger() });
+  assert.ok(out);
+  const b = fs.readFileSync(out.file);
+  const rms = (from, to) => {
+    let sum = 0, n = 0;
+    for (let f = from; f < to; f++) {
+      const v = b.readInt16LE(44 + f * 4);
+      sum += v * v;
+      n++;
+    }
+    return Math.sqrt(sum / Math.max(1, n));
+  };
+  // Trimmed warmup sound is already active at frame 0 (and half-faded at t=0 rather than silent).
+  assert.ok(rms(0, 2400) > 1000, `expected non-zero warmup-trimmed output at t=0, got ${rms(0, 2400)}`);
+  // Post-warmup cue plays at exact video time 1.000s (frame 48000) after shifting by videoStart=0.367s.
+  assert.ok(rms(48000, 50400) > rms(45600, 48000));
+});
+
+test("ffmpeg buildEncodeTail sets BT.709 color tags and config render presets choose resolution & quality 98", () => {
+  const args = buildEncodeTail({ videoIn: "frames", out: "out.mp4", fps: 30, preset: "medium", crf: 18,
+                                 audioIn: null, faststart: true });
+  const vf = args[args.indexOf("-vf") + 1];
+  assert.match(vf, /out_color_matrix=bt709:out_range=tv,format=yuv420p/);
+  for (let i = 0; i < BT709_FLAGS.length; i += 2) {
+    const idx = args.indexOf(BT709_FLAGS[i]);
+    assert.ok(idx >= 0 && args[idx + 1] === BT709_FLAGS[i + 1]);
+  }
+  const stdDir = tmpDir("ournotes-cfg-std-");
+  const stdCfg = loadConfig({ file: path.join(stdDir, "none.yaml"), env: {}, logger: quietLogger() });
+  assert.equal(stdCfg.video.width, 1300);
+  assert.equal(stdCfg.video.height, 600);
+  assert.equal(stdCfg.video.jpegQuality, 98);
+  assert.equal(stdCfg.render.preset, "standard");
+
+  const bestFile = path.join(stdDir, "best.yaml");
+  fs.writeFileSync(bestFile, "render:\n  preset: best\n");
+  const bestCfg = loadConfig({ file: bestFile, env: {}, logger: quietLogger() });
+  assert.equal(bestCfg.render.preset, "best");
+  assert.equal(bestCfg.video.width, 1920);
+  assert.equal(bestCfg.video.height, 886);
+  assert.equal(bestCfg.video.jpegQuality, 98);
 });

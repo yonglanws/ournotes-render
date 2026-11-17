@@ -3,7 +3,9 @@
 // writer, TTS, site-story compile and the site engine render all work from a downloaded site.
 import fs from "node:fs";
 import path from "node:path";
-import { readSiteCatalog } from "../tools/site-story.mjs";
+import { ensureOfficialAssetBundles, readSiteCatalog } from "../tools/site-story.mjs";
+
+export { ensureOfficialAssetBundles };
 
 // The site's model ids carry a character key (`adv_live2d_nagi_018_...`). The names come from the character sheets
 // loaded by `story.personaDirs`; the MyGO/Ave Mujica names below keep the base tutorial usable without any sheet.
@@ -91,6 +93,8 @@ export const catalogFromSite = (site, baseRel, language = "", { personas = [] } 
   return { manifest: baseRel, language: c.lang, languages: c.base.languages, title: "",
            stages: c.base.stages, music: c.base.music,
            sounds: (c.base.sounds || []).map((s) => ({ cue: s.cue, label: s.label, name: s.name, use: s.use })),
+           frames: c.base.frames || [], postEffects: c.base.postEffects || [],
+           effects: c.base.effects || [], stills: c.base.stills || [], transitions: c.base.transitions || [],
            models, font: "sans" };
 };
 
@@ -211,5 +215,9 @@ export class SiteFormatCatalog {
   async catalog({ manifest = "" } = {}) {
     const baseRel = this.pickBase(manifest);
     return catalogFromSite(this.dir, baseRel, this.language, { personas: this.personas });
+  }
+
+  async ensureOfficialAssetBundles(options = {}) {
+    return ensureOfficialAssetBundles({ site: this.dir, ...options });
   }
 }
