@@ -449,3 +449,18 @@ test("unclosed DoF, Role, Tilt, Brightness, Frame, PostEffect, CameraShake and L
     assert.ok(cmds.has(expectedCmd), `missing unclosedEffect for ${expectedCmd}`);
   }
 });
+
+test("speakerOutsideCentralBand accounts for MoveToDirection and updated Focus.PositionType", () => {
+  const spreadClose = compiledOf({
+    ...scene([
+      { scene: "garden", positions: { a: "left", b: "right" } },
+      { say: "a", text: "先两个人。" },
+      { positions: { a: "far-left", c: "center", b: "far-right" } },
+      { say: "b", text: "我也加入了！", focus: "b", camera: "close", focusTargetHead: true },
+      { say: "a", text: "我也特写！", focus: "a", camera: "close", focusTargetHead: true },
+    ]),
+    cast: { a: { model: "m_a", name: "Ann" }, b: { model: "m_b", name: "Bea" }, c: { model: "m_a", name: "Cat" } },
+  });
+  const bandFailures = auditCompiledStory(spreadClose).failures.filter((f) => f.code === "speakerOutsideCentralBand");
+  assert.deepEqual(bandFailures, []);
+});

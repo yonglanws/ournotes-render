@@ -833,11 +833,12 @@ const ORPHAN_MODIFIERS = {
   cameraShake: ["cameraShakeFade", "cameraShakeStrength"],
 };
 const CAMERA_OP_KEYS = ["track", "pedestal", "pan", "dof", "zoom", "role", "tilt"];
+const hasNonEmptyField = (v) => v !== undefined && v !== null && v !== "";
 const pruneOrphanModifiers = (beat, { allowFocusDuration = false } = {}) => {
   const dropped = [];
-  const hasTrack = beat.track !== undefined || (isObj(beat.camera) && beat.camera.track !== undefined);
-  const hasFocus = allowFocusDuration || beat.focus !== undefined || beat.camera !== undefined;
-  const hasAnyCameraOp = hasFocus || CAMERA_OP_KEYS.some((k) => beat[k] !== undefined && beat[k] !== null && beat[k] !== "");
+  const hasTrack = hasNonEmptyField(beat.track) || (isObj(beat.camera) && hasNonEmptyField(beat.camera.track));
+  const hasFocus = allowFocusDuration || hasNonEmptyField(beat.focus) || hasNonEmptyField(beat.camera);
+  const hasAnyCameraOp = hasFocus || CAMERA_OP_KEYS.some((k) => hasNonEmptyField(beat[k]));
   for (const field of EXTRA_DIRECTION_KEYS) {
     if (field in beat && (beat[field] === null || beat[field] === "")) {
       delete beat[field];
@@ -928,10 +929,13 @@ const focusedCast = (focus, positions) => {
 export const enforceGroupShots = (beats, maxOnStage = 3, warnings = []) => {
   const limit = Math.max(2, Math.min(3, Math.round(Number(maxOnStage) || 3)));
   if (limit < 3 || !Array.isArray(beats)) return { shotFixes: 0, zoomFixes: 0 };
-  let stageSize = 0, positions = {}, shotFixes = 0, zoomFixes = 0;
+  let stageSize = 0, positions = {}, shotFixes = 0, zoomFixes = 0, inSingleClose = false;
   const dropZoom = (beat) => {
     delete beat.zoom;
     delete beat.zoomDuration;
+    pruneOrphanModifiers(beat, {
+      allowFocusDuration: isObj(beat.positions) || "scene" in beat || hasNonEmptyField(beat.camera) || hasNonEmptyField(beat.focus),
+    });
     zoomFixes++;
   };
   for (const beat of beats) {
@@ -939,8 +943,12 @@ export const enforceGroupShots = (beats, maxOnStage = 3, warnings = []) => {
     if (isObj(beat.positions)) {
       stageSize = Object.keys(beat.positions).length;
       positions = beat.positions;
+      inSingleClose = false;
     }
-    if (stageSize < 3) continue;
+    if (stageSize < 3) {
+      inSingleClose = false;
+      continue;
+    }
     const distance = cameraNumber(beat.camera);
     if (isObj(beat.positions) && beat.camera === undefined) {
       beat.camera = "far";
@@ -956,11 +964,13 @@ export const enforceGroupShots = (beats, maxOnStage = 3, warnings = []) => {
       if (!target && beat.say && Object.prototype.hasOwnProperty.call(positions, beat.say)) target = beat.say;
       if (target) {
         if (beat.focus !== target) beat.focus = target;
+        inSingleClose = true;
         continue;
       }
       setCameraDistance(beat, "far");
       beat.focus = 5;
       if (beat.track !== undefined) beat.track = 0;
+      inSingleClose = false;
       shotFixes++;
       if (Number(beat.zoom) > 1) dropZoom(beat);
       continue;
@@ -970,12 +980,16 @@ export const enforceGroupShots = (beats, maxOnStage = 3, warnings = []) => {
       setCameraDistance(beat, "far");
       beat.focus = 5;
       if (beat.track !== undefined) beat.track = 0;
+      inSingleClose = false;
       shotFixes++;
       if (Number(beat.zoom) > 1) dropZoom(beat);
       continue;
     }
-    // Already far: a group push-in still crops the two outer people.
-    if (Number(beat.zoom) > 1) dropZoom(beat);
+    if (distance === CAMERA_NUMBER.far || beat.focus === 5 || beat.focus === "center") {
+      inSingleClose = false;
+    }
+    // Carry-over single-person close-up allows slow push-in without repeating camera/focus; group shots crop outer cast.
+    if (!inSingleClose && Number(beat.zoom) > 1) dropZoom(beat);
   }
   if (shotFixes) warnings.push({ code: "groupCamera",
     message: `三人同台 ${shotFixes} 处镜头改用 far 群像（单人特写除外）` });

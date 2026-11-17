@@ -380,9 +380,10 @@ const auditSceneSemantics = (rows, episode, script, failures) => {
       if (row.TargetName && onStage.has(String(row.TargetName)) && (focus.distance >= 4 || Math.abs(trackOffset) > 1e-6)) {
         const char = onStage.get(String(row.TargetName));
         const charX = (SLOT_WORLD_X[char.slot] ?? 0) + char.x;
-        const camBaseX = (focus.targetName && onStage.has(focus.targetName)
-          ? SLOT_WORLD_X[onStage.get(focus.targetName).slot]
-          : SLOT_WORLD_X[focus.posType]) ?? 0;
+        const focusTarget = focus.targetName && onStage.has(focus.targetName) ? onStage.get(focus.targetName) : null;
+        const camBaseX = (focus.posType in SLOT_WORLD_X
+          ? SLOT_WORLD_X[focus.posType]
+          : (focusTarget ? (SLOT_WORLD_X[focusTarget.slot] ?? 0) + focusTarget.x : 0));
         const camX = camBaseX + trackOffset;
         const distZoom = DIST_ZOOM[focus.distance] ?? 1.4;
         const fov = 39.6 / (distZoom * zoomMul);

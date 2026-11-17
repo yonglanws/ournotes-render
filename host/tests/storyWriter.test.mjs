@@ -5,7 +5,7 @@ import { parseScript } from "../../scripts/lib/story-author/script.js";
 import { generateScript, prepareScript } from "../ai/storyWriter.js";
 import { LLMError } from "../ai/llm.js";
 import { directionBudgetFor } from "../ai/official-targets.js";
-import { buildDialogueMessages, balanceLineBreaks, buildStoryboardMessages, mergeStagedScript, normalizeDialogue, onStageProblems, spreadPositions, countDialogueChars } from "../ai/staged.js";
+import { buildDialogueMessages, balanceLineBreaks, buildStoryboardMessages, enforceGroupShots, mergeStagedScript, normalizeDialogue, onStageProblems, spreadPositions, countDialogueChars } from "../ai/staged.js";
 import { quietLogger } from "./helpers.mjs";
 
 const CATALOG = {
@@ -1298,4 +1298,27 @@ test("Wave 1/2 DSL fields pass through mergeStagedScript and prepareScript clean
   const preppedL1 = prepped.doc.beats.find((b) => b.say === "a" && b.text === "……嗯。");
   assert.equal(preppedL1.zoom, 1.06);
   assert.equal(preppedL1.zoomDuration, 3.5);
+});
+
+test("enforceGroupShots drops orphan ease when stripping group zoom and preserves zoom on carried single-person close-up", () => {
+  const beats = [
+    { scene: "stage_a", music: "bgm_a", camera: "far", focus: 5, positions: { a: "far-left", b: "center", c: "far-right" } },
+    { say: "a", text: "大家先听我说。", zoom: 1.06, zoomDuration: 3, ease: "OutSine", cameraDelay: 0.2 },
+    { say: "b", text: "……为什么偏偏这样。", focus: "b", camera: "close", focusTargetHead: true },
+    { say: "b", text: "总觉得一说出来就会散掉。", zoom: 1.06, zoomDuration: 3, ease: "OutSine", bgm: "stop" },
+    { say: "c", text: "退回全景。", focus: 5, camera: "far" },
+  ];
+  const warnings = [];
+  enforceGroupShots(beats, 3, warnings);
+  assert.equal(beats[1].zoom, undefined, "group zoom push-in stripped");
+  assert.equal(beats[1].ease, undefined, "orphan ease cleaned when zoom stripped");
+  assert.equal(beats[1].cameraDelay, undefined, "orphan cameraDelay cleaned when zoom stripped");
+  assert.equal(beats[3].zoom, 1.06, "follow-up beat inside single close-up keeps push-in zoom");
+  assert.equal(beats[3].ease, "OutSine", "follow-up beat keeps ease alongside zoom");
+  const parsed = parseScript({
+    format: "ournotes.story-script/1", base: "stories/1.json", language: "zh-Hans", title: "群像测试",
+    cast: { a: { model: "m_a", name: "灯" }, b: { model: "m_b", name: "爽世" }, c: { model: "m_a", name: "爱音" } },
+    beats,
+  });
+  assert.deepEqual(parsed.errors, [], `unexpected parse errors: ${JSON.stringify(parsed.errors)}`);
 });
