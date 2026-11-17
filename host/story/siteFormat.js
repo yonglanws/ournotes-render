@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureOfficialAssetBundles, readSiteCatalog } from "../tools/site-story.mjs";
+import { frameChoices, postEffectChoices, soundChoices, transitionChoices } from "./resourceGuide.js";
 
 export { ensureOfficialAssetBundles };
 
@@ -90,11 +91,16 @@ export const catalogFromSite = (site, baseRel, language = "", { personas = [] } 
                   defaultExpression: a.defaultExpression, actionsKnown: true });
   }
   models.sort((a, b) => Number(baseIds.has(b.id)) - Number(baseIds.has(a.id)));
+  const sounds = (c.base.sounds || []).map((s) => ({ cue: s.cue, label: s.label, name: s.name, use: s.use }));
   return { manifest: baseRel, language: c.lang, languages: c.base.languages, title: "",
            stages: c.base.stages, music: c.base.music,
-           sounds: (c.base.sounds || []).map((s) => ({ cue: s.cue, label: s.label, name: s.name, use: s.use })),
+           sounds,
+           soundChoices: soundChoices(sounds, c.guide),
            frames: c.base.frames || [], postEffects: c.base.postEffects || [],
+           frameChoices: frameChoices(c.base.frames || [], c.guide),
+           postEffectChoices: postEffectChoices(c.base.postEffects || [], c.guide),
            effects: c.base.effects || [], stills: c.base.stills || [], transitions: c.base.transitions || [],
+           transitionChoices: transitionChoices(c.base.transitions || [], c.guide),
            models, font: "sans" };
 };
 

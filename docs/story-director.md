@@ -264,47 +264,46 @@ stage：先两人对话，`positions` 引入第三人，再让一人退场、最
 
 | beat | 字段 | 说明 |
 | --- | --- | --- |
-| `scene` | `scene`、`music`、`location`、`camera`、`focus`、`track`、`focusDuration`、`trackDuration`、`se`、`seDuration`、`seDelay`、`seStop`、`positions` | 换舞台。第二个 scene 起会先 `FadeOut`，清空舞台，再 `FadeIn`。连续对话不要反复用。 |
-| `positions` | `positions`、`camera`、`focus`、`track`、`focusDuration`、`trackDuration`、`motionFadeIn`、`motionWait` | 改变站位；未列出的角色退场，新位置的角色淡入。用来换组。 |
-| `say` | `say`、`text`、`motion`、`expression`、`lookAt`、`focus`、`camera`、`track`、`zoom`、`zoomDuration`、`focusDuration`、`trackDuration`、`pedestal`、`pedestalDuration`、`pan`、`panDuration`、`panFocusSlide`、`dof`、`dofDuration`、`dofLayers`、`look`、`lookY`、`lookDuration`、`se`、`seDuration`、`seDelay`、`seStop`、`motionFadeIn`、`motionWait`、`actions` | 一句台词。动作/表情在台词开始前执行；`lookAt` 让说话者看向目标；`actions` 在台词前或台词中执行。 |
-| `narrate` | `narrate`、`focus`、`camera`、`track`、`zoom`、`zoomDuration`、`focusDuration`、`trackDuration`、`pedestal`、`pedestalDuration`、`pan`、`panDuration`、`panFocusSlide`、`dof`、`dofDuration`、`dofLayers`、`actions` | 无说话者的台词；`actions` 必须写 `cast`。 |
-| `camera` | `camera`、`focus`、`track`、`zoom`、`zoomDuration`、`cameraDuration`、`focusDuration`、`trackDuration`、`pedestal`、`pedestalDuration`、`pan`、`panDuration`、`panFocusSlide`、`dof`、`dofDuration`、`dofLayers`、`se`、`seDuration`、`seDelay`、`seStop`、`duration` | 只移动镜头，不改变站位；`cameraDuration` 是各运镜的统一时长，`duration` 是旧别名。 |
-| `fade` | `fade`（`out`/`in`）、`duration` | 黑场转场，只用于时间/地点跳跃。 |
-| `pause` | `pause`（秒） | 无台词留白，编译成 `Delay`；建议 0.1~0.5 秒。 |
-| `action` | `action`、`motion`、`expression`、`lookAt`、`look`、`lookY`、`lookDuration`、`dof`、`dofDuration`、`dofLayers`、`se`、`seDuration`、`seDelay`、`seStop`、`motionFadeIn`、`motionWait`、`duration` | 没有台词的反应镜头；`duration` 会追加一个 `Delay`。 |
+| `scene` | `scene`、`music`、`bgmFade`、`bgmVolume`、`bgmStart`、`location`、`positions`、`transition`、`transitionDuration`、`fadeRule`、`fadeColor`、`duration`、`camera`、`focus`、`track`、`ease`、`focusSharp`、`focusTargetHead`、`stageEnv`、`frame`/`postEffect`/`brightness`/`talkWindow`、`se` | 换舞台。支持 `transition: "dissolve"`（交叉叠化 `0.8~2.0` 秒）或 `fadeRule`（`0001`~`0005`）/ `fadeColor` 转场；第二个 `scene` 前自动收回上一场的效果与视线。 |
+| `positions` | `positions`、`camera`、`focus`、`track`、`focusDuration`、`trackDuration`、`moveDuration`、`ease`、`cameraDelay`、`focusSharp`、`focusTargetHead`、`dof`、`dofDuration`、`dofLayers`、`dofTarget`、`motionFadeIn`、`motionWait`、`hideTalk` | 改变站位（值可写位置字符串或 `{ "at", "dx", "dy", "dz", "motion", "expression" }`）；未列出角色退场，新角色进场。 |
+| `say` | `say`、`text`、`thought`、`ignoreLipSync`、`hideTalk`、`motion`、`expression`、`lookAt`、`focus`、`camera`、`track`、`zoom`、`zoomDuration`、`focusDuration`、`trackDuration`、`pedestal`、`pedestalDuration`、`pan`、`panDuration`、`panFocusSlide`、`dof`、`dofDuration`、`dofLayers`、`dofTarget`、`ease`、`cameraDelay`、`focusSharp`、`focusTargetHead`、`role`、`roleDuration`、`tilt`、`tiltDuration`、`look`、`lookY`、`lookDuration`、`move`、`angle`、`bgm`、`bgmFade`、`bgmVolume`、`bgmStart`、`frame`/`frameAction`/`frameDuration`/`frameStop`、`postEffect`/`postEffectDuration`/`postEffectStop`、`brightness`、`shake`、`cameraShake`、`flash`、`talkWindow`、`se`/`seDuration`/`seDelay`/`seStop`、`motionFadeIn`、`motionWait`、`actions` | 一句台词。纯省略号或设 `thought: true` / `ignoreLipSync: true` 时自动编译 `IgnoreLipSync: 1`。`look`/`lookAt` 支持 `"stop"` 收回。 |
+| `narrate` | `narrate`、`thought`、`ignoreLipSync`、`hideTalk`、`focus`、`camera`、`track`、`zoom`、`zoomDuration`、`pedestal`、`pan`、`dof`、`dofTarget`、`ease`、`cameraDelay`、`focusSharp`、`focusTargetHead`、`role`、`tilt`、`talkWindow`、`actions` | 无说话者的台词；`actions` 必须写 `cast`。 |
+| `camera` | `camera`、`focus`、`track`、`zoom`、`zoomDuration`、`cameraDuration`、`focusDuration`、`trackDuration`、`pedestal`、`pedestalDuration`、`pan`、`panDuration`、`panFocusSlide`、`dof`、`dofDuration`、`dofLayers`、`dofTarget`、`ease`、`cameraDelay`、`focusSharp`、`focusTargetHead`、`role`、`roleDuration`、`tilt`、`tiltDuration`、`se`、`duration`、`hideTalk` | 只移动镜头，不改变站位；`cameraDuration` 是各运镜的统一时长，`duration` 是旧别名。 |
+| `fade` | `fade`（`out`/`in`）、`duration`、`fadeRule`、`fadeColor`、`hideTalk` | 黑/白屏或遮罩规则转场（`0001`~`0005`，`#000000`/`#FFFFFF`），用于时间/地点跳跃。 |
+| `pause` | `pause`（秒）、`hideTalk` | 无台词留白，编译成 `Delay`；`pause >= 0.6` 自动先关闭对话框。 |
+| `action` | `action`、`motion`、`expression`、`lookAt`、`look`、`lookY`、`lookDuration`、`move`、`angle`、`dof`、`dofTarget`、`se`、`motionFadeIn`、`motionWait`、`duration`、`hideTalk` | 没有台词的反应镜头；`duration` 会追加一个 `Delay`。 |
+| 特效与声音独立 beat | `move`、`angle`、`bgm`/`bgmFade`/`bgmVolume`、`stageEnv`、`frame`/`frameStop`、`postEffect`/`postEffectStop`、`brightness`、`shake`、`cameraShake`、`flash`、`talkWindow`、`se`/`seStop`、`still`、`subtitles`、`hideTalk` | 走位/蹲起（`MoveToDirection`/`MoveToDown` 等）、倾斜（`Angle`）、音乐切换、遮罩与滤镜、压暗、UI/画面震动、闪光、对话框切换、CG 与屏幕字幕；所有开关效果会在切场或剧终时自动收回。 |
 
-`camera` 可以写 `near` / `middle` / `far` / `close` / `very-close`，也可以写
+`camera` 可以写 `full` / `near` / `middle` / `far` / `close` / `very-close` / `macro`，也可以写
 `{ "distance": "close", "focus": 2, "track": 0.4 }`。它们对应官方的 `CameraDistance` 和 focus data 的变焦：
 
 | 名字 | CameraDistance | 视场 | 用法 |
 |---|---:|---:|---|
-| `near` | 1 | 1.2× | 最广的全景；开场/收尾，全场 0~1 次 |
+| `full` | 0 | 1.0× | 最广全境开场 / 全景建筑空镜 |
+| `near` | 1 | 1.2× | 宽全景；开场/收尾，全场 0~1 次 |
 | `middle` | 2 | 1.4× | 双人中景，默认 |
 | `far` | 3 | 1.8× | 三人群像 / 紧中景 |
-| `close` | 4 | 2.8× | 情绪近景；约占 22.9% 的有文本行，1~2 句后回到 `middle` |
+| `close` | 4 | 2.8× | 情绪近景；约占 22.9% 的有文本行，1~3 句内回到 `middle`/`far`（除非直接收场） |
 | `very-close` | 5 | 4× | 大特写，最多 1 次 |
+| `macro` | 6 | 6× | 极近眼部/物品特写 |
 
 `focus` 是站在台上的 cast id、位置名（`far-left` / `left` / `center` / `right` / `far-right`），或 1~9 的构图点：
-1/3/5/7/9 是站位，2/4/6/8 是两人中间的构图点。目标是角色时编译成该角色站位的 `PositionType`，和官方单人近景
-一致；官方少数同时写 `PositionType` + `TargetName` 的行是“两人构图、头部跟某一角色”的特殊取景，本格式不暴露
-这个组合。`track` 编译成官方 `Track` 行，表示镜头相对焦点的横向偏移（-4~4，0 为正对焦点）。
+1/3/5/7/9 是站位，2/4/6/8 是两人中间的构图点。设置 `focusTargetHead: true` 会将 `Focus` 的 `PositionType` 与目标角色 `TargetName` 一起输出，把垂直焦点锁在角色头部高度（适合身高差、蹲起及单人近景）。`track` 编译成官方 `Track` 行，表示镜头相对焦点的横向偏移（-4~4，`close` 自动限幅 ±0.25、`very-close` 以上强制 0）。
 
 镜头切换的时长按官方样本自动决定：**推近是硬切（无 `Duration`）**，**拉回中景/群像缓推 1.2 秒**，同距离横移
 0.5 秒（近景之间横移仍硬切）。`focusDuration`（0~20 秒，0 = 硬切）优先，其次是 camera beat 的
 `cameraDuration`（0~20 秒，旧字段 `duration` 是它的别名），最后才是自动值；`trackDuration` 默认跟随该 beat 的
-Focus 时长。
+Focus 时长；`ease`（`OutQuad` / `OutSine` / `Linear` / `OutQuint` / `InOutSine` / `InOutQuad`）可显式指定，长时长 `Zoom`/`PanV2` 默认使用平滑缓动，且 `PanV2` 等运镜 `IsNoWait: 1` 不阻塞台词。
 
 `zoom` 是一个可选的慢推/慢拉，编译成官方 `Zoom` 行：`zoom: 0.7~2.5`（官方常见 0.9/1.1/1.2/1.5），
 `zoomDuration` 0.2~20 秒，省略时 1.5 秒（camera beat 先取 `cameraDuration`）。一个机位只写一次，一场约 2~5
 次；不写就保持静止。`zoom` 在 `Focus` 之后执行，所以要先写 `focus`/`camera` 再写 `zoom`。
 
-扩展运镜与声音字段编译成独立的官方行，顺序为 `Pedestal` → `PanV2` → `DoF` → `Zoom` → `Se` → `Look`：
-`pedestal`（-4~5）、`pan`/`panFocusSlide`（-30~30 / 0~1）、`dof`/`dofLayers`（0~1，0 或 2 层）的 duration
-默认 1.5 秒；`look`/`lookY`（-1~1）与 `lookAt` 同一 beat 二选一；`se` 只能用 base story 声音清单里已有的 cue，
-`seStop` 与 `se` 互斥；`motionFadeIn`（-1~2）和 `motionWait` 写在对应的 `Motion` 行上。角色 `DoF` 必须带台上目标：
-say 用说话者，action 用动作角色，camera/narrate 用 focus 指向的角色/位置或当前镜头附近的台上角色；`dofLayers: 0`
-是纯背景虚化，不需要目标。`panDuration`/`panFocusSlide` 需要 `pan`，`dofDuration`/`dofLayers` 需要 `dof`，
-`lookY`/`lookDuration` 需要 `look`，`trackDuration` 需要 `track`，`focusDuration` 需要 `focus` 或 `camera`。
+扩展运镜与声音字段编译成独立的官方行，顺序为 `Pedestal` → `PanV2` → `Role` → `Tilt` → `DoF` → `Zoom` → `Se` → `Look`：
+`pedestal`（-4~5）、`pan`/`panFocusSlide`（-30~30 / 0~1）、`role`（-30~30）、`tilt`（-15~15）、`dof`/`dofLayers`（0~1，0 或 2 层）的 duration 默认 1.5 秒；
+**`DoF` 绝不能虚化当前聚焦的说话者**（背景 `dofLayers: 0` 无需目标；角色 `dofLayers: 2` 必须显式写 `dofTarget` 指向非说话者）。
+`look`/`lookY`（-1~1）与 `lookAt` 同一 beat 二选一，均可用 `"stop"` 收回；`se` 只能用声音清单里已有的 cue，
+`seStop` 与 `se` 互斥；`motionFadeIn`（-1~2）和 `motionWait` 写在对应的 `Motion` 行上。静态双人对话不强制 `PanV2`/`Pedestal` 最低配额，只在情绪转折、蹲起、环绕多句倾诉、闪回或惊呼等有明确剧情动机时使用，且所有开关型状态必须在场景切换与剧终前成对闭合。
 
 动作和表情行编译时带 `MotionFadeIn: -1`：播放器使用动作自带的淡入（MyGO 动作数据里是 1 秒），换动作时从当前
 姿势交叉淡入，不会突然跳到新动作第一帧。缺少这个字段时游戏按 0 秒处理，这正是自行拼 `Motion` 行时动作看起来
@@ -386,8 +385,7 @@ say 用说话者，action 用动作角色，camera/narrate 用 focus 指向的�
 - 每句只保留 1 个听者反应；独立 `Expression` 最多保留 1 条（官方约 0.07 条/集，默认 0），多出来的在合并时裁掉并记 warning。
 - 旁白（`narrate`）没有说话者：分镜只保留 `focus`/`camera`/`track`/`zoom`/运镜字段和 `actions`；`motion`、`expression`、`lookAt`、`look`、`se`、`motionFadeIn`、`motionWait` 等发言人字段在合并时丢弃并记 `narrateField` warning。
 - 非 line beat 按 `scene`/`positions`/`camera`/`fade`/`pause`/`action` 的类型只保留该类型允许的字段；多写的已知字段丢弃并记 `storyboardField` warning。
-- 站位在合并后统一归一化：两人改成 `left`/`right`（官方两人镜头的 3/7 站位）；三人改成 `far-left`/`center`/`far-right`，并改成
-  `camera: far`、`focus: 5`、`track: 0`。模型写了 `center+right` 这种会叠人的站位也会被纠正。
+- 站位在合并后按**分段同台人数**归一化：仅 2 人同台段落保持 `left`/`right`（3/7 站位），只有 3 人同时在场的那一段落才展开成 `far-left`/`center`/`far-right` 并改用 `camera: far`、`focus: 5`、`track: 0`（保留 `dz` 景深错位）；1 人退场后自动收窄回 `left`/`right`。模型写了 `center+right` 这种会叠人的站位也会被纠正。
 - 第一条不是 `scene` 时补一个默认 `scene`：1 人站 `center`，2 人站 `left`/`right`，3 人站
   `far-left`/`center`/`far-right`。
 
@@ -436,7 +434,7 @@ node host/tools/render-story.mjs --site resources/site --story stories/90001.jso
 
 ## 能力边界
 
-- 只暴露经命令审计与抽帧验证的白名单：`Focus`、`Track`、`Zoom`、`Pedestal`、`PanV2`、`DoF`、`Look`/`LookTarget`、`Se`、`Motion`、`Expression`、`In`/`Out`、`Stage`、`Bgm`、`FadeIn`/`FadeOut`、`Location`、`Talk`、`Delay` 以及编译所需的 `Character`。对应脚本字段见 [story-author.md](story-author.md#camera-gaze-and-sound-fields)（`cameraDuration`、`focusDuration`、`trackDuration`、`pedestal`、`pan`、`dof`、`zoom`、`look`、`se`、`motionFadeIn` 等）。`MoveToDirection`、`Angle`/`Tilt`、`Brightness`/`PostEffect`、`Shake`/`CameraShake`、`Role` 等不在本轮白名单。
+- 只暴露经命令审计与抽帧验证的白名单：`Focus`（含 `TargetName` 头部对焦与 `Sharp`）、`Track`、`Zoom`、`Pedestal`、`PanV2`、`Role`、`Tilt`、`DoF`（非说话者/背景虚化校验）、`Look`/`LookTarget`（含 `Stop` 清除）、`Se`、`SoundVolume`、`Motion`、`Expression`、`In`/`Out`、`MoveToDirection`/`MoveToLeft/Right/Up/Down/Forward/Back`、`Angle`、`Stage`、`StageEnv`、`Bgm`、`FadeIn`/`FadeOut`（含 `fadeRule`/`fadeColor`）、`Frame`、`PostEffect`、`Brightness`、`Shake`（UI `[9]` 与舞台）、`CameraShake`、`Flash`、`TalkWindow`、`Still`、`Subtitles`、`Location`、`Talk`（含 `IgnoreLipSync: 1`）、`Delay` 以及编译所需的 `Character`；所有开关型特效、视线与对话模式在切幕与剧终自动闭合。
 - 不支持逐参数面部曲线；表情必须使用模型自带的 expression。
 - 站点格式路径的 TTS 会写成站点内的真实 WAV cue；情绪支持依赖 `tts.emotion` 与角色情绪参考音频。没有情绪参考音频时，只能用语速/温度做有限的语气差异。
 - AI 负责“写”，不保证文学质量；格式、名称、站位和镜头目标由校验器兜底。

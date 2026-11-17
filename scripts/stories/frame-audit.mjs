@@ -18,8 +18,9 @@ import { fileURLToPath } from "node:url";
 import { validateFfmpeg } from "../../host/render/ffmpeg.js";
 
 export const CAMERA_COMMANDS = Object.freeze(["Focus", "Zoom", "Pedestal", "PanV2", "DoF", "Track"]);
+export const EFFECT_CHECKPOINT_COMMANDS = Object.freeze(["MoveToDirection", "Frame", "PostEffect", "Shake"]);
 export const CHECKPOINT_COMMANDS = Object.freeze([
-  ...CAMERA_COMMANDS, "Se", "Motion", "LookTarget", "In", "Out",
+  ...CAMERA_COMMANDS, ...EFFECT_CHECKPOINT_COMMANDS, "Se", "Motion", "LookTarget", "In", "Out",
 ]);
 export const FRAME_BEFORE_SECONDS = 0.15;
 export const FRAME_AFTER_SECONDS = 0.45;
@@ -29,15 +30,17 @@ export const RAW_HEIGHT = 90;
 export const CHANGE_THRESHOLD = 1.0;
 
 const CAMERA = new Set(CAMERA_COMMANDS);
+const EFFECT = new Set(EFFECT_CHECKPOINT_COMMANDS);
 const CHECKPOINT = new Set(CHECKPOINT_COMMANDS);
 const CAMERA_ORDER = ["Focus", "Zoom", "Pedestal", "PanV2", "DoF", "Track"];
+const EFFECT_ORDER = ["MoveToDirection", "Frame", "PostEffect", "Shake"];
 const OTHER_ORDER = ["Se", "Motion", "LookTarget", "In", "Out"];
 // Rows that can change pixels during a checkpoint window. Se is audio-only; Delay/Bgm/Character do not draw.
 const VISUAL_COMMANDS = new Set([
-  ...CAMERA_COMMANDS, "Motion", "Expression", "LookTarget", "Look", "In", "Out", "Talk", "Location", "Stage",
-  "FadeIn", "FadeOut", "Shake", "Brightness", "Alpha", "Still", "Video", "Effect", "PostEffect", "Flash",
-  "CameraRotate", "Angle", "MoveToRight", "MoveToLeft", "MoveToUp", "MoveToDown", "MoveToForward", "MoveToBack",
-  "MoveToDirection",
+  ...CAMERA_COMMANDS, ...EFFECT_CHECKPOINT_COMMANDS, "Motion", "Expression", "LookTarget", "Look", "In", "Out", "Talk",
+  "Location", "Stage", "FadeIn", "FadeOut", "Brightness", "Alpha", "Still", "Video", "Effect", "Frame",
+  "Flash", "CameraRotate", "Angle", "MoveToRight", "MoveToLeft", "MoveToUp", "MoveToDown", "MoveToForward",
+  "MoveToBack",
 ]);
 const PNG_EXT = ".png";
 const SHA256 = /^[0-9a-f]{64}$/i;
@@ -83,8 +86,11 @@ export const frameCheckpoints = (episode, timeline, { settleSeconds = DEFAULT_SE
   }
   starts.sort((a, b) => a - b);
   const candidates = new Map();
+  let focusDistance = 2;
   for (const row of rowsOf(episode)) {
-    if (!row || typeof row !== "object" || !CHECKPOINT.has(row.cmd)) continue;
+    if (!row || typeof row !== "object") continue;
+    if (row.cmd === "Focus") focusDistance = number(row.CameraDistance);
+    if (!CHECKPOINT.has(row.cmd)) continue;
     const at = times.get(row.i);
     if (!at || at.cmd !== row.cmd) continue;
     const commandSeconds = round(at.seconds);
@@ -92,11 +98,19 @@ export const frameCheckpoints = (episode, timeline, { settleSeconds = DEFAULT_SE
     const beforeSeconds = round(Math.max(0, effectSeconds - FRAME_BEFORE_SECONDS));
     // The settle must cover the whole before window, not just the command's start.
     if (beforeSeconds < settleSeconds) continue;
+    // Shake decays to 0 by Duration: sample mid-shake so brief UI shakes register peak displacement.
+    const desiredAfter = row.cmd === "Shake"
+      ? Math.min(FRAME_AFTER_SECONDS, Math.max(0.1, number(row.Duration) * 0.4))
+      : FRAME_AFTER_SECONDS;
     // Never let the after frame sample the next command's effect: cap at the next start (one frame earlier).
     const nextStart = starts.find((value) => value > effectSeconds + 0.05);
-    const cappedAfter = nextStart == null ? effectSeconds + FRAME_AFTER_SECONDS
-      : Math.min(effectSeconds + FRAME_AFTER_SECONDS, nextStart - 0.04);
+    const cappedAfter = nextStart == null ? effectSeconds + desiredAfter
+      : Math.min(effectSeconds + desiredAfter, nextStart - 0.04);
     const afterSeconds = round(Math.max(effectSeconds + 0.04, cappedAfter));
+    const layers = Array.isArray(row.CanvasLayers) ? row.CanvasLayers.map(Number).filter(Number.isFinite) : [];
+    const dofVal = row.cmd === "DoF" ? number(row.Parameter1) : 0;
+    const isBgDof = row.cmd === "DoF" && dofVal > 0 && !row.TargetName && !row.PositionType &&
+      (layers.length === 0 || layers.includes(0));
     const check = {
       i: row.i,
       cmd: row.cmd,
@@ -107,8 +121,11 @@ export const frameCheckpoints = (episode, timeline, { settleSeconds = DEFAULT_SE
       duration: round(number(row.Duration)),
       lowerBound: false,
       clamped: false,
-      afterCapped: afterSeconds < round(effectSeconds + FRAME_AFTER_SECONDS) - 1e-9,
+      afterCapped: afterSeconds < round(effectSeconds + desiredAfter) - 1e-9,
       visual: row.cmd !== "Se",
+      ...(layers.length ? { canvasLayers: layers } : {}),
+      ...(row.cmd === "DoF" ? { active: dofVal > 0 } : {}),
+      ...(isBgDof && focusDistance >= 4 ? { checkDofSharpness: true } : {}),
       confounds: [],
     };
     if (!candidates.has(row.cmd)) candidates.set(row.cmd, []);
@@ -118,6 +135,9 @@ export const frameCheckpoints = (episode, timeline, { settleSeconds = DEFAULT_SE
   // A non-zero camera move is real evidence; a cut is the fallback only when the episode has no
   // move of that kind after the settle.
   const byPreference = (a, b) => {
+    if (a.active !== b.active && (a.active !== undefined || b.active !== undefined)) {
+      return Number(Boolean(b.active)) - Number(Boolean(a.active));
+    }
     const am = a.duration > 0 ? 1 : 0, bm = b.duration > 0 ? 1 : 0;
     if (am !== bm) return bm - am;
     if (a.duration !== b.duration) return b.duration - a.duration;
@@ -131,7 +151,7 @@ export const frameCheckpoints = (episode, timeline, { settleSeconds = DEFAULT_SE
     chosen.push(list[0]);
     used.add(windowKey(list[0]));
   }
-  for (const cmd of CAMERA_ORDER) {
+  for (const cmd of [...CAMERA_ORDER, ...EFFECT_ORDER]) {
     const list = [...(candidates.get(cmd) || [])].sort(byPreference);
     const pick = list.find((check) => !used.has(windowKey(check)));
     if (!pick) continue;
@@ -369,6 +389,21 @@ export const validateFrameReport = (report, { dir = "", verifyFiles = false, req
       fail("lowerBoundCamera", `${check.cmd} checkpoint is a lower bound, not a renderer timestamp`, where);
     if (CAMERA.has(check.cmd) && check.changed === false)
       fail("cameraUnchanged", `${check.cmd} checkpoint at ${check.seconds}s did not change the frame`, where);
+    if (EFFECT.has(check.cmd) && check.changed === false)
+      fail("effectUnchanged", `${check.cmd} checkpoint at ${check.seconds}s did not change the frame`, where);
+    if (check.cmd === "Shake" && Array.isArray(check.canvasLayers) && check.canvasLayers.includes(9) &&
+        typeof check.uiMeanAbsoluteDifference === "number" && check.uiMeanAbsoluteDifference <= threshold) {
+      fail("uiShakeUnchanged", `Shake on UI CanvasLayers [9] at ${check.seconds}s did not move the UI band`, where);
+    }
+    if (check.cmd === "DoF" && (check.checkDofSharpness === true ||
+        (typeof check.faceSharpness === "number" && typeof check.backgroundSharpness === "number"))) {
+      if (typeof check.faceSharpness === "number" && typeof check.backgroundSharpness === "number" &&
+          !(check.faceSharpness > check.backgroundSharpness)) {
+        fail("dofFaceBlurred",
+             `DoF left speaker face ROI sharpness (${check.faceSharpness}) <= background (${check.backgroundSharpness})`,
+             where);
+      }
+    }
   }
 
   for (const pair of duplicateFramePairs(checks || [])) {
@@ -479,6 +514,56 @@ const meanAbsoluteDifference = (a, b) => {
   return length ? total / length : 0;
 };
 
+// Pixel-diff over a fractional ROI box [x0, x1) x [y0, y1) on a grayscale buffer.
+export const regionMeanAbsoluteDifference = (a, b, width = RAW_WIDTH, height = RAW_HEIGHT,
+                                             { x0 = 0, x1 = 1, y0 = 0, y1 = 1 } = {}) => {
+  const sx = Math.max(0, Math.floor(x0 * width));
+  const ex = Math.min(width, Math.ceil(x1 * width));
+  const sy = Math.max(0, Math.floor(y0 * height));
+  const ey = Math.min(height, Math.ceil(y1 * height));
+  let total = 0, count = 0;
+  for (let y = sy; y < ey; y++) {
+    const rowOffset = y * width;
+    for (let x = sx; x < ex; x++) {
+      const idx = rowOffset + x;
+      if (idx < a.length && idx < b.length) {
+        total += Math.abs(a[idx] - b[idx]);
+        count++;
+      }
+    }
+  }
+  return count ? total / count : 0;
+};
+
+// Average gradient magnitude inside [x0, x1) x [y0, y1); higher indicates sharper edges.
+export const roiSharpness = (gray, width = RAW_WIDTH, height = RAW_HEIGHT,
+                             { x0 = 0, x1 = 1, y0 = 0, y1 = 1 } = {}) => {
+  const sx = Math.max(0, Math.floor(x0 * width));
+  const ex = Math.min(width - 1, Math.ceil(x1 * width));
+  const sy = Math.max(0, Math.floor(y0 * height));
+  const ey = Math.min(height - 1, Math.ceil(y1 * height));
+  let total = 0, count = 0;
+  for (let y = sy; y < ey; y++) {
+    const row = y * width;
+    for (let x = sx; x < ex; x++) {
+      const idx = row + x;
+      if (idx + width >= gray.length || idx + 1 >= gray.length) continue;
+      total += Math.abs(gray[idx + 1] - gray[idx]) + Math.abs(gray[idx + width] - gray[idx]);
+      count++;
+    }
+  }
+  return count ? total / count : 0;
+};
+
+// Verify background DoF on a close-up keeps the centered speaker's face ROI sharper than peripheral background ROIs.
+export const evaluateDofRoiSharpness = (gray, width = RAW_WIDTH, height = RAW_HEIGHT) => {
+  const faceSharpness = round(roiSharpness(gray, width, height, { x0: 0.30, x1: 0.70, y0: 0.12, y1: 0.48 }), 4);
+  const leftBg = roiSharpness(gray, width, height, { x0: 0.0, x1: 0.22, y0: 0.05, y1: 0.55 });
+  const rightBg = roiSharpness(gray, width, height, { x0: 0.78, x1: 1.0, y0: 0.05, y1: 0.55 });
+  const backgroundSharpness = round((leftBg + rightBg) / 2, 4);
+  return { faceSharpness, backgroundSharpness, sharpOk: faceSharpness > backgroundSharpness };
+};
+
 const frameName = (check, side) => `${String(check.i).padStart(6, "0")}-${check.cmd}-${side}.png`;
 
 export const auditFrames = async ({ video, episode, timeline, out, ffmpeg = "", requireCamera = false,
@@ -578,6 +663,8 @@ export const auditFrames = async ({ video, episode, timeline, out, ffmpeg = "", 
       afterSha256: null,
       meanAbsoluteDifference: null,
       changed: false,
+      ...(checkpoint.canvasLayers ? { canvasLayers: checkpoint.canvasLayers } : {}),
+      ...(checkpoint.checkDofSharpness ? { checkDofSharpness: true } : {}),
       lowerBound: checkpoint.lowerBound,
       clamped: before.clamped || after.clamped,
       afterCapped: checkpoint.afterCapped,
@@ -600,6 +687,23 @@ export const auditFrames = async ({ video, episode, timeline, out, ffmpeg = "", 
         const difference = meanAbsoluteDifference(beforeGray, afterGray);
         check.meanAbsoluteDifference = round(difference, 4);
         check.changed = check.meanAbsoluteDifference > CHANGE_THRESHOLD;
+        if (EFFECT.has(check.cmd) || check.cmd === "PanV2") {
+          check.stageMeanAbsoluteDifference = round(
+            regionMeanAbsoluteDifference(beforeGray, afterGray, RAW_WIDTH, RAW_HEIGHT, { x0: 0, x1: 1, y0: 0, y1: 0.65 }),
+            4,
+          );
+          if (check.cmd === "Shake" && Array.isArray(check.canvasLayers) && check.canvasLayers.includes(9)) {
+            check.uiMeanAbsoluteDifference = round(
+              regionMeanAbsoluteDifference(beforeGray, afterGray, RAW_WIDTH, RAW_HEIGHT, { x0: 0.08, x1: 0.92, y0: 0.65, y1: 1 }),
+              4,
+            );
+          }
+        }
+        if (check.checkDofSharpness) {
+          const roi = evaluateDofRoiSharpness(afterGray, RAW_WIDTH, RAW_HEIGHT);
+          check.faceSharpness = roi.faceSharpness;
+          check.backgroundSharpness = roi.backgroundSharpness;
+        }
       } catch (e) {
         check.frameFailure = e.message;
         check.frameFailureKind = e.kind || "extraction";

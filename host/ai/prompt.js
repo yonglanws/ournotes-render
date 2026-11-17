@@ -3,9 +3,10 @@
 // measured from 30 official episodes (8 local chapters plus 22 duo friendship stories; 1300 Talk rows, 1158 text
 // lines); the output is checked and repaired afterwards.
 import { motionStems } from "../../scripts/lib/story-author/script.js";
+import { frameChoices, postEffectChoices, soundChoices, transitionChoices } from "../story/resourceGuide.js";
 import { budgetCount, dialogueBudgetFor, directionBudgetFor, gazeBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
 import { dialoguePersonaPrompt } from "./personas.js";
-import { musicLine, soundLine, stageLine } from "./resourceLines.js";
+import { frameLine, musicLine, postEffectLine, soundLine, stageLine, transitionLine } from "./resourceLines.js";
 
 const pct = (value) => Math.round(value * 100);
 const pct1 = (value) => (Math.round(value * 1000) / 10).toFixed(1);
@@ -218,10 +219,10 @@ export const stagingRules = (maxOnStage = 3, budget = null) => {
       `zoom ${budget.zoomMin}~${budget.zoomMax} 次、总视线（lookAt + 独立 look）约 ${gaze.total} 次、` +
       `Se 约 ${budget.se} 条、Track 约 ${budget.track} 次。`
     : "";
-  // The extension fields are part of the measured official performance, not optional decoration: state them in the
-  // same shared rules so both prompt paths ask for the sampled Pedestal/PanV2/DoF/Look counts.
+  // Extended camera and FX are motivated by dramatic/physical beats rather than forced per-scene floors on static chats.
   const extensionBudget = budget
-    ? `扩展运镜预算：Pedestal ${budgetCount(2, budget.pedestal)} 次、PanV2 ${budgetCount(2, budget.panV2)} 次、` +
+    ? `扩展运镜（按剧情动机使用，静态双人对话可为 0，不要无故上下左右晃镜头）：` +
+      `Pedestal ${budgetCount(0, budget.pedestal)} 次、PanV2 ${budgetCount(0, budget.panV2)} 次、` +
       `DoF ${budgetCount(0, budget.dof)} 次、独立 look 最多 ${gaze.independentMax} 次` +
       `（计入上面的总视线，不额外增加）、Se 约 ${budget.se} 条。`
     : "";
@@ -231,18 +232,25 @@ export const stagingRules = (maxOnStage = 3, budget = null) => {
       ? "同一场最多 2 人同台；开场先 1 人，2~4 句后用 positions 让下一人进场；第 3 人必须等一人退场后再进场；换组时已有人保持原位，只让 1 人进出。"
       : "同一场最多 3 人同台；开场先 1 人，2~4 句后用 positions 让下一人进场；换组时已有人保持原位，只让 1 人进出。",
     limit === 3
-      ? "两人同台用 left / right（间隔自然，不要用 far-left / far-right）；三人同台用 far-left / center / far-right（camera far，focus 5，track 0），默认 far 群像；近景只允许 close/very-close 的单人特写（focus 指向一个人），不拍 middle 中景或群像推近。不要用 center+right 或 center+left，两个角色会叠在一起。"
+      ? "两人同台用 left / right（间隔自然，不要用 far-left / far-right）；三人同台用 far-left / center / far-right（camera far，focus 5，track 0），默认 far 群像（可用 positions 的 dz: 0.6~1.5 做景深错位）；近景只允许 close/very-close 的单人特写（focus 指向一个人），不拍 middle 中景或群像推近。不要用 center+right 或 center+left，两个角色会叠在一起。"
       : "两人同台用 left / right（间隔自然，不要用 far-left / far-right）；不要用 center+right 或 center+left，两个角色会叠在一起。",
-    "镜头档位：near 1.2× 是最广的全景（只在开场/收尾用，全场 0~1 次）；middle 1.4× 是双人中景（默认）；far 1.8× 是群像/紧中景；close 2.8× 是情绪近景；very-close 4× 是大特写（最多 1 次）。不要把 near 当近景。",
-    "镜头每 3~4 句换一次：双人戏用二人同框（middle，focus 5）和说话者近景（close，focus 该角色）交替；三人同台用 far + focus 5 群像，或单人特写（close，focus 该角色），不拍 middle 两人构图，也不写群像推近。不要每句切，也不要只在一个机位站桩。近景停 1~2 句（偶尔 3 句），随后回到二人/群像；不要连续两句都切 close。",
+    "镜头档位：full 1.0× / near 1.2× 是最广的全景（只在开场/收尾用，全场 0~1 次）；middle 1.4× 是双人中景（默认）；far 1.8× 是群像/紧中景；close 2.8× 是情绪近景；very-close 4× / macro 6× 是大特写（最多 1 次）。不要把 near 当近景。",
+    "镜头每 3~4 句换一次：双人戏用二人同框（middle，focus 5）和说话者近景（close，focus 该角色）交替；三人同台用 far + focus 5 群像，或单人特写（close，focus 该角色），不拍 middle 中景，也不写群像推近。不要每句切，也不要只在一个机位站桩。近景停 1~2 句（偶尔 3 句），随后回到二人/群像；不要连续两句都切 close。",
     budgetLine,
     extensionBudget,
-    `慢推镜（可选）：zoom 1.03~1.10 缓慢推近、0.92~0.98 拉远，zoomDuration 3~5 秒；${budget ? `一场 ${budget.zoomMin}~${budget.zoomMax} 次` : "次数按本场预算"}，官方最常见值是 ${OFFICIAL_TARGETS.zoomDefault}，但本脚本默认只写缓慢推拉；只给情绪句、近景或结尾，一个机位最多 1 次。`,
-    `表演：一句台词最多一个说话者动作，听者反应最多一个；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的台词没有 Motion；表情和动作一起写，默认 idle，不要每句都笑。`,
+    `慢推镜（可选）：zoom 1.03~1.10 缓慢推近、0.92~0.98 拉远，zoomDuration 3~5 秒、ease "OutSine"；${budget ? `一场 ${budget.zoomMin}~${budget.zoomMax} 次` : "次数按本场预算"}，官方最常见值是 ${OFFICIAL_TARGETS.zoomDefault}，但本脚本默认只写缓慢推拉；只给情绪句、近景或结尾，一个机位最多 1 次。`,
+    "有动机的运镜与特效触发（禁止无意义抖动，所有开关型效果必须在场末/切幕前收回）：\n" +
+      "- 情绪转折/告白：ease \"OutSine\" + zoom 推近 + 背景虚化（dof 0.4~0.7，dofLayers 0；绝不虚化聚焦说话者，角色 dofLayers 2 必须写 dofTarget 指向非说话者）+ 可选 bgm: \"stop\"（bgmFade 1.5）留白。\n" +
+      "- 多句环绕漂移（PanV2）：只在多句连续倾诉、换组或视线转移时写（pan -12~12，panDuration 3~6，ease \"OutSine\" 或 \"Linear\"），自动不阻塞台词（IsNoWait）。\n" +
+      "- 沉默反应与心声：无台词停顿用 hideTalk: true 配合 pause（>= 0.6 秒会自动收起对话框）或 action 拍；纯省略号或内心独白写 thought: true / ignoreLipSync: true 防止空张嘴。\n" +
+      "- 走位与蹲起：已出场角色换位直接用 positions 或 move（{cast, to/dir/dx/dy/dz, duration}），不要 Out+In 闪人；弯腰/蹲下找东西用 move {dir: \"down\", distance: 0.25} 配合 pedestal -0.25 与 focusTargetHead: true，起身用 dir: \"up\" 恢复。\n" +
+      "- 倾斜、冲击与视线：angle {z: -12~12} 做歪头/迟疑；爆发/吐槽用 shake {target: \"ui\", power: 3~5} 震动对话框；低头回避用 look: 0.4, lookY: -0.5~-0.8，抬头用 look: \"stop\"（或 lookAt: \"stop\"）收回。\n" +
+      "- 回忆与独白：用 postEffect（如 reminiscence1/2）、frame（如 letterbox_black/fog）、brightness {target: \"bg\", value: 0.5}、fadeColor \"#FFFFFF\" / transition \"dissolve\"，结束时用 postEffectStop: true / frameStop: true / brightness 1 复位。",
+    `表演：一句台词最多一个说话者动作，听者反应最多一个；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的台词没有 Motion；表情和动作一起写，默认 idle，不要每句都笑。动作写 stem（如 mtn_smile01），编译器会按左 _R / 中 _C / 右 _L 自动面向对话伙伴；只有刻意转头避开或正对镜头时才写完整 _L/_C/_R 后缀。单人近景或身高差/蹲起时可设 focusTargetHead: true（编译 TargetName 对齐角色头部高度）。`,
     limit === 2
-      ? `视线：双人戏每 3~4 句写一个 lookAt，不要每 1~2 句都写；角色把视线移开时用独立 look/lookY（最多 ${gaze?.independentMax ?? 2} 次，计入总视线预算）。`
-      : `视线：双人戏每 3~4 句写一个 lookAt，三人以上只在被点名或明显反应时用；角色把视线移开时用独立 look/lookY（最多 ${gaze?.independentMax ?? 2} 次，计入总视线预算）。`,
-    "留白只用于 0.1~0.5 秒的呼吸；fade out/in 只用于真正的时间或地点跳跃。",
+      ? `视线：双人戏每 3~4 句写一个 lookAt，不要每 1~2 句都写；角色把视线移开时用独立 look/lookY（最多 ${gaze?.independentMax ?? 2} 次，计入总视线预算），结束后用 look: "stop" 收回。`
+      : `视线：双人戏每 3~4 句写一个 lookAt，三人以上只在被点名或明显反应时用；角色把视线移开时用独立 look/lookY（最多 ${gaze?.independentMax ?? 2} 次，计入总视线预算），结束后用 look: "stop" 收回。`,
+    "留白只用于 0.1~0.5 秒的呼吸（或 >= 0.6 秒 hideTalk 沉默拍）；fade out/in 只用于真正的时间或地点跳跃。",
   ].filter(Boolean).join("\n");
 };
 
@@ -293,11 +301,17 @@ export const buildStoryMessages = ({ catalog, request, config, plan = null }) =>
   }).join("\n");
 
   const stages = catalog.stages.slice(0, 80), music = catalog.music.slice(0, 40);
-  const soundChoices = catalog.sounds || [];
+  const resolvedSounds = soundChoices(catalog.soundChoices || catalog.sounds || []);
+  const resolvedFrames = frameChoices(catalog.frameChoices || catalog.frames || []);
+  const resolvedPostEffects = postEffectChoices(catalog.postEffectChoices || catalog.postEffects || []);
+  const resolvedTransitions = transitionChoices(catalog.transitionChoices || catalog.transitions || []);
   const stageLines = stages.map(stageLine).join("\n") || "(none)";
   const musicLines = music.map(musicLine).join("\n") || "(none)";
-  const soundLines = soundChoices.slice(0, 40).map(soundLine).join("\n") || "(none)";
-  const exampleSe = soundChoices[0]?.cue || "";
+  const soundLines = resolvedSounds.slice(0, 40).map(soundLine).join("\n") || "(none)";
+  const frameLines = resolvedFrames.slice(0, 24).map(frameLine).join("\n") || "(none)";
+  const postEffectLines = resolvedPostEffects.slice(0, 24).map(postEffectLine).join("\n") || "(none)";
+  const transitionLines = resolvedTransitions.slice(0, 16).map(transitionLine).join("\n") || "(none)";
+  const exampleSe = resolvedSounds[0]?.cue || "";
   const history = Array.isArray(request.history) ? request.history.slice(-6) : [];
   const historyBlock = history.length
     ? `\n## 最近对话（只用于保持称呼、关系和语气，不要复述）\n${
@@ -405,7 +419,7 @@ ${planNotes}
 - 话轮：约 ${pct(OFFICIAL_TARGETS.soloRunShare)}% 的连续说话人段只有一句，均值约 ${fixed(OFFICIAL_TARGETS.speakerRunMean, 1)} 句；官方单集约 ${OFFICIAL_TARGETS.textLinesPerEpisodeMin}~${OFFICIAL_TARGETS.textLinesPerEpisodeMax} 条有文本台词（均值约 ${fixed(OFFICIAL_TARGETS.textLinesPerEpisodeMean, 1)}，时长约 1~2.5 分钟），本场按 ${OFFICIAL_TARGETS.linesPerMinute} 条/分钟换算成上面的目标范围。先 1 人开场，2~4 句后第二人进场；不要机械一人一句，也不要每次都写长段。
 - 镜头：Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句（按 Talk 行计；按有文本行约 ${fixed(OFFICIAL_TARGETS.focusPerTextLine, 2)}）；距离 2/3/4 分别约 ${pct(OFFICIAL_TARGETS.distance2Share)}%/${pct(OFFICIAL_TARGETS.distance3Share)}%/${pct(OFFICIAL_TARGETS.distance4Share)}%；近景段长 0~2 句（空镜按 1 段；末尾空白 Talk 会缩短段长）约占 ${pct1(OFFICIAL_TARGETS.closeRunOneOrTwoShare)}%，每 3~4 句换一次构图。
 - ${officialDenominatorNote()}
-- 运镜：官方常用 Focus、Track、Zoom、Pedestal、PanV2、DoF；Zoom 每集约 ${perEpisode(OFFICIAL_TARGETS.zoomPerTextLine)} 次、Pedestal 约 ${perEpisode(OFFICIAL_TARGETS.pedestalPerTextLine)} 次、PanV2 约 ${perEpisode(OFFICIAL_TARGETS.panV2PerTextLine)} 次、DoF 约 ${perEpisode(OFFICIAL_TARGETS.dofPerTextLine)} 次；Se 每集约 ${perEpisode(OFFICIAL_TARGETS.sePerTextLine)} 条、Bgm 每集约 ${fixed(OFFICIAL_TARGETS.bgmPerEpisode, 1)} 条。AI 每场默认 ${direction.zoomMin}~${direction.zoomMax} 次 Zoom、0~${direction.track} 次 Track，Pedestal ${budgetCount(2, direction.pedestal)} 次、PanV2 ${budgetCount(2, direction.panV2)} 次（本场至少 2 次，双人情绪转折也可轻微横移）、DoF ${budgetCount(0, direction.dof)} 次（官方实测频率），Se 约 ${direction.se} 条/场。
+- 运镜：官方常用 Focus、Track、Zoom、Pedestal、PanV2、DoF；Zoom 每集约 ${perEpisode(OFFICIAL_TARGETS.zoomPerTextLine)} 次、Pedestal 约 ${perEpisode(OFFICIAL_TARGETS.pedestalPerTextLine)} 次、PanV2 约 ${perEpisode(OFFICIAL_TARGETS.panV2PerTextLine)} 次、DoF 约 ${perEpisode(OFFICIAL_TARGETS.dofPerTextLine)} 次；Se 每集约 ${perEpisode(OFFICIAL_TARGETS.sePerTextLine)} 条、Bgm 每集约 ${fixed(OFFICIAL_TARGETS.bgmPerEpisode, 1)} 条。AI 每场默认 ${direction.zoomMin}~${direction.zoomMax} 次 Zoom、0~${direction.track} 次 Track，Pedestal ${budgetCount(0, direction.pedestal)} 次、PanV2 ${budgetCount(0, direction.panV2)} 次（仅在动作蹲起、多句倾诉漂移或换组时触发，静态双人对话可为 0）、DoF ${budgetCount(0, direction.dof)} 次（官方实测频率），Se 约 ${direction.se} 条/场。
 - 表演：Motion 约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的句子没有 Motion；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条（默认 0~1 条/场），表情都挂在 Motion 上。
 - 视线：Look + LookTarget 约 ${fixed(OFFICIAL_TARGETS.lookAnyPerTextLine, 2)}/句（${pct(OFFICIAL_TARGETS.lookLineShare)}% 的句子带视线）；总视线（lookAt + 独立 look）约 ${gaze.total} 次/场，其中独立 look 最多 ${gaze.independentMax} 次（计入总视线，不额外增加）；双人戏每 3~4 句一个 lookAt。
 - 10610 的 13 句教学场是特例（10 Focus / 5 Track / 20 Motion），镜头更碎；日常戏不要照它的密度写。
@@ -417,34 +431,38 @@ ${planNotes}
 ${JSON.stringify(example, null, 2)}
 
 ## beat 规则
-- 第一个 beat 必须是 scene。scene beat：{"scene": 舞台 id, "location": 地点文字, "camera": "near|middle|far|close|very-close" 或 {"distance","focus","track"}, "focus": 可选, "track": 可选, "music": 可选, "positions": {角色: 位置}, "id": 可选}。scene 的 positions 只放 1 人，其余角色 2~4 句后再进场。
-- positions beat：{"positions": {角色: 位置}, "camera": 可选, "focus": 可选, "track": 可选}。位置只能是 far-left, left, center, right, far-right；两个角色不能占同一位置。省略的角色退场，新角色进场。**两人同台用 left / right**（不要用 far-left / far-right，间隔太开）；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0），默认 far 群像；近景只拍单人特写（close/very-close，focus 指向一个人），不拍中景/群像推近" : `同台最多 ${maxOnStage} 人，第 3 人必须等一人退场后再进场`}；不要用 center+right 或 center+left（会重叠）。一场最多 2 次 positions 变化；换组时让已有人物保持原位，只让 1 人进出；不要把同一角色从 left 移到 center（会重新进出场并可能闪一下）。
-- say beat：{"say": 角色 cast id, "text": 台词, "motion": 可选说话者动作, "expression": 可选说话者表情, "lookAt": 可选, "focus": 可选, "camera": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "actions": 可选, "id": 可选}。说话者必须已经站在舞台上。**不写 focus/camera/track 就保持当前镜头**；同一组连续对话不要每句都写镜头字段。表情尽量和 motion 一起写；没有 motion 就尽量不改表情。
-- narrate beat：{"narrate": 旁白文字, "focus": 可选, "camera": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "actions": 可选}。旁白的 actions 必须写 cast。narrate 全场 0~2 句，放在开场、沉默反应或收尾，用「（……）」这种短句，不要小说式描写。
-- camera beat：{"camera": "near|middle|far|close|very-close" 或 {"distance","focus","track"}, "focus": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "duration": 可选秒}。只移动镜头，不改变站位。只改距离时保持同一个 focus；near 是全景，全场最多 1 次；close 近景约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行（本场约 ${direction.closeUps} 次），每次 1~2 句（偶尔 3 句）。
-- fade beat：{"fade": "out" 或 "in", "duration": 可选秒}。只用于时间/地点跳跃，连续对话里不要用。
-- pause beat：{"pause": 秒数}。只用于 0.1~0.5 秒的呼吸，不要每个场景都放。
-- action beat：{"action": 角色 cast id, "motion": 可选, "expression": 可选, "lookAt": 可选, "duration": 可选秒}。没有台词的反应镜头。
-- focus：优先写位置名；两人同框用 focus: 5，单人近景用角色 id 或该角色的位置名；角色 focus 只给情绪最重的 1~2 句。不要用 2/4/6/8 去框 left/right 的两个人。close / very-close **必须**给角色 id 或该角色的位置名，不要用 focus 5。
-- 近景节奏：close 只切给情绪最重的 1~2 句；下一句用 middle + focus 5 回到二人/群像，不要连续两句 close，也不要从 close 直接切到另一个 close；三人同台时用 far 群像，近景只给单人特写（close/very-close，focus 该角色），不要 middle 中景或群像推近（画面会挤）。
-- track：镜头相对焦点的横向偏移，-4~4；0 是正对焦点。两人对话用 ±0.2~0.8，群像横移可用 ±1.2~2。一场 0~${direction.track} 次，双人通常 0~1 次；只在换组/群像横移时写，不要每句微调。
-- zoom：镜头缓慢推近/拉远，1.03~1.10 推近、0.92~0.98 拉远；zoomDuration 3~5 秒。一场 ${direction.zoomMin}~${direction.zoomMax} 次，只给情绪句、近景或结尾，一个机位最多 1 次；不写就静止。
-- actions：一句台词内的听者反应，最多 1 条（加上 say.motion 共 2 个动作）：{"at": 0~1, "cast": 可选（默认说话者）, "motion": 可选, "expression": 可选, "lookAt": 可选}。至少写 motion/expression/lookAt 之一；cast 必须在台上。**听者反应一律写 at: 0**；官方样本没有句中动作，不要用 0.3~0.7。
-- lookAt：一个站在台上的 cast id、位置名，或 1~9 的构图点。双人戏每 3~4 句写一个 lookAt；总视线（lookAt + 独立 look）约 ${gaze.total} 次/场，独立 look 最多 ${gaze.independentMax} 次（计入总视线）。
+- 第一个 beat 必须是 scene。scene beat：{"scene": 舞台 id, "location": 地点文字, "camera": "full|near|middle|far|close|very-close|macro" 或 {"distance","focus","track"}, "focus": 可选, "track": 可选, "music": 可选, "transition": "fade|dissolve", "transitionDuration": 可选, "fadeRule": "0001..0005", "fadeColor": "#000000|#FFFFFF", "positions": {角色: 位置或 {"at","dx","dy","dz","motion","expression"}}, "id": 可选}。scene 的 positions 只放 1 人，其余角色 2~4 句后再进场。
+- positions beat：{"positions": {角色: 位置或 {"at","dx","dy","dz"}}, "camera": 可选, "focus": 可选, "track": 可选, "moveDuration": 可选}。位置只能是 far-left, left, center, right, far-right；两个角色不能占同一位置。省略的角色退场，新角色进场。**两人同台用 left / right**（不要用 far-left / far-right，间隔太开）；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0），默认 far 群像；近景只拍单人特写（close/very-close，focus 指向一个人），不拍中景/群像推近" : `同台最多 ${maxOnStage} 人，第 3 人必须等一人退场后再进场`}；不要用 center+right 或 center+left（会重叠）。一场最多 2 次 positions 变化；换组时让已有人物保持原位，只让 1 人进出；已出场角色微调位置会由 MoveToDirection 平滑移动（不要靠 Out+In 闪人）。
+- say beat：{"say": 角色 cast id, "text": 台词, "thought": 可选布尔, "ignoreLipSync": 可选布尔, "hideTalk": 可选布尔, "motion": 可选说话者动作, "expression": 可选说话者表情, "lookAt": 可选或"stop", "focus": 可选, "camera": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "focusTargetHead": 可选布尔, "ease": 可选, "actions": 可选, "id": 可选}。说话者必须已经站在舞台上。**不写 focus/camera/track 就保持当前镜头**；同一组连续对话不要每句都写镜头字段。表情尽量和 motion 一起写；没有 motion 就尽量不改表情。
+- narrate beat：{"narrate": 旁白文字, "thought": 可选, "ignoreLipSync": 可选, "hideTalk": 可选, "focus": 可选, "camera": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "actions": 可选}。旁白的 actions 必须写 cast。narrate 全场 0~2 句，放在开场、沉默反应或收尾，用「（……）」这种短句，不要小说式描写。
+- camera beat：{"camera": "full|near|middle|far|close|very-close|macro" 或 {"distance","focus","track"}, "focus": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "cameraDuration": 可选秒, "ease": 可选}。只移动镜头，不改变站位。只改距离时保持同一个 focus；near 是全景，全场最多 1 次；close 近景约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行（本场约 ${direction.closeUps} 次），每次 1~2 句（偶尔 3 句）。
+- fade / pause / action / move / angle / bgm / frame / postEffect / brightness / shake / cameraShake / flash / talkWindow / hideTalk beat：fade 只用于时间/地点跳跃（可配 fadeRule/fadeColor）；pause 用于 0.1~0.5 秒呼吸或 >= 0.6 秒 hideTalk 沉默拍；action 是无台词反应镜头；bgm: {"bgm": cue 或 "stop", "bgmFade": 秒} 可在场中转折停乐或换曲；其余 FX beat 见下方扩展字段。
+- focus：优先写位置名；两人同框用 focus: 5，单人近景用角色 id 或该角色的位置名；角色 focus 只给情绪最重的 1~2 句。不要用 2/4/6/8 去框 left/right 的两个人。close / very-close **必须**给角色 id 或该角色的位置名，不要用 focus 5。单人特写或蹲起可设 focusTargetHead: true 对准头部锚点。
+- 近景节奏：close 只切给情绪最重的 1~2 句；下一句用 middle + focus 5 回到二人/群像，不要连续两句 close，也不要从 close 直接切到另一个 close；三人同台时用 far 群像，近景只给单人特写（close/very-close，focus 该角色），不要 middle 中景或群像推近（画面会挤）。推近时保持同一侧 focus，只改 camera distance，不要换焦点。
+- track：镜头相对焦点的横向偏移，-4~4（close 时自动限幅 ±0.25，very-close 强制 0）；0 是正对焦点。两人对话用 ±0.2~0.8，群像横移可用 ±1.2~2。一场 0~${direction.track} 次，双人通常 0~1 次；只在换组/群像横移时写，不要每句微调。
+- zoom：镜头缓慢推近/拉远，1.03~1.10 推近、0.92~0.98 拉远；zoomDuration 3~5 秒、ease "OutSine"。一场 ${direction.zoomMin}~${direction.zoomMax} 次，只给情绪句、近景或结尾，一个机位最多 1 次；不写就静止。
+- actions：一句台词内的听者反应，最多 1 条（加上 say.motion 共 2 个动作）：{"at": 0~1, "cast": 可选（默认说话者）, "motion": 可选, "expression": 可选, "lookAt": 可选或"stop"}。至少写 motion/expression/lookAt 之一；cast 必须在台上。**听者反应一律写 at: 0**；官方样本没有句中动作，不要用 0.3~0.7。
+- lookAt：一个站在台上的 cast id、位置名、1~9 的构图点，或 "stop" 收回视线。双人戏每 3~4 句写一个 lookAt；总视线（lookAt + 独立 look）约 ${gaze.total} 次/场，独立 look 最多 ${gaze.independentMax} 次（计入总视线）。
 - cast id 是字母开头、只含字母数字下划线的字符串；cast 的 model 必须是下方清单里的 model id，name 是显示名。
-- motion 可以写清单中的完整名，也可以写去掉 _L/_C/_R 的 stem；expression 必须是完整名。动作说明（括号里）是按名称推断的，只用来帮你选，不要写进 JSON。
+- motion 优先写清单中的 stem（如 mtn_smile01），编译器按左侧 _R / 中间 _C / 右侧 _L 自动选择面向伙伴的变体；只有刻意背对/正对时才写完整带后缀名；expression 必须是完整名。动作说明（括号里）是按名称推断的，只用来帮你选，不要写进 JSON。
 - 同一时刻最多 3 个角色在台上；用 positions 换组，不要为每次换人新开一个 scene。
 - 台词每行不超过 22 个全角字符，单条最多 2 行（用 \\n 换行）；约 ${pct(OFFICIAL_TARGETS.twoLineShare)}% 两行；约 ${pct(OFFICIAL_TARGETS.shortShare)}% 是 2~6 字的短反应；不要空行，不要首尾空白。
-- 不要输出清单之外的任何名称；不确定的动作/表情就省略该字段。
+- 不要输出清单之外的任何名称；不确定的动作/表情/特效就省略该字段。
 - 结尾用一句短话、一个小动作或一句没说完的话收束，不要总结主题，不要写“未完待续”。
 
-## 扩展运镜与声音字段（可直接写在 beat 顶层）
-这些字段是官方实测演出的一部分，按本场预算写，不是可选装饰；不写就沿用默认值。只能使用站点清单里已有的名称，数值不要越界。
-- focusDuration / trackDuration：0~20 秒；focusDuration 需要同一 beat 的 focus 或 camera（scene/positions 总有 Focus 行），0 表示硬切，${fixed(OFFICIAL_TARGETS.focusDurationDefault, 1)} 是官方常见过渡值；trackDuration 需要 track，默认跟随该 beat 的 focus/camera。
-- pedestal / pedestalDuration：Y 偏移 -4~5，duration 0~20，默认 1.5；本场写 ${budgetCount(2, direction.pedestal)} 次（"pedestal": -0.2），只在轻微上下移时用。
-- pan / panDuration / panFocusSlide：角度 -30~30，duration 0~20，focus slide 0~1；本场写 ${budgetCount(2, direction.panV2)} 次（"pan": -5 或 8；至少 2 次，双人情绪转折也可轻微横移），只在换组或明确横移时用。
-- dof / dofDuration / dofLayers：强度 0~1，duration 0.5~10，layers 0（背景）/2（角色）/省略（角色）；本场写 ${budgetCount(0, direction.dof)} 次（"dof": 0.5, "dofLayers": 2）；角色 DoF 需要台上目标（say 用说话者，action 用动作角色；camera/narrate 的 focus 要指向具体角色或有人的位置，省略 focus 时编译器会选当前镜头附近的台上角色），背景 DoF 不需要目标。
-- look / lookY / lookDuration：x/y -1~1，duration 0.2~10，默认 0.5；独立 look 最多 ${gaze.independentMax} 句（计入上面的总视线，不额外增加；"look": -0.4, "lookY": 0.1），表现角色把视线移开；与 lookAt 二选一，同一 beat 不要同时写。
+## 扩展运镜、演出特效与声音字段（可直接写在对应 beat 顶层）
+按剧情动机选用，静坐日常对话不强求填满；所有开启的状态效果（DoF/Role/Tilt/Brightness/Frame/PostEffect/CameraShake/Look）在转折结束或离场前需成对收回。只能使用下方清单里已有的名称，数值不要越界。
+- focusDuration / trackDuration / moveDuration / ease / cameraDelay / focusSharp / focusTargetHead：focusDuration/trackDuration 0~20 秒（0=硬切，${fixed(OFFICIAL_TARGETS.focusDurationDefault, 1)} 常见）；ease 可选 OutQuad / OutSine / Linear / OutQuint / InOutSine / InOutQuad（Zoom/PanV2 >= 0.8s 默认 OutSine，>= 4s 默认 Linear）；cameraDelay 0~20s；focusSharp: true 清掉景深；focusTargetHead: true 瞄准单人头部高度。
+- pedestal / pedestalDuration：Y 偏移 -4~5，duration 0~20，默认 1.5；本场建议 ${budgetCount(0, direction.pedestal)} 次（如蹲下查找时 "pedestal": -0.25，静坐对话可为 0）。
+- pan / panDuration / panFocusSlide：角度 -30~30，duration 0~20，focus slide 0~1；本场建议 ${budgetCount(0, direction.panV2)} 次（如多句倾诉 "pan": -8, "panDuration": 4, "ease": "OutSine"，静坐对话可为 0）。
+- dof / dofDuration / dofLayers / dofTarget：强度 0~1，duration 0.5~10，layers 0（背景虚化，默认）/ 2（角色虚化）；本场建议 ${budgetCount(0, direction.dof)} 次（"dof": 0.5, "dofLayers": 0）。**背景虚化用 dofLayers: 0 不需 target；dofLayers: 2 必须写 dofTarget 指向非聚焦角色（绝不虚化聚焦说话者）。**
+- role / roleDuration / tilt / tiltDuration：role 荷兰角 -30~30，tilt 俯仰角 -15~15（用于不安/仰望，结束时写 0 复位）。
+- move / angle：move {"cast"?, "to"?, "dir"?: "left|right|up|down|forward|back", "distance"?, "dx"?, "dy"?, "dz"?, "duration"?, "wait"?}；angle {"cast"?, "z"?, "x"?, "duration"?, "delay"?, "wait"?}（z/x -45~45，结束归 0）。
+- look / lookY / lookDuration：x/y -1~1（或 look: "stop" 收回），duration 0.2~10，默认 0.5；独立 look 最多 ${gaze.independentMax} 句（低头回避可用 "look": 0.4, "lookY": -0.6）；与 lookAt 二选一，同一 beat 不要同时写。
+- bgm / bgmFade / bgmVolume / bgmStart：say 或 bgm beat 中可写 "bgm": cue 或 "stop"，"bgmFade": 0.5~10，做情感高潮前停乐或换曲。
+- frame / frameAction / frameDuration / frameStop：frame 必须来自下方可用画面遮罩清单（无则省略）；带 Show_anime 的遮幅配 frameAction: "Show_anime"，结束时写 frameStop: true。
+- postEffect / postEffectDuration / postEffectStop：postEffect 必须来自下方可用后期滤镜清单（无则省略）；回忆/冲击结束时写 postEffectStop: true。
+- brightness / shake / cameraShake / flash / talkWindow / hideTalk / thought / ignoreLipSync：brightness {"target": "bg"|"cast"|castId, "value": 0~1, "duration"?}；shake {"target": "ui"|"stage"|"all"|castId, "power": 0.2~10, "duration"?}（惊呼用 target: "ui"）；cameraShake "start"|"stop"（配 cameraShakeStrength 0.01~20）；flash true；talkWindow "default"|"center"；hideTalk true；thought/ignoreLipSync true。
 - se / seDuration / seDelay / seStop：se 必须是站点声音清单里的 cue（清单为 (none) 时不要写 se/seStop）；duration 0.5~10，delay 0~10；seStop 与 se 互斥。
 - motionFadeIn / motionWait：fade -1~2，wait 布尔；默认 ${OFFICIAL_TARGETS.motionFadeInDefault}/false，只在明确需要节奏时写。
 示例（只演示字段位置，不要照抄数值）：
@@ -487,6 +505,17 @@ ${musicLines}
 ## 可用音效（se 只能从这里选；列表为 (none) 时不写 se/seStop）
 只在台词里真的发生对应动作时使用（敲门、拿起手机、脚步、写字……），不要用 se 代替动作，也不要在同一句叠两个。
 ${soundLines}
+
+## 可用画面遮罩（frame 只能从这里选；列表为 (none) 时不写 frame）
+只在回忆、高潮遮幅、氛围或视觉冲击时按描述选用，用完记得关闭（frameStop: true）。
+${frameLines}
+
+## 可用后期滤镜（postEffect 只能从这里选；列表为 (none) 时不写 postEffect）
+只在回忆闪回、心理冲击或明显氛围切换时按情绪选用，结束时用 postEffectStop: true 关闭。
+${postEffectLines}
+
+## 可用转场规则（scene / fade 的 fadeRule 或 transition）
+${transitionLines}
 
 ## 可用角色与模型（model 必须从这里选）
 每个角色只能选一个模型。同一支乐队同台时尽量统一到同一类服装（队服 / 校服 / 便服 / 虚拟舞台服 / 打工服；校服不同年级算同一类）：先选覆盖人数最多的一类，个别没有该类的角色可以例外，但避免一个人穿队服、另一个人穿初中校服这种强烈冲突。

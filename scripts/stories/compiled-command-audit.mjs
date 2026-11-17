@@ -8,15 +8,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ADV_COMMAND } from "../../src/story/interfaces.js";
-import { episodeToLines } from "./official-corpus.mjs";
+import { hasSpokenContent, SLOT_WORLD_X } from "../lib/story-author/grammar.js";
+import { episodeText, episodeToLines } from "./official-corpus.mjs";
 import { summarize } from "./story-metrics.mjs";
 
 const COMMANDS = new Set(ADV_COMMAND.filter(Boolean));
+const DIST_ZOOM = Object.freeze([1.0, 1.2, 1.4, 1.8, 2.8, 4.0, 6.0]);
 
 // Ranges from docs/story-author.md and the approved harness design. Duration and
 // look Parameter2 are optional: official Pedestal/PanV2 rows often omit Duration
 // (a cut), and Look's y offset defaults to 0. Parameter1 (and Focus's
-// CameraDistance, Track's offset) are required.
+// CameraDistance, Track's offset) are required, except Look/LookTarget rows with
+// Parameter3 === "Stop" which clear gaze without Parameter1/PositionType.
 export const COMMAND_PARAMETER_RANGES = Object.freeze({
   Zoom: { required: ["Parameter1"], fields: { Parameter1: [0.7, 2.5], Duration: [0.2, 20] } },
   Pedestal: { required: ["Parameter1"], fields: { Parameter1: [-4, 5], Duration: [0, 20] } },
@@ -28,7 +31,7 @@ export const COMMAND_PARAMETER_RANGES = Object.freeze({
     Parameter1: [-1, 1], Parameter2: [-1, 1], Duration: [0.2, 10],
   } },
   Focus: { required: ["CameraDistance"], fields: {
-    CameraDistance: [1, 5], Duration: [0, 20], PositionType: [1, 9],
+    CameraDistance: [0, 6], Duration: [0, 20], PositionType: [1, 9],
   } },
   Track: { required: ["Parameter1"], fields: { Parameter1: [-4, 4], Duration: [0, 20] } },
   Se: { required: [], fields: { Duration: [0.5, 10] } },
@@ -75,6 +78,327 @@ const checkManifestList = (value, expected, code, label, failures) => {
     return false;
   }
   return true;
+};
+
+const talkRowText = (episode, row, script) => {
+  if (script?.language) {
+    const t = episodeText(episode, row, script.language);
+    if (t) return t;
+  }
+  const tZh = episodeText(episode, row, "zh-Hans");
+  if (tZh) return tZh;
+  const entry = episode?.text?.[String(row?.AdvTextID)];
+  if (entry && typeof entry === "object") {
+    for (const v of Object.values(entry)) if (typeof v === "string" && v) return v;
+  }
+  if (row?.lines && typeof row.lines === "object") {
+    for (const v of Object.values(row.lines)) if (typeof v === "string" && v) return v;
+  }
+  return "";
+};
+
+const emptyEffects = () => ({
+  dof: { active: false, index: -1 },
+  role: { value: 0, index: -1 },
+  tilt: { value: 0, index: -1 },
+  brightness: new Map(),
+  frames: new Map(),
+  postEffects: new Map(),
+  cameraShake: { active: false, index: -1 },
+  gaze: new Map(),
+});
+
+const auditSceneSemantics = (rows, episode, script, failures) => {
+  const onStage = new Map();
+  let focus = { distance: 2, posType: 5, targetName: "" };
+  let trackOffset = 0;
+  let zoomMul = 1;
+  let inClose = false;
+  let closeTalkCount = 0;
+  let closeStartIndex = -1;
+  let closeBurstReported = false;
+  let seenSceneContent = false;
+  let effects = emptyEffects();
+
+  const scriptTextBeats = Array.isArray(script?.beats)
+    ? script.beats.filter((b) => b && typeof b === "object" && ("say" in b || "narrate" in b))
+    : null;
+  const talkRowsTotal = rows.reduce((n, r) => n + (r?.cmd === "Talk" ? 1 : 0), 0);
+  const matchedBeats = scriptTextBeats && scriptTextBeats.length === talkRowsTotal ? scriptTextBeats : null;
+  let talkCount = 0;
+
+  const checkUnclosed = (whereLabel, atIndex) => {
+    if (effects.dof.active) {
+      failures.push({ code: "unclosedEffect", cmd: "DoF", index: effects.dof.index, where: atIndex,
+                      message: `DoF left active at ${whereLabel}` });
+    }
+    if (effects.role.value !== 0) {
+      failures.push({ code: "unclosedEffect", cmd: "Role", index: effects.role.index, where: atIndex,
+                      message: `Role (${effects.role.value}) left active at ${whereLabel}` });
+    }
+    if (effects.tilt.value !== 0) {
+      failures.push({ code: "unclosedEffect", cmd: "Tilt", index: effects.tilt.index, where: atIndex,
+                      message: `Tilt (${effects.tilt.value}) left active at ${whereLabel}` });
+    }
+    for (const [scope, st] of effects.brightness) {
+      failures.push({ code: "unclosedEffect", cmd: "Brightness", target: scope, index: st.index, where: atIndex,
+                      message: `Brightness (${scope}=${st.value}) left unreset at ${whereLabel}` });
+    }
+    for (const [asset, idx] of effects.frames) {
+      failures.push({ code: "unclosedEffect", cmd: "Frame", asset, index: idx, where: atIndex,
+                      message: `Frame (${asset}) left active at ${whereLabel}` });
+    }
+    for (const [asset, idx] of effects.postEffects) {
+      failures.push({ code: "unclosedEffect", cmd: "PostEffect", asset, index: idx, where: atIndex,
+                      message: `PostEffect (${asset}) left active at ${whereLabel}` });
+    }
+    if (effects.cameraShake.active) {
+      failures.push({ code: "unclosedEffect", cmd: "CameraShake", index: effects.cameraShake.index, where: atIndex,
+                      message: `CameraShake left active at ${whereLabel}` });
+    }
+    for (const [target, st] of effects.gaze) {
+      failures.push({ code: "unclosedEffect", cmd: st.cmd, target, index: st.index, where: atIndex,
+                      message: `${st.cmd} on ${target} left unstopped at ${whereLabel}` });
+    }
+  };
+
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+
+    if (row.cmd === "Stage") {
+      if (seenSceneContent) {
+        checkUnclosed("scene change", index);
+        effects = emptyEffects();
+        onStage.clear();
+        focus = { distance: 2, posType: 5, targetName: "" };
+        trackOffset = 0;
+        zoomMul = 1;
+        inClose = false;
+        closeTalkCount = 0;
+        closeStartIndex = -1;
+        closeBurstReported = false;
+      }
+      seenSceneContent = true;
+      continue;
+    }
+    if (row.cmd === "In") {
+      seenSceneContent = true;
+      if (row.TargetName) {
+        onStage.set(String(row.TargetName), {
+          cast: String(row.TargetName),
+          slot: numeric(row.PositionType) ?? 5,
+          x: 0, y: 0, z: 0,
+        });
+      }
+      continue;
+    }
+    if (row.cmd === "Out") {
+      if (row.TargetName) onStage.delete(String(row.TargetName));
+      continue;
+    }
+    if (row.cmd === "MoveToDirection") {
+      const m = row.TargetName ? onStage.get(String(row.TargetName)) : null;
+      if (m) {
+        m.x += numeric(row.Parameter1) ?? 0;
+        m.y += numeric(row.Parameter2) ?? 0;
+        m.z += numeric(row.Parameter3) ?? 0;
+      }
+      continue;
+    }
+    if (row.cmd === "MoveToLeft" || row.cmd === "MoveToRight" || row.cmd === "MoveToUp" ||
+        row.cmd === "MoveToDown" || row.cmd === "MoveToForward" || row.cmd === "MoveToBack") {
+      const m = row.TargetName ? onStage.get(String(row.TargetName)) : null;
+      const amt = numeric(row.Parameter1) ?? 0;
+      if (m) {
+        if (row.cmd === "MoveToLeft") m.x -= amt;
+        else if (row.cmd === "MoveToRight") m.x += amt;
+        else if (row.cmd === "MoveToUp") m.y += amt;
+        else if (row.cmd === "MoveToDown") m.y -= amt;
+        else if (row.cmd === "MoveToForward") m.z -= amt;
+        else if (row.cmd === "MoveToBack") m.z += amt;
+      }
+      continue;
+    }
+    if (row.cmd === "Focus") {
+      seenSceneContent = true;
+      const d = numeric(row.CameraDistance) ?? 2;
+      const p = numeric(row.PositionType) ?? focus.posType;
+      const t = row.TargetName ? String(row.TargetName) : "";
+      focus = { distance: d, posType: p, targetName: t };
+      trackOffset = 0;
+      zoomMul = 1;
+      if (d < 4) {
+        inClose = false;
+        closeTalkCount = 0;
+        closeStartIndex = -1;
+        closeBurstReported = false;
+      } else if (!inClose) {
+        inClose = true;
+        closeTalkCount = 0;
+        closeStartIndex = index;
+        closeBurstReported = false;
+      }
+      continue;
+    }
+    if (row.cmd === "Track") {
+      const tr = numeric(row.Parameter1);
+      if (tr !== null) trackOffset = tr;
+      continue;
+    }
+    if (row.cmd === "Zoom") {
+      const zm = numeric(row.Parameter1);
+      if (zm !== null) zoomMul = zm <= 0 ? 1 : zm;
+      continue;
+    }
+    if (row.cmd === "DoF") {
+      seenSceneContent = true;
+      const v = numeric(row.Parameter1);
+      if (v !== null && v > 0) {
+        effects.dof = { active: true, index };
+        const hasTargetName = Boolean(row.TargetName);
+        const posType = numeric(row.PositionType);
+        const layers = Array.isArray(row.CanvasLayers) ? row.CanvasLayers : null;
+        const isCharLayerOnly = Boolean(layers && layers.includes(2) && !layers.includes(0));
+        if (isCharLayerOnly && !hasTargetName && posType === null) {
+          failures.push({ code: "dofFocusedSpeaker", index, cmd: "DoF",
+                          message: "DoF on character CanvasLayers [2] without a non-speaker target blurs focused speaker" });
+        } else if (hasTargetName || posType !== null) {
+          let upcomingSpeaker = "";
+          for (let j = index + 1; j < rows.length; j++) {
+            const r = rows[j];
+            if (!r || typeof r !== "object") continue;
+            if (r.cmd === "Stage" || r.cmd === "FadeOut" || r.cmd === "DoF" || r.cmd === "Focus") break;
+            if (r.cmd === "Talk") {
+              upcomingSpeaker = r.TargetName ? String(r.TargetName) : "";
+              break;
+            }
+          }
+          const forbiddenTargets = new Set();
+          const forbiddenSlots = new Set();
+          if (upcomingSpeaker) {
+            forbiddenTargets.add(upcomingSpeaker);
+            if (onStage.has(upcomingSpeaker)) forbiddenSlots.add(onStage.get(upcomingSpeaker).slot);
+          }
+          if (focus.targetName) {
+            forbiddenTargets.add(focus.targetName);
+            if (onStage.has(focus.targetName)) forbiddenSlots.add(onStage.get(focus.targetName).slot);
+          } else if (focus.posType !== 5) {
+            const occupants = [...onStage.values()].filter((m) => m.slot === focus.posType);
+            if (occupants.length === 1) {
+              forbiddenTargets.add(occupants[0].cast);
+              forbiddenSlots.add(focus.posType);
+            }
+          }
+          if ((hasTargetName && forbiddenTargets.has(String(row.TargetName))) ||
+              (posType !== null && forbiddenSlots.has(posType))) {
+            failures.push({ code: "dofFocusedSpeaker", index, cmd: "DoF",
+                            target: row.TargetName || posType,
+                            message: `DoF targeted focused speaker (${row.TargetName || posType})` });
+          }
+        }
+      } else if (v === 0) {
+        effects.dof = { active: false, index: -1 };
+      }
+      continue;
+    }
+    if (row.cmd === "Role") {
+      seenSceneContent = true;
+      const v = numeric(row.Parameter1);
+      if (v !== null) effects.role = Math.abs(v) > 0 ? { value: v, index } : { value: 0, index: -1 };
+      continue;
+    }
+    if (row.cmd === "Tilt") {
+      seenSceneContent = true;
+      const v = numeric(row.Parameter1);
+      if (v !== null) effects.tilt = Math.abs(v) > 0 ? { value: v, index } : { value: 0, index: -1 };
+      continue;
+    }
+    if (row.cmd === "Brightness") {
+      seenSceneContent = true;
+      const v = numeric(row.Parameter1);
+      const layers = Array.isArray(row.CanvasLayers) ? row.CanvasLayers : null;
+      const scope = layers && layers.includes(0) && !row.TargetName ? "bg"
+        : row.TargetName ? String(row.TargetName) : "global";
+      if (v !== null) {
+        if (Math.abs(v - 1) > 1e-6) effects.brightness.set(scope, { value: v, index });
+        else effects.brightness.delete(scope);
+      }
+      continue;
+    }
+    if (row.cmd === "Frame") {
+      seenSceneContent = true;
+      const asset = String(row.TargetAssetName || "_default");
+      const act = String(row.Parameter2 || "");
+      if (act === "Hide_anime") effects.frames.delete(asset);
+      else if (act === "Show_anime") effects.frames.set(asset, index);
+      else if (effects.frames.has(asset)) effects.frames.delete(asset);
+      else effects.frames.set(asset, index);
+      continue;
+    }
+    if (row.cmd === "PostEffect") {
+      seenSceneContent = true;
+      const asset = String(row.TargetAssetName || "_default");
+      if (effects.postEffects.has(asset)) effects.postEffects.delete(asset);
+      else effects.postEffects.set(asset, index);
+      continue;
+    }
+    if (row.cmd === "CameraShake") {
+      seenSceneContent = true;
+      if (effects.cameraShake.active) effects.cameraShake = { active: false, index: -1 };
+      else effects.cameraShake = { active: true, index };
+      continue;
+    }
+    if (row.cmd === "Look" || row.cmd === "LookTarget") {
+      seenSceneContent = true;
+      const target = String(row.TargetName || "_default");
+      const isStop = String(row.Parameter3 || "").toLowerCase() === "stop";
+      if (isStop) effects.gaze.delete(target);
+      else effects.gaze.set(target, { cmd: row.cmd, index });
+      continue;
+    }
+    if (row.cmd === "Talk") {
+      seenSceneContent = true;
+      const tIdx = talkCount++;
+      const text = talkRowText(episode, row, script);
+      const beat = matchedBeats ? matchedBeats[tIdx] : null;
+      const isThought = beat?.thought === true;
+      const isVoiceless = text !== "" && !hasSpokenContent(text);
+      if ((isThought || isVoiceless) && row.IgnoreLipSync !== 1) {
+        failures.push({ code: "missingIgnoreLipSync", index, cmd: "Talk",
+                        message: "Talk on voiceless/thought line must set IgnoreLipSync: 1" });
+      }
+      if (inClose) {
+        closeTalkCount++;
+        if (closeTalkCount > 3 && !closeBurstReported) {
+          closeBurstReported = true;
+          failures.push({ code: "closeBurstUnrecovered", index, startIndex: closeStartIndex,
+                          lines: closeTalkCount, cmd: "Talk",
+                          message: "close/very-close burst exceeded 3 lines without recovering to middle/far" });
+        }
+      }
+      if (row.TargetName && onStage.has(String(row.TargetName)) && (focus.distance >= 4 || Math.abs(trackOffset) > 1e-6)) {
+        const char = onStage.get(String(row.TargetName));
+        const charX = (SLOT_WORLD_X[char.slot] ?? 0) + char.x;
+        const camBaseX = (focus.targetName && onStage.has(focus.targetName)
+          ? SLOT_WORLD_X[onStage.get(focus.targetName).slot]
+          : SLOT_WORLD_X[focus.posType]) ?? 0;
+        const camX = camBaseX + trackOffset;
+        const distZoom = DIST_ZOOM[focus.distance] ?? 1.4;
+        const fov = 39.6 / (distZoom * zoomMul);
+        const halfWidth = (5.5 + char.z) * Math.tan((fov * Math.PI) / 360) * (13 / 6);
+        if (halfWidth > 0 && Math.abs(charX - camX) > 0.7 * halfWidth) {
+          failures.push({
+            code: "speakerOutsideCentralBand", index, cmd: "Talk", target: String(row.TargetName),
+            ratio: Number((Math.abs(charX - camX) / halfWidth).toFixed(3)),
+            message: `Speaker ${row.TargetName} head is outside central 70% band (${Math.round((Math.abs(charX - camX) / halfWidth) * 100)}%)`,
+          });
+        }
+      }
+    }
+  }
+
+  checkUnclosed("episode end", rows.length - 1);
 };
 
 // {episode, story, script, requires} -> audit report. `requires` is the
@@ -132,7 +456,7 @@ export const auditCompiledStory = ({ episode, story = null, script = null, requi
     if (!row || typeof row !== "object" || Array.isArray(row)) continue;
     if (row.cmd === "Focus") {
       parameters.Focus.count++;
-      checkRange(row, index, "CameraDistance", [1, 5], true);
+      checkRange(row, index, "CameraDistance", [0, 6], true);
       checkRange(row, index, "Duration", [0, 20]);
       checkRange(row, index, "PositionType", [1, 9]);
       const distance = numeric(row.CameraDistance);
@@ -147,6 +471,28 @@ export const auditCompiledStory = ({ episode, story = null, script = null, requi
       if (value !== null) parameters.Track.parameter1.push(String(row.Parameter1));
       const duration = numeric(row.Duration);
       if (duration !== null) parameters.Track.durations.push(duration);
+    } else if (row.cmd === "DoF") {
+      parameters.DoF.count++;
+      checkRange(row, index, "Parameter1", [0, 1], true);
+      const dofVal = numeric(row.Parameter1);
+      checkRange(row, index, "Duration", dofVal === 0 ? [0, 10] : [0.5, 10]);
+      if (row.Parameter1 !== undefined) parameters.DoF.parameter1.push(String(row.Parameter1));
+      const duration = numeric(row.Duration);
+      if (duration !== null) parameters.DoF.durations.push(duration);
+    } else if (row.cmd === "Look") {
+      parameters.Look.count++;
+      const isStop = String(row.Parameter3 || "").toLowerCase() === "stop";
+      checkRange(row, index, "Parameter1", [-1, 1], !isStop);
+      checkRange(row, index, "Parameter2", [-1, 1], false);
+      checkRange(row, index, "Duration", isStop ? [0, 10] : [0.2, 10], false);
+      if (row.Parameter1 !== undefined) parameters.Look.parameter1.push(String(row.Parameter1));
+      if (row.Parameter2 !== undefined) parameters.Look.parameter2.push(String(row.Parameter2));
+      const duration = numeric(row.Duration);
+      if (duration !== null) parameters.Look.durations.push(duration);
+    } else if (row.cmd === "LookTarget") {
+      const isStop = String(row.Parameter3 || "").toLowerCase() === "stop";
+      checkRange(row, index, "PositionType", [1, 9], !isStop && row.PositionType !== undefined);
+      checkRange(row, index, "Duration", isStop ? [0, 10] : [0.2, 10], false);
     } else if (row.cmd === "Se") {
       parameters.Se.count++;
       if (row.Parameter1 === "Stop") parameters.Se.stops++;
@@ -155,12 +501,14 @@ export const auditCompiledStory = ({ episode, story = null, script = null, requi
       const duration = numeric(row.Duration);
       if (duration !== null) parameters.Se.durations.push(duration);
     } else if (row.cmd === "Bgm") {
-      const stop = row.Parameter1 === "1" || row.Parameter1 === 1 || row.Parameter1 === "Stop";
+      const fadeSec = numeric(row.Parameter1);
+      const stop = String(row.Parameter1 || "").toLowerCase() === "stop" ||
+        (fadeSec !== null && fadeSec >= 0 && fadeSec <= 20);
       if (row.BgmID === undefined && !stop)
         failures.push({ code: "bgmId", index, cmd: row.cmd,
                         message: "Bgm has no BgmID and is not a stop row" });
     }
-    const spec = ["Focus", "Track", "Se"].includes(row.cmd)
+    const spec = ["Focus", "Track", "Se", "DoF", "Look", "LookTarget"].includes(row.cmd)
       ? null : COMMAND_PARAMETER_RANGES[row.cmd];
     if (!spec) continue;
     parameters[row.cmd].count++;
@@ -231,7 +579,7 @@ export const auditCompiledStory = ({ episode, story = null, script = null, requi
   closure.checked = Boolean(story?.parts?.sounds);
   closure.ok = closure.missing.length === 0;
 
-  // HostActions timed looks are the 0.1.8 engine defect this harness avoids.
+  // HostActions timed looks run on the site host scheduler (`page.js`); validate slot 1..9 or Stop.
   rows.forEach((row, index) => {
     if (!row || typeof row !== "object" || Array.isArray(row)) return;
     if (row.HostActions === undefined) return;
@@ -240,11 +588,21 @@ export const auditCompiledStory = ({ episode, story = null, script = null, requi
       return;
     }
     row.HostActions.forEach((action, actionIndex) => {
-      if (action && Object.hasOwn(action, "LookTargetPosition"))
-        failures.push({ code: "hostActionsLook", index, action: actionIndex, cmd: row.cmd,
-                        message: "HostActions contains LookTargetPosition; emit a Look/LookTarget row instead" });
+      if (!action || !Object.hasOwn(action, "LookTargetPosition")) return;
+      const pos = action.LookTargetPosition;
+      if (typeof pos === "string" && pos.toLowerCase() === "stop") return;
+      const num = numeric(pos);
+      if (num === null || num < 1 || num > 9) {
+        failures.push({
+          code: "hostActionsLook", index, action: actionIndex, cmd: row.cmd,
+          message: `HostActions[${actionIndex}].LookTargetPosition=${JSON.stringify(pos)} must be in 1..9 or "Stop"`,
+        });
+      }
     });
   });
+
+  // Semantic, framing, lip-sync and stateful effect closure checks.
+  auditSceneSemantics(rows, episode, script, failures);
 
   const objectRows = rows.filter((row) => row && typeof row === "object" && !Array.isArray(row));
   const expected = sortedUnique(objectRows.map((row) => row.cmd));

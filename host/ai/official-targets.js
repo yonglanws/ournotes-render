@@ -40,10 +40,10 @@ const MOTION_MAX_PER_LINE = 1.4;
 // Official no-Motion share is ~6%; 12% is a policy cap for pruning extreme
 // over-acting, not a target for normal scenes.
 const STATIC_POLICY_SHARE = 0.12;
-const PEDESTAL_FLOOR = 1;
-const PAN_V2_FLOOR = 1;
+const PEDESTAL_FLOOR = 0;
+const PAN_V2_FLOOR = 0;
 const SE_FLOOR = 1;
-const TRACK_FLOOR = 1;
+const TRACK_FLOOR = 0;
 
 export const dialogueBudgetFor = (minutes = 2) => {
   const requested = Number(minutes);

@@ -287,11 +287,22 @@ test("short-scene prompts never print an inverted range or an unreachable look/S
   const nine = { lines: Array.from({ length: 9 }, (_, i) =>
     ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `第${i + 1}句。` })) };
   const [, user] = buildStoryboardMessages({ plan: PLAN, dialogue: nine, catalog: CATALOG, request: {}, config: CONFIG });
-  assert.match(user.content, /写 1 个 pedestal/);
-  assert.match(user.content, /1 个 pan/);
+  assert.match(user.content, /建议写 0~1 个 pedestal/);
+  assert.match(user.content, /0~1 个 pan/);
   assert.match(user.content, /0 个 dof/);
   assert.match(user.content, /独立 look 最多 2/);
   assert.match(user.content, /Se 约 1 条/);
+});
+
+test("static wobble quotas are replaced by motivated cinematography cues", () => {
+  assert.equal(OFFICIAL_TARGETS.pedestalPerSceneFloor, undefined);
+  const rules = stagingRules(3, directionBudgetFor(40));
+  assert.doesNotMatch(rules, /至少 2 次|至少 2 个/);
+  assert.match(rules, /静态双人对话可为 0/);
+  assert.match(rules, /OutSine/);
+  assert.match(rules, /focusTargetHead/);
+  assert.match(rules, /look: "stop"/);
+  assert.match(rules, /shake \{target: "ui"/);
 });
 
 test("the staged prompts carry the scene tone and the BGM tone rule", () => {

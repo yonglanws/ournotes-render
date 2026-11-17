@@ -185,14 +185,24 @@ const makePooledSite = () => {
   void donorStills;
   const donorScene = putGzAsset(dir, "assets", {
     stages: {
-      "adv_bkg_stage_000084": { root: { name: "stage84" } },
-      "adv_bkg_stage_000017": { root: { name: "stage17" } },
+      "adv_bkg_stage_000084": {
+        root: { name: "stage84" },
+        nodes: [{ components: [{ class: "AdvStage", _allVolumeProfileCollection: { _profiles: [
+          { asset: "VolumeProfile", name: "adv_bkg_posteffect_test_001" },
+        ] } }] }],
+      },
+      "adv_bkg_stage_000017": {
+        root: { name: "stage17" },
+        nodes: [{ components: [{ class: "AdvStage", _allVolumeProfileCollection: { _profiles: [
+          { asset: "VolumeProfile", name: "adv_bkg_posteffect_test_001", components: [{ asset: "Bloom" }] },
+        ] } }] }],
+      },
     },
   });
   const donorUiTrans = putGzAsset(dir, "assets", {
     "adv_transition_0002/adv_transition_0002": { _texture: { texture: "rule2" }, _gradient: 1, _easingCurve: { m_Curve: [] } },
   });
-  const donorUiTex = putGzAsset(dir, "assets", { rule2: { file: "textures/rule_adv_transition_0002.png" } });
+  const donorUiTex = putGzAsset(dir, "assets", { rule2: { texture: "textures/rule_adv_transition_0002.png" } });
   const donorStory = putGzAsset(dir, "assets", { models: { chr2: "adv_live2d_sakiko_006_live_01" } });
   const donorEp = putGzAsset(dir, "assets", { advId: 200, commands: [], text: {}, sounds: {}, cuesheets: {} });
 
@@ -326,6 +336,12 @@ test("readSiteCatalog & bundleSiteEpisodeAssets pool visual assets, shaders, tra
   assert.equal(storyDoc.stills, "stills.json");
   const transPart = readGzJson(dir, { asset: outManifest.languages.ja.files["ui/ui.json"].parts[0][1] });
   assert.ok(transPart.adv_transition_0002 && transPart["adv_transition_0002/adv_transition_0002"]);
+  const sceneEntry = outManifest.files["scene.json"];
+  const stagesPart = Array.isArray(sceneEntry.parts)
+    ? readGzJson(dir, { asset: sceneEntry.parts.find(([k]) => k === "stages")[1] })
+    : readGzJson(dir, sceneEntry).stages;
+  assert.deepEqual(stagesPart["adv_bkg_stage_000084"].nodes[0].components[0]._allVolumeProfileCollection._profiles[0].components,
+                   [{ asset: "Bloom" }], "stub VolumeProfile hydrated from donor pool");
 });
 
 test("ensureOfficialAssetBundles downloads and caches missing bundles cleanly and degrades gracefully offline", async () => {
@@ -366,6 +382,10 @@ test("ensureOfficialAssetBundles downloads and caches missing bundles cleanly an
     assert.ok(res.cached.includes("adv_effect_posteffect_monochrome"));
     assert.ok(res.cached.includes("adv_transition_0002/adv_transition_0002"));
     assert.ok(fs.existsSync(path.join(targetDir, "official-bundles.json")));
+    const bundleDoc = JSON.parse(fs.readFileSync(path.join(targetDir, "official-bundles.json"), "utf8"));
+    const mirroredRule = bundleDoc.files["ui/textures/rule_adv_transition_0002.png"];
+    assert.ok(mirroredRule && fs.existsSync(path.join(targetDir, mirroredRule.asset)),
+              "rule transition PNG referenced via .texture is mirrored");
 
     // Second run finds everything already cached and performs zero downloads.
     const second = await ensureOfficialAssetBundles({

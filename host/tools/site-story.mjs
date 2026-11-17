@@ -380,10 +380,11 @@ const readUiTransitions = (site, manifest, preferredLang = "") => {
       if (!tr || out.has(addr)) continue;
       const texName = tr._texture?.texture || "";
       const texMeta = texName ? uiTextures[texName] || null : null;
+      const texPath = texMeta?.texture || texMeta?.file || "";
       const texFiles = {};
-      if (texMeta?.file) {
-        const relUi = texMeta.file.startsWith("ui/") ? texMeta.file : `ui/${texMeta.file}`;
-        const hit = scopeFiles[relUi] || baseFiles[relUi] || scopeFiles[texMeta.file] || baseFiles[texMeta.file];
+      if (texPath) {
+        const relUi = texPath.startsWith("ui/") ? texPath : `ui/${texPath}`;
+        const hit = scopeFiles[relUi] || baseFiles[relUi] || scopeFiles[texPath] || baseFiles[texPath];
         if (hit) texFiles[relUi] = hit;
       }
       out.set(addr, { addr, transition: tr, textureName: texName, textureMeta: texMeta, files: texFiles });
@@ -424,6 +425,43 @@ const castKeysOf = (site, manifest) => {
   }
 };
 
+const stageAdvComp = (prefab) => {
+  if (!prefab || typeof prefab !== "object") return null;
+  for (const node of Array.isArray(prefab.nodes) ? prefab.nodes : []) {
+    for (const comp of Array.isArray(node?.components) ? node.components : []) {
+      if (comp?.class === "AdvStage") return comp;
+    }
+  }
+  return null;
+};
+
+const collectStageVolumeProfiles = (prefab, volumeProfiles) => {
+  const profs = stageAdvComp(prefab)?._allVolumeProfileCollection?._profiles;
+  if (!Array.isArray(profs)) return;
+  for (const p of profs) {
+    if (p && typeof p === "object" && p.name && Array.isArray(p.components) && !volumeProfiles.has(p.name)) {
+      volumeProfiles.set(p.name, p);
+    }
+  }
+};
+
+const hydrateStagePrefab = (prefab, volumeProfiles) => {
+  if (!prefab || !volumeProfiles?.size) return prefab;
+  const profs = stageAdvComp(prefab)?._allVolumeProfileCollection?._profiles;
+  if (!Array.isArray(profs) || !profs.some((p) => p && p.name && !Array.isArray(p.components) && volumeProfiles.has(p.name))) {
+    return prefab;
+  }
+  const cloned = structuredClone(prefab);
+  const clonedProfs = stageAdvComp(cloned)._allVolumeProfileCollection._profiles;
+  for (let i = 0; i < clonedProfs.length; i++) {
+    const p = clonedProfs[i];
+    if (p && p.name && !Array.isArray(p.components) && volumeProfiles.has(p.name)) {
+      clonedProfs[i] = structuredClone(volumeProfiles.get(p.name));
+    }
+  }
+  return cloned;
+};
+
 // Every story of the site contributes its locations, sounds, frames, post-effects, particle effects, stills,
 // rule transitions and shaders to one pool, so a new episode is not limited to what its base story happened to use.
 // Shared neutral venues (`kind: shared` in resourceGuide) are kept even with `castOnly: true`.
@@ -432,6 +470,7 @@ const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = t
   const stageIds = new Set(), musicCues = new Set(), soundCues = new Set();
   const stageFiles = new Map(), stagePrefabs = new Map(), stageShaders = new Map(), soundFiles = new Map();
   const stageCasts = new Map();
+  const volumeProfiles = new Map();
   const frames = new Map(), frameAliases = new Map();
   const postEffects = new Map(), postEffectAliases = new Map();
   const effectInstances = new Map(), effectAssets = new Map(), effectAliases = new Map();
@@ -518,6 +557,7 @@ const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = t
       }
       for (const key of keys) {
         const id = key.split("/").pop();
+        collectStageVolumeProfiles(scene.stages[key], volumeProfiles);
         if (!stagePrefabs.has(key)) stagePrefabs.set(key, scene.stages[key]);
         if (!stageShaders.has(key) && donorShaders.size) {
           stageShaders.set(key, collectDeps(scene.stages[key], manifest.files || {}, donorShaders).shaders);
@@ -587,7 +627,7 @@ const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = t
     : stages;
   for (const stage of offered) stage.caption = captions.get(stage.id) || "";
   return {
-    stages: offered, music, sounds, stageFiles, stagePrefabs, stageShaders, soundFiles,
+    stages: offered, music, sounds, stageFiles, stagePrefabs, stageShaders, soundFiles, volumeProfiles,
     frames, frameAliases, postEffects, postEffectAliases,
     effectInstances, effectAssets, effectAliases,
     stills, stillAliases, transitions, transitionAliases,
@@ -695,7 +735,7 @@ export const bundleSiteEpisodeAssets = ({
   if (addedStages.length && sceneEntry) {
     const merged = { ...baseSceneStages };
     for (const key of addedStages) {
-      const prefab = catalog.pool.stagePrefabs.get(key);
+      const prefab = hydrateStagePrefab(catalog.pool.stagePrefabs.get(key), catalog.pool.volumeProfiles);
       if (prefab) merged[key] = prefab;
     }
     sceneEntry = writeSplitParts(site, sceneEntry, { stages: merged });
@@ -1446,9 +1486,10 @@ export const ensureOfficialAssetBundles = async ({
           const tr = transitions[canonical];
           const texName = tr._texture?.texture || "";
           const texMeta = texName ? uiTextures[texName] : null;
-          if (texMeta?.file) {
-            const relUi = texMeta.file.startsWith("ui/") ? texMeta.file : `ui/${texMeta.file}`;
-            const blobEntry = langScope[relUi] || rFiles[relUi] || langScope[texMeta.file] || rFiles[texMeta.file];
+          const texPath = texMeta?.texture || texMeta?.file || "";
+          if (texPath) {
+            const relUi = texPath.startsWith("ui/") ? texPath : `ui/${texPath}`;
+            const blobEntry = langScope[relUi] || rFiles[relUi] || langScope[texPath] || rFiles[texPath];
             if (blobEntry) await mirrorRemoteFile(relUi, blobEntry);
           }
           uiDoc.transitions[canonical] = tr;

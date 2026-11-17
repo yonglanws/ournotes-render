@@ -385,7 +385,7 @@ export const run = async (job) => {
           ch.smoothChangeToLook(ch.originalLookX, ch.originalLookY, dur)
             .then(() => { if (ch.isAlive) ch.setLookEnabled(false); }).catch(() => {});
         } else if (a.LookTargetPosition) {
-          const target = session.ctx.session.positionToCharacter.get(a.LookTargetPosition);
+          const target = (session.core?.session || session.scene?.session)?.positionToCharacter?.get(a.LookTargetPosition);
           if (target && target.isAlive) {
             const head = target.headPosition(), own = ch.headPosition();
             const dur = Math.max(0, Number(a.LookDuration ?? a.Duration ?? 0.2));

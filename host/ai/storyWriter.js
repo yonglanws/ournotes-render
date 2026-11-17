@@ -35,16 +35,35 @@ const lower = (s) => String(s || "").trim().toLowerCase();
 const isTruncatedAnswer = (error) =>
   /truncated|finish_reason=length/i.test(`${error?.message || ""} ${error?.cause?.message || ""}`);
 
-// Extended official camera/sound fields: normalize() preserves them for the parser, checker and compiler so a staged
-// answer is not silently stripped.
-const EXTRA_BEAT_FIELDS = ["focusDuration", "trackDuration", "pedestal", "pedestalDuration",
-  "pan", "panDuration", "panFocusSlide", "dof", "dofDuration", "dofLayers",
+// Extended official camera/staging/FX/sound fields: normalize() preserves and coerces them cleanly for the parser,
+// checker and compiler so neither the single nor staged pipeline silently strips new DSL fields.
+const EXTRA_BEAT_FIELDS = [
+  "zoom", "zoomDuration",
+  "focusDuration", "trackDuration", "moveDuration", "cameraDuration", "duration", "transitionDuration",
+  "pedestal", "pedestalDuration", "pan", "panDuration", "panFocusSlide",
+  "dof", "dofDuration", "dofLayers", "dofTarget", "ease", "cameraDelay", "focusSharp", "focusTargetHead",
+  "role", "roleDuration", "tilt", "tiltDuration",
   "look", "lookY", "lookDuration", "se", "seDuration", "seDelay", "seStop",
-  "motionFadeIn", "motionWait"];
-const EXTRA_NUMERIC_FIELDS = new Set(["focusDuration", "trackDuration", "pedestal", "pedestalDuration",
-  "pan", "panDuration", "panFocusSlide", "dof", "dofDuration", "dofLayers",
-  "look", "lookY", "lookDuration", "seDuration", "seDelay", "motionFadeIn"]);
-const EXTRA_BOOLEAN_FIELDS = new Set(["seStop", "motionWait"]);
+  "bgm", "bgmFade", "bgmVolume", "bgmStart",
+  "frame", "frameAction", "frameDuration", "frameStop",
+  "postEffect", "postEffectDuration", "postEffectStop",
+  "cameraShake", "cameraShakeFade", "cameraShakeStrength",
+  "thought", "ignoreLipSync", "hideTalk", "motionFadeIn", "motionWait",
+];
+const EXTRA_NUMERIC_FIELDS = new Set([
+  "zoom", "zoomDuration",
+  "focusDuration", "trackDuration", "moveDuration", "cameraDuration", "duration", "transitionDuration",
+  "pedestal", "pedestalDuration", "pan", "panDuration", "panFocusSlide",
+  "dof", "dofDuration", "dofLayers", "cameraDelay",
+  "role", "roleDuration", "tilt", "tiltDuration",
+  "look", "lookY", "lookDuration", "seDuration", "seDelay",
+  "bgmFade", "bgmVolume", "bgmStart",
+  "frameDuration", "postEffectDuration", "cameraShakeFade", "cameraShakeStrength", "motionFadeIn",
+]);
+const EXTRA_BOOLEAN_FIELDS = new Set([
+  "seStop", "thought", "ignoreLipSync", "hideTalk", "focusSharp", "focusTargetHead",
+  "frameStop", "postEffectStop", "motionWait",
+]);
 const asBoolean = (v) => (typeof v === "boolean" ? v
   : typeof v === "string" ? v.trim().toLowerCase() === "true"
     : typeof v === "number" ? v !== 0 : v);
@@ -116,7 +135,8 @@ const normalize = (raw, { catalog, request, config }) => {
     const byName = new Map(Object.entries(doc.cast).map(([id, c]) => [lower(c.name), id]));
     const idOf = (v) => (castIds.has(v) ? v : byName.get(lower(v)) || v);
     const asNumber = (v) => (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : v);
-    const targetOf = (v) => (typeof v === "string" && v && !castIds.has(v) ? idOf(v) : asNumber(v));
+    const targetOf = (v) => (v === "stop" ? "stop"
+      : typeof v === "string" && v && !castIds.has(v) ? idOf(v) : asNumber(v));
     for (const b of doc.beats) {
       if (!isObj(b)) continue;
       for (const key of ["say", "action"]) {
@@ -124,6 +144,7 @@ const normalize = (raw, { catalog, request, config }) => {
       }
       if ("focus" in b) b.focus = targetOf(b.focus);
       if ("lookAt" in b) b.lookAt = targetOf(b.lookAt);
+      if ("dofTarget" in b) b.dofTarget = targetOf(b.dofTarget);
       if ("track" in b) b.track = asNumber(b.track);
       if (isObj(b.camera)) {
         if ("focus" in b.camera) b.camera.focus = targetOf(b.camera.focus);
@@ -142,12 +163,63 @@ const normalize = (raw, { catalog, request, config }) => {
         const fixed = {};
         for (const [id, p] of Object.entries(b.positions)) {
           const key = castIds.has(id) ? id : byName.get(lower(id)) || id;
-          fixed[key] = p;
+          if (isObj(p)) {
+            const np = { ...p };
+            for (const axis of ["dx", "dy", "dz"]) if (axis in np) np[axis] = asNumber(np[axis]);
+            fixed[key] = np;
+          } else {
+            fixed[key] = p;
+          }
         }
         b.positions = fixed;
       }
+      if (isObj(b.move)) {
+        if (typeof b.move.cast === "string" && b.move.cast && !castIds.has(b.move.cast)) b.move.cast = idOf(b.move.cast);
+        for (const k of ["dx", "dy", "dz", "distance", "duration"]) if (k in b.move) b.move[k] = asNumber(b.move[k]);
+        if ("wait" in b.move) b.move.wait = asBoolean(b.move.wait);
+      }
+      if (isObj(b.angle)) {
+        if (typeof b.angle.cast === "string" && b.angle.cast && !castIds.has(b.angle.cast)) b.angle.cast = idOf(b.angle.cast);
+        for (const k of ["z", "x", "duration", "delay"]) if (k in b.angle) b.angle[k] = asNumber(b.angle[k]);
+        if ("wait" in b.angle) b.angle.wait = asBoolean(b.angle.wait);
+      }
+      if (isObj(b.brightness)) {
+        if (typeof b.brightness.target === "string" && b.brightness.target !== "bg" &&
+            b.brightness.target !== "cast" && !castIds.has(b.brightness.target)) {
+          b.brightness.target = idOf(b.brightness.target);
+        }
+        for (const k of ["value", "duration"]) if (k in b.brightness) b.brightness[k] = asNumber(b.brightness[k]);
+        if ("wait" in b.brightness) b.brightness.wait = asBoolean(b.brightness.wait);
+      }
+      if (isObj(b.shake)) {
+        if (typeof b.shake.target === "string" && !["ui", "stage", "all"].includes(b.shake.target) &&
+            !castIds.has(b.shake.target)) {
+          b.shake.target = idOf(b.shake.target);
+        }
+        for (const k of ["power", "duration"]) if (k in b.shake) b.shake[k] = asNumber(b.shake[k]);
+        if ("wait" in b.shake) b.shake.wait = asBoolean(b.shake.wait);
+      }
+      if (b.flash === "true") b.flash = true;
+      else if (isObj(b.flash)) {
+        if ("duration" in b.flash) b.flash.duration = asNumber(b.flash.duration);
+        if ("wait" in b.flash) b.flash.wait = asBoolean(b.flash.wait);
+      }
+      if (isObj(b.stageEnv) && "value" in b.stageEnv) b.stageEnv.value = asNumber(b.stageEnv.value);
+      if (b.still === "stop") b.still = { stop: true };
+      if (isObj(b.still)) {
+        for (const k of ["fade", "alpha", "screenAlpha", "index"]) if (k in b.still) b.still[k] = asNumber(b.still[k]);
+        if ("stop" in b.still) b.still.stop = asBoolean(b.still.stop);
+      }
+      if (isObj(b.subtitles)) {
+        if (typeof b.subtitles.target === "string" && b.subtitles.target && !castIds.has(b.subtitles.target)) {
+          b.subtitles.target = idOf(b.subtitles.target);
+        }
+        if ("duration" in b.subtitles) b.subtitles.duration = asNumber(b.subtitles.duration);
+        if ("wait" in b.subtitles) b.subtitles.wait = asBoolean(b.subtitles.wait);
+      }
       for (const key of EXTRA_BEAT_FIELDS) {
         if (!(key in b)) continue;
+        if (key === "look" && b[key] === "stop") continue;
         if (EXTRA_NUMERIC_FIELDS.has(key)) b[key] = asNumber(b[key]);
         else if (EXTRA_BOOLEAN_FIELDS.has(key)) b[key] = asBoolean(b[key]);
       }
@@ -248,6 +320,9 @@ const siteFor = (catalog) => ({
     motions: m.motions, expressions: m.expressions, defaultMotion: m.defaultMotion, defaultExpression: m.defaultExpression,
   }])),
   sounds: catalog.sounds || [],
+  ...(catalog.frames !== undefined ? { frames: catalog.frames } : {}),
+  ...(catalog.postEffects !== undefined ? { postEffects: catalog.postEffects } : {}),
+  ...(catalog.stills !== undefined ? { stills: catalog.stills } : {}),
 });
 
 // Everything the API can tell a caller about a script before rendering.

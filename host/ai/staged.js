@@ -2,11 +2,15 @@
 // dialogue with the full persona prompts of the chosen cast, pass 3 directs that finished dialogue (stage, blocking,
 // camera, motion, expression, gaze, listener reactions, BGM). The dialogue is final after pass 2: pass 3 references
 // line ids and mergeStagedScript restores the exact text, so a direction pass can never silently rewrite a line.
-import { motionStems, nearest } from "../../scripts/lib/story-author/script.js";
+import {
+  BEAT_KEYS as GRAMMAR_BEAT_KEYS, FADE_RULES, KINDS as GRAMMAR_KINDS, LOOK_STOP, MUSIC_STOP,
+} from "../../scripts/lib/story-author/grammar.js";
+import { motionStem, motionStems, nearest } from "../../scripts/lib/story-author/script.js";
+import { frameChoices, postEffectChoices, soundChoices, transitionChoices, transitionRuleOf } from "../story/resourceGuide.js";
 import { budgetCount, dialogueBudgetFor, directionBudgetFor, gazeBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
 import { dialoguePersonaPrompt } from "./personas.js";
 import { MAX_PROMPT_MODELS, expressionListFor, motionListFor, officialDenominatorNote, personaEntryFor, stagingRules, voiceStyleFor } from "./prompt.js";
-import { musicLine, soundLine, stageLine } from "./resourceLines.js";
+import { frameLine, musicLine, postEffectLine, soundLine, stageLine, transitionLine } from "./resourceLines.js";
 
 const MAX_CAST = 3;
 
@@ -649,9 +653,15 @@ export const buildStoryboardMessages = ({ plan, dialogue, catalog, request, conf
   const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
   const stageLines = catalog.stages.slice(0, 80).map(stageLine).join("\n") || "(none)";
   const musicLines = catalog.music.slice(0, 40).map(musicLine).join("\n") || "(none)";
-  const soundChoices = (catalog.sounds || []).slice(0, 40);
-  const soundLines = soundChoices.map(soundLine).join("\n") || "(none)";
-  const exampleSe = soundChoices[0]?.cue || "";
+  const resolvedSounds = soundChoices(catalog.soundChoices || catalog.sounds || []).slice(0, 40);
+  const resolvedFrames = frameChoices(catalog.frameChoices || catalog.frames || []).slice(0, 24);
+  const resolvedPostEffects = postEffectChoices(catalog.postEffectChoices || catalog.postEffects || []).slice(0, 24);
+  const resolvedTransitions = transitionChoices(catalog.transitionChoices || catalog.transitions || []).slice(0, 16);
+  const soundLines = resolvedSounds.map(soundLine).join("\n") || "(none)";
+  const frameLines = resolvedFrames.map(frameLine).join("\n") || "(none)";
+  const postEffectLines = resolvedPostEffects.map(postEffectLine).join("\n") || "(none)";
+  const transitionLines = resolvedTransitions.map(transitionLine).join("\n") || "(none)";
+  const exampleSe = resolvedSounds[0]?.cue || "";
   const modelLines = plan.cast.map((c) => {
     const m = index.byId.get(c.model);
     return [
@@ -714,6 +724,17 @@ ${musicLines}
 只在台词里真的发生对应动作时使用（敲门、拿起手机、脚步、写字……），不要用 se 代替动作，也不要在同一句叠两个。
 ${soundLines}
 
+## 可用画面遮罩（frame 只能从这里选；列表为 (none) 时不写 frame）
+只在回忆、高潮遮幅、氛围或视觉冲击时按描述选用，用完记得关闭（frameStop: true）。
+${frameLines}
+
+## 可用后期滤镜（postEffect 只能从这里选；列表为 (none) 时不写 postEffect）
+只在回忆闪回、心理冲击或明显氛围切换时按情绪选用，结束时用 postEffectStop: true 关闭。
+${postEffectLines}
+
+## 可用转场规则（scene / fade 的 fadeRule 或 transition）
+${transitionLines}
+
 ## 可用动作与表情（只能给对应的 cast）
 ${modelLines}
 
@@ -739,20 +760,22 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
 规则：
 - 第一条 beat 必须是 scene；scene 的 positions 只放 1 人，其余角色 2~4 句后用 positions 进场。
 - **每个 line id 必须出现且只出现一次，顺序与台词稿完全一致**；不要在 line beat 里写 say 或 text。
-- 非 line beat 只有 scene / positions / camera / fade / pause / action，插在合适的台词之间；不要为每一句新开 scene，也不要反复 fade。
-- line beat 只写演出字段：motion、expression、lookAt、focus、camera、track、zoom、zoomDuration、actions，以及可选的 focusDuration、trackDuration、pedestal、pedestalDuration、pan、panDuration、panFocusSlide、dof、dofDuration、dofLayers、look、lookY、lookDuration、se、seDuration、seDelay、seStop、motionFadeIn、motionWait。不写 focus/camera/track 就保持当前镜头。trackDuration 只在写了 track 时有效，focusDuration 只在写了 focus/camera 时有效。
-- narrate 台词（[narrate]）没有说话者，不能写 motion、expression、lookAt、look、lookY、lookDuration、se、seDuration、seDelay、seStop、motionFadeIn、motionWait；只写 focus/camera/track/zoom/运镜字段和 actions（actions 必须带 cast）。
-- 每个说话者开口前必须已经在台上；用 positions 让他进场。**两人同台用 left / right**（不要用 far-left / far-right，间隔太开）；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0），默认 far 群像；近景只拍单人特写（close/very-close，focus 指向一个人），不拍中景/群像推近" : "同台最多 2 人，第 3 人必须等一人退场后再进场"}；不要用 center+right 或 center+left（会重叠）。
+- 非 line beat 可插在合适的台词之间：scene / positions / camera / fade / pause / action / move / angle / bgm / frame / frameStop / postEffect / postEffectStop / brightness / shake / cameraShake / flash / talkWindow / stageEnv / still / subtitles / hideTalk；不要为每一句新开 scene，也不要反复 fade。
+- line beat 可写演出与特效字段：motion、expression、lookAt、focus、camera、track、zoom、zoomDuration、actions、thought、ignoreLipSync、hideTalk、focusSharp、focusTargetHead、ease、cameraDelay、focusDuration、trackDuration、pedestal、pedestalDuration、pan、panDuration、panFocusSlide、dof、dofDuration、dofLayers、dofTarget、role、roleDuration、tilt、tiltDuration、look、lookY、lookDuration、move、angle、bgm、bgmFade、bgmVolume、bgmStart、frame、frameAction、frameDuration、frameStop、postEffect、postEffectDuration、postEffectStop、brightness、shake、cameraShake、cameraShakeFade、cameraShakeStrength、flash、talkWindow、se、seDuration、seDelay、seStop、motionFadeIn、motionWait。不写 focus/camera/track 就保持当前镜头。trackDuration 只在写了 track 时有效，focusDuration/focusSharp/focusTargetHead 只在写了 focus/camera 时有效。
+- narrate 台词（[narrate]）没有说话者，不能写 motion、expression、lookAt、look、lookY、lookDuration、se、seDuration、seDelay、seStop、motionFadeIn、motionWait；只写 focus/camera/track/zoom/运镜字段、thought/ignoreLipSync/hideTalk/talkWindow 和 actions（actions 必须带 cast）。
+- 每个说话者开口前必须已经在台上；用 positions 让他进场。**两人同台用 left / right**（不要用 far-left / far-right，间隔太开）；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0），默认 far 群像（可用 positions 的 dz: 0.6~1.5 做景深错位）；近景只拍单人特写（close/very-close，focus 指向一个人），不拍中景/群像推近" : "同台最多 2 人，第 3 人必须等一人退场后再进场"}；不要用 center+right 或 center+left（会重叠）。
 - **镜头预算**：全场约 ${budget.focusChanges} 个 focus（含 scene/positions 上的；官方 Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句），其中 close 近景约 ${budget.closeUps} 次（距离 4 约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行），near 全景 0~1 次。close 停 1~2 句（偶尔 3 句），下一句用 middle + focus 5 回到二人/群像；不要连续两句 close，也不要停在同一个 close 上直到结尾；三人同台时 close 只拍单人特写。
   大部分 line beat 不要写 focus/camera/track，只有真的换机位时才写；同一机位保持 3~4 句，连续两句都写 focus 通常就是切太碎。推近（middle/far → close）是硬切，拉回（close → middle/far）会自动缓推，不需要写 duration；三人同台时只有单人特写可以推近。
 - **换机位上限**：整场只有 ${Math.max(0, budget.focusChanges - 2)} 句 line beat 可以写 focus/camera/track（scene/positions 的 Focus 另计）；请把镜头字段集中到真正的剪辑句，其余 line beat 一个镜头字段都不要写；多写的会在合并时删除。
-- **慢推镜**：全场约 ${budget.zoomMin}~${budget.zoomMax} 次 zoom，写在情绪句/近景或结尾：推近 1.03~1.10，拉远 0.92~0.98，zoomDuration 3~5 秒。一个机位最多 1 次；不写就静止，不要每个镜头都推。
-- **视线预算**：全场总视线（lookAt + 独立 look）约 ${gaze.total} 次；双人戏每 3~4 句最多 1 个 lookAt，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名或 1~9 的构图点；不要每句都看着对方。独立 look 最多 ${gaze.independentMax} 个（计入上面的总视线，不额外增加），写成 "look": -0.4, "lookY": 0.1, "lookDuration": 0.5，与 lookAt 二选一，用来表现角色把视线移开。
-- **表演预算**：全场至少 ${budget.motionMin} 个、目标 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；低于 ${budget.motionMin} 个视为不合格。约 ${noMotionTarget} 句可以完全没有 Motion（参考上限 ${budget.maxStatic} 句；超出预算时优先修剪最短句）；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。
-- **扩展运镜与声音（官方实测频率，不是可选装饰）**：写 ${budgetCount(2, budget.pedestal)} 个 pedestal（"pedestal": -0.2, "pedestalDuration": 1.5，轻微上下移）、${budgetCount(2, budget.panV2)} 个 pan（"pan": -5 或 8, "panDuration": 2，只在换组/横移句；本场至少 2 个，双人情绪转折也可轻微横移）、${budgetCount(0, budget.dof)} 个 dof（"dof": 0.5, "dofLayers": 2, "dofDuration": 1.5，情绪特写；角色 DoF 必须有台上目标）、独立 look 最多 ${gaze.independentMax} 个（见视线预算，计入总视线）；Se 约 ${budget.se} 条（se 只能写上面音效清单里的 cue；清单为 (none) 时不写 se/seStop），Track 约 ${budget.track} 次。可选时长字段：focusDuration、trackDuration、pedestalDuration、panDuration、panFocusSlide、dofDuration、dofLayers、lookY、lookDuration、seDuration、seDelay、seStop、motionFadeIn、motionWait；不写就给默认时长。trackDuration 只在写了 track 时有效，focusDuration 只在写了 focus/camera 时有效；角色 DoF 需要台上目标（say 默认说话者，action 用动作角色；camera/narrate 的 focus 指向具体角色或有人的位置，省略 focus 时编译器选当前镜头附近的台上角色），背景 DoF（dofLayers 0）不需要。
+- **慢推镜**：全场约 ${budget.zoomMin}~${budget.zoomMax} 次 zoom，写在情绪句/近景或结尾：推近 1.03~1.10，拉远 0.92~0.98，zoomDuration 3~5 秒、ease "OutSine"。一个机位最多 1 次；不写就静止，不要每个镜头都推。
+- **视线预算**：全场总视线（lookAt + 独立 look）约 ${gaze.total} 次；双人戏每 3~4 句最多 1 个 lookAt，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名、1~9 构图点或 "stop"；不要每句都看着对方。独立 look 最多 ${gaze.independentMax} 个（计入上面的总视线，不额外增加），如低头回避 "look": 0.4, "lookY": -0.6, "lookDuration": 0.4，结束后用 "look": "stop" 收回。
+- **表演预算**：全场至少 ${budget.motionMin} 个、目标 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；低于 ${budget.motionMin} 个视为不合格。约 ${noMotionTarget} 句可以完全没有 Motion（参考上限 ${budget.maxStatic} 句；超出预算时优先保留短反应句，修剪长段中的重复动作）；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。motion 优先写 stem（如 mtn_smile01），编译器会按左 _R / 中 _C / 右 _L 自动对齐面向。
+- **扩展运镜、演出特效与声音（按剧情动机使用，静坐对话可为 0，所有开关效果用完必收回）**：
+  - 建议写 ${budgetCount(0, budget.pedestal)} 个 pedestal（蹲下找东西用 -0.25，静坐对话可为 0）、${budgetCount(0, budget.panV2)} 个 pan（多句倾诉/换组横移用 -12~12，ease "OutSine" 或 "Linear"，静坐对话可为 0）、${budgetCount(0, budget.dof)} 个 dof（背景虚化用 "dof": 0.5, "dofLayers": 0；**绝不虚化聚焦说话者**，角色 dofLayers 2 必须写 dofTarget 指向非说话者）、独立 look 最多 ${gaze.independentMax} 个（计入总视线）；Se 约 ${budget.se} 条（只能写上方清单 cue；(none) 时不写），Track 约 ${budget.track} 次（close 自动限幅 ±0.25）。
+  - 动机触发：情绪转折用 ease "OutSine" + zoom + 背景 dof + bgm: "stop"；沉默停顿用 hideTalk: true + pause（>= 0.6s 自动隐藏对话窗）；省略号/心声设 thought: true / ignoreLipSync: true；蹲起/走位用 move {dir: "down"|"up", distance, duration} + focusTargetHead: true；歪头用 angle {z}；惊呼爆发用 shake {target: "ui", power: 3~5}；回忆独白用 postEffect / frame / brightness {target: "bg", value: 0.5} / fadeColor "#FFFFFF" / transition "dissolve"，结束时必须成对写 postEffectStop: true / frameStop: true / brightness 1 / look: "stop" / role: 0 / tilt: 0。
 - 听者反应写进 actions（at: 0），**每句最多 1 条**，cast 必须是台上的其他角色；不要给说话者本人写 actions，也不要一句叠两个听者。
 - focus 优先写构图点/位置，角色 focus 只给 close 近景和情绪最重的 1~2 句；close / very-close 必须 focus 到角色 id 或该角色的位置，不要用 focus 5。track 只在换组/群像横移时写，-4~4，双人通常 0~1 次。
-- 没有合适的动作/表情就省略字段，不要编清单之外的名字。
+- 没有合适的动作/表情/特效就省略字段，不要编清单之外的名字。
 
 示例（只演示引用 line id、镜头和反应的结构；不要照抄演出）：
 ${example ? JSON.stringify(example, null, 2) : "(none)"}
@@ -782,36 +805,17 @@ export const buildStoryboardRepairMessages = ({ plan, dialogue, storyboard, prob
 // Merge: the dialogue is authoritative, the storyboard only says how it is staged
 // ---------------------------------------------------------------------------
 
-// The extended official camera/sound fields the parser, checker and compiler support. The merge keeps them on the
-// right beats and drops any field the resolved beat kind does not accept.
-const EXTRA_DIRECTION_KEYS = ["focusDuration", "trackDuration", "pedestal", "pedestalDuration",
-  "pan", "panDuration", "panFocusSlide", "dof", "dofDuration", "dofLayers",
-  "look", "lookY", "lookDuration", "se", "seDuration", "seDelay", "seStop",
-  "motionFadeIn", "motionWait"];
-
-const DIRECTION_KEYS = ["motion", "expression", "lookAt", "focus", "camera", "track", "zoom", "zoomDuration",
-                        "actions", ...EXTRA_DIRECTION_KEYS];
-// A narration has no speaker: motion/expression/gaze/sound/acting fields belong to a say or action beat.
-const NARRATE_DIRECTION_KEYS = ["focus", "camera", "track", "zoom", "zoomDuration", "focusDuration", "trackDuration",
-                                "pedestal", "pedestalDuration", "pan", "panDuration", "panFocusSlide",
-                                "dof", "dofDuration", "dofLayers", "actions"];
-const BEAT_KEYS = ["scene", "positions", "camera", "focus", "track", "zoom", "zoomDuration", "music", "location",
-                   "duration", "fade", "pause", "action", "motion", "expression", "lookAt",
-                   ...EXTRA_DIRECTION_KEYS];
-// The fields each non-line beat kind accepts, so a storyboard cannot hand the parser a field its beat rejects.
-const NON_LINE_KEYS = {
-  scene: ["scene", "music", "location", "camera", "focus", "track", "positions", "focusDuration", "trackDuration",
-          "se", "seDuration", "seDelay", "seStop"],
-  positions: ["positions", "camera", "focus", "track", "focusDuration", "trackDuration", "motionFadeIn", "motionWait"],
-  camera: ["camera", "focus", "track", "zoom", "zoomDuration", "cameraDuration", "focusDuration", "trackDuration",
-           "pedestal", "pedestalDuration", "pan", "panDuration", "panFocusSlide", "dof", "dofDuration", "dofLayers",
-           "se", "seDuration", "seDelay", "seStop", "duration"],
-  fade: ["fade", "duration"],
-  pause: ["pause"],
-  action: ["action", "motion", "expression", "lookAt", "look", "lookY", "lookDuration", "dof", "dofDuration",
-           "dofLayers", "duration", "se", "seDuration", "seDelay", "seStop", "motionFadeIn", "motionWait"],
-};
-const beatKindOf = (beat) => ["scene", "positions", "camera", "fade", "pause", "action"].find((k) => k in beat) || "";
+// Derive allowed keys per beat kind directly from grammar.js so every newly added DSL field passes through staged merges.
+const NON_LINE_KINDS = GRAMMAR_KINDS.filter((k) => k !== "say" && k !== "narrate");
+const DIRECTION_KEYS = GRAMMAR_BEAT_KEYS.say.filter((k) => k !== "id" && k !== "say" && k !== "text");
+const NARRATE_DIRECTION_KEYS = GRAMMAR_BEAT_KEYS.narrate.filter((k) => k !== "id" && k !== "narrate");
+const NON_LINE_KEYS = Object.fromEntries(NON_LINE_KINDS.map((k) => [k, GRAMMAR_BEAT_KEYS[k]]));
+const BEAT_KEYS = [...new Set(NON_LINE_KINDS.flatMap((k) => GRAMMAR_BEAT_KEYS[k]))];
+const BEAT_KEYS_SET = new Set(BEAT_KEYS);
+const EXTRA_DIRECTION_KEYS = DIRECTION_KEYS.filter(
+  (k) => !["motion", "expression", "lookAt", "focus", "camera", "track", "zoom", "zoomDuration", "actions"].includes(k),
+);
+const beatKindOf = (beat) => NON_LINE_KINDS.find((k) => k in beat) || "";
 
 // A model sometimes writes a modifier without its base field (lookY without look, seDuration without se, ...).
 // The parser correctly rejects that, but sending the whole storyboard back for repair costs a round and can end in
@@ -820,13 +824,26 @@ const ORPHAN_MODIFIERS = {
   look: ["lookY", "lookDuration"],
   se: ["seDuration", "seDelay"],
   pan: ["panDuration", "panFocusSlide"],
-  dof: ["dofDuration", "dofLayers"],
+  dof: ["dofDuration", "dofLayers", "dofTarget"],
   pedestal: ["pedestalDuration"],
+  zoom: ["zoomDuration"],
+  role: ["roleDuration"],
+  tilt: ["tiltDuration"],
+  transition: ["transitionDuration"],
+  cameraShake: ["cameraShakeFade", "cameraShakeStrength"],
 };
+const CAMERA_OP_KEYS = ["track", "pedestal", "pan", "dof", "zoom", "role", "tilt"];
 const pruneOrphanModifiers = (beat, { allowFocusDuration = false } = {}) => {
   const dropped = [];
   const hasTrack = beat.track !== undefined || (isObj(beat.camera) && beat.camera.track !== undefined);
   const hasFocus = allowFocusDuration || beat.focus !== undefined || beat.camera !== undefined;
+  const hasAnyCameraOp = hasFocus || CAMERA_OP_KEYS.some((k) => beat[k] !== undefined && beat[k] !== null && beat[k] !== "");
+  for (const field of EXTRA_DIRECTION_KEYS) {
+    if (field in beat && (beat[field] === null || beat[field] === "")) {
+      delete beat[field];
+      dropped.push(field);
+    }
+  }
   for (const [base, fields] of Object.entries(ORPHAN_MODIFIERS)) {
     if (beat[base] !== undefined && beat[base] !== null && beat[base] !== "") continue;
     for (const field of fields) {
@@ -834,12 +851,31 @@ const pruneOrphanModifiers = (beat, { allowFocusDuration = false } = {}) => {
     }
   }
   if (!hasTrack && "trackDuration" in beat) { delete beat.trackDuration; dropped.push("trackDuration"); }
-  if (!hasFocus && "focusDuration" in beat) { delete beat.focusDuration; dropped.push("focusDuration"); }
-  for (const field of EXTRA_DIRECTION_KEYS) {
-    if (field in beat && (beat[field] === null || beat[field] === "")) {
-      delete beat[field];
-      dropped.push(field);
+  for (const key of ["focusDuration", "focusSharp", "focusTargetHead"]) {
+    if (!hasFocus && key in beat) { delete beat[key]; dropped.push(key); }
+  }
+  for (const key of ["ease", "cameraDelay"]) {
+    if (!hasAnyCameraOp && key in beat) { delete beat[key]; dropped.push(key); }
+  }
+  if (beat.look === LOOK_STOP && "lookY" in beat) { delete beat.lookY; dropped.push("lookY"); }
+  if (beat.se && beat.seStop) { delete beat.seStop; dropped.push("seStop"); }
+  if (beat.dofLayers === 0 && "dofTarget" in beat) { delete beat.dofTarget; dropped.push("dofTarget"); }
+  if (beat.transition === "dissolve") {
+    for (const key of ["fadeRule", "fadeColor"]) {
+      if (key in beat) { delete beat[key]; dropped.push(key); }
     }
+  }
+  if ("cameraShakeStrength" in beat && beat.cameraShake !== "start") {
+    delete beat.cameraShakeStrength; dropped.push("cameraShakeStrength");
+  }
+  if ("bgmStart" in beat) {
+    const activeBgm = beat.bgm ?? beat.music;
+    if (!activeBgm || activeBgm === MUSIC_STOP) { delete beat.bgmStart; dropped.push("bgmStart"); }
+  }
+  if ("frameAction" in beat && !beat.frame) { delete beat.frameAction; dropped.push("frameAction"); }
+  if ("frameDuration" in beat && !beat.frame && !beat.frameStop) { delete beat.frameDuration; dropped.push("frameDuration"); }
+  if ("postEffectDuration" in beat && !beat.postEffect && !beat.postEffectStop) {
+    delete beat.postEffectDuration; dropped.push("postEffectDuration");
   }
   return dropped;
 };
@@ -869,7 +905,7 @@ const resolveLine = (beat, lines, index, next) => {
 };
 
 const POSITION_NUMBER = { "far-left": 1, left: 3, center: 5, right: 7, "far-right": 9 };
-const CAMERA_NUMBER = { near: 1, middle: 2, far: 3, close: 4, "very-close": 5 };
+const CAMERA_NUMBER = { full: 0, near: 1, middle: 2, far: 3, close: 4, "very-close": 5, macro: 6 };
 const positionNumber = (v) => (typeof v === "number" ? v
   : isObj(v) ? POSITION_NUMBER[String(v.at || "").trim()] || 5
   : POSITION_NUMBER[String(v || "").trim()] || 5);
@@ -909,6 +945,7 @@ export const enforceGroupShots = (beats, maxOnStage = 3, warnings = []) => {
     if (isObj(beat.positions) && beat.camera === undefined) {
       beat.camera = "far";
       shotFixes++;
+      if (Number(beat.zoom) > 1) dropZoom(beat);
       continue;
     }
     // close/very-close: allowed only when it frames one person; the speaker is the person when focus is the group point.
@@ -954,74 +991,90 @@ export const enforceGroupShots = (beats, maxOnStage = 3, warnings = []) => {
 //   3 people -> far-left / center / far-right (the official group framing)
 // A solo opening is put at left and its camera focus follows, so the first person does not have to move when the
 // second enters at right.
+// Sub-segment staging normalization: computes active on-stage count per blocking segment (between `positions`
+// changes) so a 2-person opening stands at `left` / `right` (3/7) and widens to `far-left` / `center` / `far-right`
+// (1/5/9) only when the 3rd character enters. Preserves object-form {at, dx, dy, dz, motion, expression} slots.
 export const spreadPositions = (beats, maxOnStage = 3, warnings = []) => {
   const limit = Math.max(2, Math.min(3, Math.round(Number(maxOnStage) || 3)));
+  const slotOfEntry = (v) => (isObj(v) ? String(v.at || "").trim() : String(v || "").trim());
+  const withSlot = (orig, slot) => (isObj(orig) ? { ...orig, at: slot } : slot);
   let start = 0;
   while (start < beats.length) {
     let end = start + 1;
     while (end < beats.length && !("scene" in beats[end])) end++;
     const section = beats.slice(start, end);
-    let maxCount = 0, firstSize = 0, firstSeen = false;
-    const order = [];
-    for (const beat of section) {
-      if (!isObj(beat.positions)) continue;
+    const posBeats = section.filter((beat) => isObj(beat.positions));
+    const prevSlots = new Map();
+    for (let pIdx = 0; pIdx < posBeats.length; pIdx++) {
+      const beat = posBeats[pIdx];
       const ids = Object.keys(beat.positions);
-      if (!firstSeen) { firstSize = ids.length; firstSeen = true; }
-      maxCount = Math.max(maxCount, Math.min(ids.length, limit));
-      const sorted = [...ids].sort((a, b) => positionNumber(beat.positions[a]) - positionNumber(beat.positions[b]));
-      for (const id of sorted) if (!order.includes(id)) order.push(id);
+      if (!ids.length) continue;
+      const activeCount = ids.length;
+      const next = {};
+      if (activeCount === 1) {
+        const onlyId = ids[0];
+        let targetSlot = slotOfEntry(beat.positions[onlyId]);
+        // Look ahead to the next multi-person segment so an opening solo sits on the side they will hold when a partner joins.
+        const nextMulti = posBeats.slice(pIdx + 1).find((b) => Object.keys(b.positions).length >= 2 && onlyId in b.positions);
+        if (nextMulti) {
+          const nextIds = Object.keys(nextMulti.positions).sort((a, b) =>
+            positionNumber(nextMulti.positions[a]) - positionNumber(nextMulti.positions[b]));
+          const layout = nextIds.length >= 3 ? ["far-left", "center", "far-right"] : ["left", "right"];
+          const futureSlot = layout[nextIds.indexOf(onlyId)] || "left";
+          targetSlot = futureSlot === "far-right" ? "right" : futureSlot === "far-left" ? "left" : futureSlot;
+        } else if (prevSlots.has(onlyId)) {
+          const prev = prevSlots.get(onlyId);
+          targetSlot = prev === "far-left" ? "left" : prev === "far-right" ? "right" : prev;
+        } else if (!POSITION_NUMBER[targetSlot]) {
+          targetSlot = "center";
+        }
+        next[onlyId] = withSlot(beat.positions[onlyId], targetSlot);
+      } else {
+        const sorted = [...ids].sort((a, b) =>
+          positionNumber(beat.positions[a]) - positionNumber(beat.positions[b]) ||
+          (POSITION_NUMBER[prevSlots.get(a)] ?? 5) - (POSITION_NUMBER[prevSlots.get(b)] ?? 5));
+        const layout = activeCount === 2 ? ["left", "right"] : ["far-left", "center", "far-right", "left", "right"];
+        sorted.forEach((id, i) => {
+          next[id] = withSlot(beat.positions[id], layout[i] || "center");
+        });
+      }
+      const changed = ids.some((id) => slotOfEntry(beat.positions[id]) !== slotOfEntry(next[id]));
+      beat.positions = next;
+      prevSlots.clear();
+      for (const id of ids) prevSlots.set(id, slotOfEntry(next[id]));
+      if (changed) warnings.push({ code: "spreadPositions", message: "站位改为分站两侧，避免人物重叠" });
+      const activeSlots = ids.map((id) => slotOfEntry(next[id]));
+      if (typeof beat.focus === "string" && POSITION_NUMBER[beat.focus] && !activeSlots.includes(beat.focus)) {
+        beat.focus = ids.length === 1 ? slotOfEntry(next[ids[0]]) : 5;
+      }
+      if (ids.length === 1) {
+        const only = slotOfEntry(next[ids[0]]);
+        if (beat.focus === undefined || beat.focus === 5 || beat.focus === "center") beat.focus = only;
+      } else if (beat.focus === undefined || [2, 4, 6, 8].includes(Number(beat.focus))) {
+        beat.focus = 5;
+      }
+      if (ids.length >= 3 && (beat.track === undefined || Number(beat.track) !== 0)) {
+        beat.track = 0;
+        warnings.push({ code: "groupTrack", message: "三人同台取消横移，避免切掉最外侧角色" });
+      }
     }
-    if (maxCount >= 2) {
-      const layout = maxCount === 2 ? ["left", "right"]
-        : firstSize >= 3 ? ["far-left", "center", "far-right"] : ["far-left", "far-right", "center"];
-      const slotOf = new Map(order.map((id, i) => [id, layout[i] || "center"]));
-      for (const beat of section) {
-        if (!isObj(beat.positions)) continue;
-        const ids = Object.keys(beat.positions);
-        const next = {};
-        for (const id of ids) next[id] = slotOf.get(id) || "center";
-        const changed = ids.some((id) => beat.positions[id] !== next[id]);
-        beat.positions = next;
-        if (changed) warnings.push({ code: "spreadPositions", message: "站位改为分站两侧，避免人物重叠" });
-        // A focus written as a position that no longer has a character would aim at empty space.
-        if (typeof beat.focus === "string" && POSITION_NUMBER[beat.focus] && !Object.values(next).includes(beat.focus)) {
-          beat.focus = ids.length === 1 ? next[ids[0]] : 5;
-        }
-        if (ids.length === 1) {
-          const only = next[ids[0]];
-          if (beat.focus === undefined || beat.focus === 5 || beat.focus === "center") beat.focus = only;
-        } else if (beat.focus === undefined || [2, 4, 6, 8].includes(Number(beat.focus))) {
-          beat.focus = 5;
-        }
-        // A group shot with a pan crops the outermost character; the official group framing is centred and far.
-        if (ids.length >= 3) {
-          if (beat.track === undefined || Number(beat.track) !== 0) {
-            beat.track = 0;
-            warnings.push({ code: "groupTrack", message: "三人同台取消横移，避免切掉最外侧角色" });
-          }
+    let stage = {};
+    for (const beat of section) {
+      if (isObj(beat.positions)) stage = beat.positions;
+      if (!isObj(beat)) continue;
+      const distance = cameraNumber(beat.camera);
+      if (distance === CAMERA_NUMBER.near && (beat.say || beat.narrate) && Object.keys(stage).length >= 2) {
+        const id = focusedCast(beat.focus, stage);
+        if (id) {
+          setCameraDistance(beat, "close");
+          warnings.push({ code: "nearCloseUp", message: "near 是全景；单人台词改用 close 近景" });
         }
       }
-      // The camera distances are not intuitive: near is the widest (1.2x), close is a 2.8x close-up. A model that
-      // writes near on a line focused on one character means the close-up; and a close-up that kept the group focus
-      // is aimed at the speaker, not at the empty middle of the stage.
-      let stage = {};
-      for (const beat of section) {
-        if (isObj(beat.positions)) stage = beat.positions;
-        if (!isObj(beat)) continue;
-        const distance = cameraNumber(beat.camera);
-        if (distance === CAMERA_NUMBER.near && (beat.say || beat.narrate) && Object.keys(stage).length >= 2) {
-          const id = focusedCast(beat.focus, stage);
-          if (id) {
-            setCameraDistance(beat, "close");
-            warnings.push({ code: "nearCloseUp", message: "near 是全景；单人台词改用 close 近景" });
-          }
-        }
-        if (distance >= CAMERA_NUMBER.close && Object.keys(stage).length >= 2 &&
-            (beat.focus === undefined || beat.focus === 5 || beat.focus === "center") &&
-            beat.say && Object.prototype.hasOwnProperty.call(stage, beat.say)) {
-          beat.focus = beat.say;
-          warnings.push({ code: "closeUpFocus", message: "近景改为对着说话者，避免镜头对着空处" });
-        }
+      if (distance >= CAMERA_NUMBER.close && Object.keys(stage).length >= 2 &&
+          (beat.focus === undefined || beat.focus === 5 || beat.focus === "center") &&
+          beat.say && Object.prototype.hasOwnProperty.call(stage, beat.say)) {
+        beat.focus = beat.say;
+        warnings.push({ code: "closeUpFocus", message: "近景改为对着说话者，避免镜头对着空处" });
       }
     }
     start = end;
@@ -1128,7 +1181,7 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
     if (orphaned.length)
       warnings.push({ code: "orphanField", message: `${kind || "分镜"} 缺少基础字段，已忽略 ${orphaned.join("、")}` });
     if (kind) {
-      const dropped = BEAT_KEYS.filter((k) => k in beat && !keys.includes(k));
+      const dropped = Object.keys(beat).filter((k) => BEAT_KEYS_SET.has(k) && !keys.includes(k));
       if (dropped.length)
         warnings.push({ code: "storyboardField", message: `${kind} beat 不支持 ${dropped.join("、")}，已忽略` });
     }
@@ -1197,34 +1250,130 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
         if (position && typeof position === "object") repairedNames(position, castId, `${path}/positions/${castId}`);
       }
     }
+    const hasAssetMatch = (list, raw, prefix = "") => {
+      if (!Array.isArray(list) || !list.length || !raw) return raw;
+      if (list.includes(raw)) return raw;
+      const tail = raw.includes("/") ? raw.split("/").pop() : raw;
+      const pref = prefix && !tail.startsWith(prefix) ? `${prefix}${tail}` : "";
+      const hit = list.find((k) => {
+        const kt = k.includes("/") ? k.split("/").pop() : k;
+        return kt === tail || (pref && (k === pref || kt === pref));
+      });
+      return hit || "";
+    };
+    if (beat.frame) {
+      if (Array.isArray(catalog.frames) && catalog.frames.length) {
+        const resolved = hasAssetMatch(catalog.frames, String(beat.frame));
+        if (resolved) beat.frame = resolved;
+        else {
+          warnings.push({ code: "unknownFrame", message: `${path} 的 frame ${beat.frame} 不在站点清单，已省略` });
+          delete beat.frame; delete beat.frameAction; delete beat.frameDuration;
+        }
+      }
+    }
+    if (beat.postEffect) {
+      if (Array.isArray(catalog.postEffects) && catalog.postEffects.length) {
+        const resolved = hasAssetMatch(catalog.postEffects, String(beat.postEffect), "adv_effect_posteffect_");
+        if (resolved) beat.postEffect = resolved;
+        else {
+          warnings.push({ code: "unknownPostEffect", message: `${path} 的 postEffect ${beat.postEffect} 不在站点清单，已省略` });
+          delete beat.postEffect; delete beat.postEffectDuration;
+        }
+      }
+    }
+    if (beat.fadeRule) {
+      const rule = transitionRuleOf(beat.fadeRule);
+      if (FADE_RULES.includes(rule)) beat.fadeRule = rule;
+    }
   });
-  // The storyboard pass over-directs: this model wrote focus/camera on 26 of 40 lines and a lookAt on every other
-  // line. The official rates are scene budgets, so keep evenly spaced cuts and gaze beats and let the rest inherit
-  // the previous shot. Acting, zoom, pedestal, pan, dof and sound stay on the pruned beat.
+  // Shot-pair-aware storyboard pruning: pair (close/very-close/macro push-in -> middle/far recovery) as atomic units
+  // so pruning never strands a 2.8x close-up on an off-screen speaker, and cascade-clean shot-attached FX fields.
+  const CASCADE_CAMERA_KEYS = [
+    "focus", "camera", "track", "focusDuration", "trackDuration", "cameraDuration",
+    "focusSharp", "focusTargetHead", "ease", "cameraDelay",
+    "zoom", "zoomDuration", "pan", "panDuration", "panFocusSlide",
+    "pedestal", "pedestalDuration", "dof", "dofDuration", "dofLayers", "dofTarget",
+    "role", "roleDuration", "tilt", "tiltDuration",
+  ];
   const textBeats = merged.filter((beat) => "say" in beat || "narrate" in beat);
   const cameraBudget = directionBudgetFor(textBeats.length);
   const hasCamera = (beat) => beat.focus !== undefined || beat.camera !== undefined || beat.track !== undefined;
   const structuralFocus = merged.filter((beat) => !("say" in beat || "narrate" in beat) &&
     (beat.scene !== undefined || beat.positions !== undefined || hasCamera(beat))).length;
   const lineFocus = textBeats.filter(hasCamera);
+  const lineIndexMap = new Map(lineFocus.map((beat, idx) => [beat, idx]));
   const allowedLineFocus = Math.max(0, cameraBudget.focusChanges - structuralFocus);
   let focusPruned = 0;
   if (lineFocus.length > allowedLineFocus) {
-    const keep = new Set(evenlySpaced(lineFocus, allowedLineFocus));
+    const units = [];
+    const claimed = new Set();
+    let openCloses = [];
+    for (const beat of merged) {
+      const isText = "say" in beat || "narrate" in beat;
+      if (!isText) {
+        const d = cameraNumber(beat.camera);
+        if (beat.scene !== undefined || (d !== undefined && d < CAMERA_NUMBER.close)) openCloses = [];
+        continue;
+      }
+      const idx = lineIndexMap.get(beat);
+      if (idx === undefined) continue;
+      const d = cameraNumber(beat.camera);
+      if (d !== undefined && d >= CAMERA_NUMBER.close) {
+        openCloses.push(idx);
+      } else if (openCloses.length && (d === undefined || d < CAMERA_NUMBER.close)) {
+        for (const cIdx of openCloses) {
+          units.push({ indices: [cIdx, idx], isPair: true, unclosed: false });
+          claimed.add(cIdx);
+        }
+        claimed.add(idx);
+        openCloses = [];
+      } else {
+        units.push({ indices: [idx], isPair: false, unclosed: false });
+        claimed.add(idx);
+      }
+    }
+    for (const cIdx of openCloses) {
+      if (!claimed.has(cIdx)) units.push({ indices: [cIdx], isPair: false, unclosed: true });
+    }
+    units.sort((a, b) => a.indices[0] - b.indices[0]);
+
+    const keepIndices = new Set();
+    const tryAddUnit = (u) => {
+      const added = u.indices.filter((i) => !keepIndices.has(i));
+      if (keepIndices.size + added.length > allowedLineFocus) return false;
+      for (const i of added) keepIndices.add(i);
+      return true;
+    };
+    const closedUnits = units.filter((u) => !u.unclosed);
+    const seedUnits = evenlySpaced(closedUnits, Math.min(closedUnits.length, allowedLineFocus));
+    for (const u of seedUnits) tryAddUnit(u);
+    if (keepIndices.size < allowedLineFocus) {
+      for (const u of closedUnits) {
+        if (keepIndices.size >= allowedLineFocus) break;
+        tryAddUnit(u);
+      }
+    }
+    if (keepIndices.size < allowedLineFocus) {
+      for (const u of units.filter((u) => u.unclosed)) {
+        if (keepIndices.size >= allowedLineFocus) break;
+        tryAddUnit(u);
+      }
+    }
+
+    const keep = new Set([...keepIndices].map((i) => lineFocus[i]));
     let removed = 0;
     for (const beat of lineFocus) {
       if (keep.has(beat)) continue;
-      for (const key of ["focus", "camera", "track", "focusDuration", "trackDuration", "cameraDuration"])
-        delete beat[key];
+      for (const key of CASCADE_CAMERA_KEYS) delete beat[key];
       removed++;
     }
     focusPruned = removed;
     warnings.push({ code: "focusBudget",
       message: `换机位 ${lineFocus.length + structuralFocus} 处，超过本场 Focus 预算 ${cameraBudget.focusChanges}；` +
-        `已省略 ${removed} 处 line 镜头，保留的剪辑点均匀分布` });
+        `已省略 ${removed} 处 line 镜头，保留的剪辑点成对均匀分布` });
   }
-  // One gaze channel per beat, and the measured look rate for the scene. The first independent gaze offset is kept
-  // so an episode still exercises the sampled Look x/y command, not only LookTarget.
+  // One gaze channel per beat, and the measured look rate for the scene. "stop" resets are preserved whenever an
+  // active gaze precedes them, and do not consume the active gaze budget.
   for (const beat of textBeats) {
     if (beat.lookAt !== undefined && beat.look !== undefined) {
       delete beat.look;
@@ -1235,10 +1384,12 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
   }
   const gazeSlots = [];
   for (const beat of textBeats) {
-    if (beat.lookAt !== undefined && beat.lookAt !== "") gazeSlots.push({ beat, key: "lookAt" });
-    if (beat.look !== undefined) gazeSlots.push({ beat, key: "look" });
+    if (beat.lookAt !== undefined && beat.lookAt !== "" && beat.lookAt !== LOOK_STOP)
+      gazeSlots.push({ beat, key: "lookAt" });
+    if (beat.look !== undefined && beat.look !== LOOK_STOP)
+      gazeSlots.push({ beat, key: "look" });
     for (const action of Array.isArray(beat.actions) ? beat.actions : []) {
-      if (action && action.lookAt !== undefined && action.lookAt !== "")
+      if (action && action.lookAt !== undefined && action.lookAt !== "" && action.lookAt !== LOOK_STOP)
         gazeSlots.push({ beat, action, key: "actionLookAt" });
     }
   }
@@ -1288,7 +1439,7 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
   }
   // 表演预算：一行 say 编译出一条说话者 Motion（motion/expression 取其一即一条），
   // 每条 actions 编译出一条听者表演行；字段不再重复计数。
-  // 官方 noMotionShare 约 6%，maxStatic（12%）是策略上限，但修剪必须达到 motionMax。
+  // 优先保护短反应句（含 ?/!/…… 或可见字数 < 6），优先裁剪长对话段中的连续冗余动作。
   const says = merged.filter((beat) => "say" in beat);
   const budget = directionBudgetFor(says.length);
   const performanceRows = (beat) => {
@@ -1302,11 +1453,35 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
   if (totalRows > budget.motionMax) {
     const beforeRows = totalRows;
     let removedUnits = 0;
+    const scoreTrimPriority = (beat, idx) => {
+      const compact = String(beat.text || "").replace(/\s/g, "");
+      const length = [...compact].length;
+      let score = 0;
+      if (length < 6) score += 100;
+      if (/[?？!！]/.test(compact)) score += 60;
+      if (/[…‥⋯]|\.\.\./.test(compact)) score += 50;
+      if (beat.camera || beat.focus || beat.shake || beat.angle || beat.move || beat.zoom) score += 40;
+      const prev = idx > 0 ? says[idx - 1] : null;
+      if (prev && prev.say === beat.say && (prev.motion || prev.expression)) score -= 40;
+      let prevSame = null;
+      for (let j = idx - 1; j >= 0; j--) {
+        if (says[j].say === beat.say) { prevSame = says[j]; break; }
+      }
+      if (prevSame && beat.motion && prevSame.motion &&
+          motionStem(beat.motion).stem === motionStem(prevSame.motion).stem) {
+        score -= 35;
+      }
+      if (prev && (prev.motion || prev.expression) && idx + 1 < says.length &&
+          (says[idx + 1].motion || says[idx + 1].expression)) {
+        score -= 20;
+      }
+      score -= Math.min(25, length);
+      return score;
+    };
     const candidates = says
-      .map((beat, index) => ({ beat, index,
-        length: [...String(beat.text || "").replace(/\s/g, "")].length }))
+      .map((beat, index) => ({ beat, index, priority: scoreTrimPriority(beat, index) }))
       .filter((item) => performanceRows(item.beat) > 0)
-      .sort((a, b) => a.length - b.length || b.index - a.index);
+      .sort((a, b) => a.priority - b.priority || b.index - a.index);
     for (const item of candidates) {
       if (totalRows <= budget.motionMax) break;
       // Speaker motion + expression compile to one Motion row: remove them together.

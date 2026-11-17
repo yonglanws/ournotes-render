@@ -1266,3 +1266,34 @@ test("mid-scene BGM, dissolve/rule transitions, SFX beats, and stateful closure 
     assert.ok(afterFinalTalk.some((r) => r.cmd === cmd), `expected episode-end closure for ${cmd}`);
   }
 });
+
+test("Frame/PostEffect stops never toggle inactive effects on, and Hide_anime recovery avoids inverting isShowing", () => {
+  const s = script([
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    // Stopping inactive frame / postEffect on a say beat emits nothing (never toggles ON).
+    { say: "a", text: "Inactive stop.", frameStop: true, frame: "adv_frame_fog/adv_frame_fog",
+      postEffectStop: true, postEffect: "adv_effect_posteffect_reminiscence1" },
+    // Start fog, then switch to letterbox Show_anime -> fog must be closed first!
+    { frame: "adv_frame_fog/adv_frame_fog" },
+    { frame: "adv_frame_letterbox/adv_frame_letterbox_black", frameAction: "Show_anime" },
+    // Close letterbox via frameStop (Hide_anime), then re-open via parameterless beat -> emits Show_anime cleanly!
+    { frameStop: true },
+    { frame: "adv_frame_letterbox/adv_frame_letterbox_black" },
+    { say: "a", text: "Frame recovered cleanly." },
+  ]);
+  const rows = strip(compiled(s).episode.commands);
+  const frameRows = rows.filter((r) => r.cmd === "Frame");
+  const peRows = rows.filter((r) => r.cmd === "PostEffect");
+  assert.equal(peRows.length, 0, "inactive postEffectStop does not toggle PostEffect on");
+  assert.deepEqual(
+    frameRows.map((r) => [r.TargetAssetName, r.Parameter2 || ""]),
+    [
+      ["adv_frame_fog/adv_frame_fog", ""],
+      ["adv_frame_fog/adv_frame_fog", ""],
+      ["adv_frame_letterbox/adv_frame_letterbox_black", "Show_anime"],
+      ["adv_frame_letterbox/adv_frame_letterbox_black", "Hide_anime"],
+      ["adv_frame_letterbox/adv_frame_letterbox_black", "Show_anime"],
+      ["adv_frame_letterbox/adv_frame_letterbox_black", "Hide_anime"],
+    ],
+  );
+});

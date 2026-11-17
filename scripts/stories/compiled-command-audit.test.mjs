@@ -87,8 +87,8 @@ const compiledOf = (doc) => {
 };
 
 const officialScene = () => compiledOf(scene([
-  { scene: "garden", location: "Garden", focus: "a", track: 0.5, trackDuration: 1.5,
-    positions: { a: "far-left", b: "far-right" },
+  { scene: "garden", location: "Garden", focus: 5, track: 0.5, trackDuration: 1.5,
+    positions: { a: "left", b: "right" },
     se: "sound_se_adv_door_knock", seDuration: 0.7 },
   { say: "a", text: "The rain stopped.",
     zoom: 1.2, zoomDuration: 1.5,
@@ -114,8 +114,8 @@ test("the compiled episode uses registered ADV commands with contiguous rows", (
   assert.equal(audit.counts.Zoom, 1);
   assert.equal(audit.counts.Pedestal, 1);
   assert.equal(audit.counts.PanV2, 1);
-  assert.equal(audit.counts.DoF, 1);
-  assert.equal(audit.counts.Look, 1);
+  assert.equal(audit.counts.DoF, 2);
+  assert.equal(audit.counts.Look, 2);
   assert.equal(audit.counts.Se, 2);
 });
 
@@ -125,7 +125,7 @@ test("the audit carries the official parameter values and durations", () => {
   assert.deepEqual(audit.parameters.Zoom.durations, [1.5]);
   assert.deepEqual(audit.parameters.Pedestal.parameter1, ["-0.2"]);
   assert.deepEqual(audit.parameters.PanV2.parameter1, ["-5"]);
-  assert.deepEqual(audit.parameters.DoF.parameter1, ["0.5"]);
+  assert.deepEqual(audit.parameters.DoF.parameter1, ["0", "0.5"]);
   assert.deepEqual(audit.parameters.Look.parameter1, ["0.4"]);
   assert.deepEqual(audit.parameters.Look.parameter2, ["0.2"]);
 });
@@ -152,12 +152,17 @@ test("optional Duration and Look Parameter2 are legal, while Track and Focus ran
 test("a non-stop Bgm without BgmID and a non-object row are structured failures", () => {
   const bgmIndex = ADV_COMMAND.indexOf("Bgm");
   const bgm = {
-    commandCount: 1,
-    commands: [{ i: 0, cmd: "Bgm", raw: bgmIndex }],
+    commandCount: 3,
+    commands: [
+      { i: 0, cmd: "Bgm", raw: bgmIndex },
+      { i: 1, cmd: "Bgm", raw: bgmIndex, Parameter1: "1.5" },
+      { i: 2, cmd: "Bgm", raw: bgmIndex, Parameter1: "-1" },
+    ],
     sounds: {},
     cuesheets: {},
   };
-  assert.ok(auditCompiledStory({ episode: bgm }).failures.some((failure) => failure.code === "bgmId"));
+  const bgmFailures = auditCompiledStory({ episode: bgm }).failures.filter((f) => f.code === "bgmId");
+  assert.deepEqual(bgmFailures.map((f) => f.index), [0, 2]);
   const mixed = {
     commandCount: 2,
     commands: [{ i: 0, cmd: "Talk", raw: ADV_COMMAND.indexOf("Talk") }, null],
@@ -223,13 +228,20 @@ test("a broken row index, an unknown command and an out-of-range parameter fail 
   assert.ok(failures.some((failure) => failure.code === "parameterRange" && failure.cmd === "Zoom"));
 });
 
-test("a Talk HostActions timed look is rejected; a shot without one passes", () => {
+test("Talk HostActions timed LookTargetPosition allows slots 1..9 / Stop and rejects invalid slots", () => {
   const compiled = officialScene();
   const episode = { ...compiled.episode, commands: compiled.episode.commands.map((row) => ({ ...row })) };
   const talk = episode.commands.find((row) => row.cmd === "Talk");
-  talk.HostActions = [{ at: 0.5, TargetName: "a", LookTargetPosition: 3 }];
-  const failures = auditCompiledStory({ ...compiled, episode }).failures;
-  assert.ok(failures.some((failure) => failure.code === "hostActionsLook"));
+  talk.HostActions = [
+    { at: 0.35, TargetName: "a", LookTargetPosition: 3 },
+    { at: 0.8, TargetName: "a", LookTargetPosition: "Stop" },
+  ];
+  assert.deepEqual(auditCompiledStory({ ...compiled, episode }).failures, []);
+
+  talk.HostActions = [{ at: 0.5, TargetName: "a", LookTargetPosition: 10 }];
+  assert.ok(auditCompiledStory({ ...compiled, episode }).failures.some((failure) => failure.code === "hostActionsLook"));
+  talk.HostActions = [{ at: 0.5, TargetName: "a", LookTargetPosition: 0 }];
+  assert.ok(auditCompiledStory({ ...compiled, episode }).failures.some((failure) => failure.code === "hostActionsLook"));
 });
 
 test("compiled rows become the same text-line records the official metrics use", () => {
@@ -241,7 +253,7 @@ test("compiled rows become the same text-line records the official metrics use",
   assert.equal(metrics.summary.zoom, 1);
   assert.equal(metrics.summary.pedestal, 1);
   assert.equal(metrics.summary.panV2, 1);
-  assert.equal(metrics.summary.dof, 1);
+  assert.equal(metrics.summary.dof, 2);
   assert.equal(metrics.summary.se, 2);
   assert.equal(metrics.summary.lookAny, 1);
   assert.equal(metrics.lines[0].renderedLines, 1);
@@ -315,5 +327,125 @@ test("the audit CLI checks manifest.story.commands when only --manifest is suppl
     assert.equal(JSON.parse(correct.stdout).manifestCommands.ok, true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Look and LookTarget Stop rows pass without Parameter1/PositionType", () => {
+  const compiled = compiledOf(scene([
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    { say: "a", text: "One.", look: 0.4, lookY: -0.6 },
+    { say: "b", text: "Two.", lookAt: "a" },
+    { say: "a", text: "Three.", look: "stop" },
+    { say: "b", text: "Four.", lookAt: "stop" },
+  ]));
+  const audit = auditCompiledStory(compiled);
+  assert.deepEqual(audit.failures, []);
+});
+
+test("DoF targeting the focused speaker fails while non-speaker and background DoF pass", () => {
+  const validNonSpeaker = compiledOf(scene([
+    { scene: "garden", focus: 5, positions: { a: "left", b: "right" } },
+    { say: "a", text: "Focus on me.", camera: "close", focus: "a", dof: 0.5, dofLayers: 2, dofTarget: "b" },
+    { say: "b", text: "Okay.", camera: "middle", focus: 5 },
+  ]));
+  assert.deepEqual(auditCompiledStory(validNonSpeaker).failures, []);
+
+  // Mutated compiled episode targeting focused speaker `a`.
+  const badEp = {
+    ...validNonSpeaker.episode,
+    commands: validNonSpeaker.episode.commands.map((row) =>
+      row.cmd === "DoF" && row.Parameter1 === "0.5" ? { ...row, TargetName: "a", PositionType: 3 } : { ...row }),
+  };
+  assert.ok(auditCompiledStory({ ...validNonSpeaker, episode: badEp }).failures.some((f) => f.code === "dofFocusedSpeaker"));
+
+  // Synthetic untargeted character-layer DoF row.
+  const rawDof = {
+    commandCount: 4,
+    commands: [
+      { i: 0, cmd: "Stage", raw: ADV_COMMAND.indexOf("Stage"), TargetAssetName: "st/garden" },
+      { i: 1, cmd: "DoF", raw: ADV_COMMAND.indexOf("DoF"), Parameter1: "0.5", Duration: 1, CanvasLayers: [2] },
+      { i: 2, cmd: "Talk", raw: ADV_COMMAND.indexOf("Talk"), AdvTextID: "t1", TargetName: "a" },
+      { i: 3, cmd: "DoF", raw: ADV_COMMAND.indexOf("DoF"), Parameter1: "0", Duration: 0.5 },
+    ],
+    text: { t1: { "zh-Hans": "一句。" } },
+    sounds: {}, cuesheets: {},
+  };
+  assert.ok(auditCompiledStory({ episode: rawDof }).failures.some((f) => f.code === "dofFocusedSpeaker"));
+});
+
+test("voiceless ellipsis and thought Talk lines require IgnoreLipSync: 1", () => {
+  const compiled = compiledOf(scene([
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    { say: "a", text: "……" },
+    { say: "b", text: "内心的独白。", thought: true },
+  ]));
+  assert.deepEqual(auditCompiledStory(compiled).failures, []);
+
+  const rawMissing = {
+    commandCount: 2,
+    commands: [
+      { i: 0, cmd: "Talk", raw: ADV_COMMAND.indexOf("Talk"), AdvTextID: "t1", TargetName: "a" },
+      { i: 1, cmd: "Talk", raw: ADV_COMMAND.indexOf("Talk"), AdvTextID: "t2", TargetName: "b" },
+    ],
+    text: { t1: { "zh-Hans": "……？！" }, t2: { "zh-Hans": "内心独白。" } },
+    sounds: {}, cuesheets: {},
+  };
+  const missingBoth = auditCompiledStory({
+    episode: rawMissing,
+    script: { beats: [{ say: "a", text: "……？！" }, { say: "b", text: "内心独白。", thought: true }] },
+  });
+  assert.equal(missingBoth.failures.filter((f) => f.code === "missingIgnoreLipSync").length, 2);
+});
+
+test("close bursts over 3 lines and off-band speakers under Track/close fail", () => {
+  const longClose = compiledOf(scene([
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    { say: "a", text: "One.", camera: "close", focus: "a" },
+    { say: "a", text: "Two." },
+    { say: "a", text: "Three." },
+    { say: "a", text: "Four." },
+  ]));
+  assert.ok(auditCompiledStory(longClose).failures.some((f) => f.code === "closeBurstUnrecovered"));
+
+  const endingShortClose = compiledOf(scene([
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    { say: "b", text: "Start." },
+    { say: "a", text: "End one.", camera: "close", focus: "a" },
+    { say: "a", text: "End two." },
+  ]));
+  assert.deepEqual(auditCompiledStory(endingShortClose).failures, []);
+
+  const offBand = compiledOf(scene([
+    { scene: "garden", positions: { a: "far-left", b: "far-right" }, focus: "a", track: 0.5 },
+    { say: "a", text: "I am in frame." },
+    { say: "b", text: "I am outside the central band." },
+  ]));
+  assert.ok(auditCompiledStory(offBand).failures.some((f) => f.code === "speakerOutsideCentralBand" && f.target === "b"));
+});
+
+test("unclosed DoF, Role, Tilt, Brightness, Frame, PostEffect, CameraShake and Look fail audit", () => {
+  const row = (i, cmd, fields = {}) => ({ i, cmd, raw: ADV_COMMAND.indexOf(cmd), ...fields });
+  const leaked = {
+    commandCount: 11,
+    commands: [
+      row(0, "Stage", { TargetAssetName: "st/garden" }),
+      row(1, "DoF", { Parameter1: "0.5", Duration: 1 }),
+      row(2, "Role", { Parameter1: "8", Duration: 1 }),
+      row(3, "Tilt", { Parameter1: "4", Duration: 1 }),
+      row(4, "Brightness", { CanvasLayers: [0], Parameter1: "0.5", Duration: 1 }),
+      row(5, "Frame", { TargetAssetName: "adv_frame_fog", Parameter2: "Show_anime" }),
+      row(6, "PostEffect", { TargetAssetName: "adv_effect_posteffect_reminiscence1" }),
+      row(7, "CameraShake", { Parameter2: "0.5" }),
+      row(8, "Look", { TargetName: "a", Parameter1: "0.4", Duration: 0.4 }),
+      row(9, "Talk", { AdvTextID: "t1", TargetName: "a" }),
+      row(10, "Stage", { TargetAssetName: "st/garden" }),
+    ],
+    text: { t1: { "zh-Hans": "对白。" } },
+    sounds: {}, cuesheets: {},
+  };
+  const failures = auditCompiledStory({ episode: leaked }).failures.filter((f) => f.code === "unclosedEffect");
+  const cmds = new Set(failures.map((f) => f.cmd));
+  for (const expectedCmd of ["DoF", "Role", "Tilt", "Brightness", "Frame", "PostEffect", "CameraShake", "Look"]) {
+    assert.ok(cmds.has(expectedCmd), `missing unclosedEffect for ${expectedCmd}`);
   }
 });

@@ -29,9 +29,11 @@ description: Write a custom dialogue story (characters, backgrounds, lines) for 
    motions (by stem, for example `mtn_smile01`) and expressions and draws them. Look at the pictures before choosing.
 3. **Start a script.** `new <manifest> > story.json`, then edit it (format in `docs/story-author.md` and
    `docs/story-director.md`): a `cast` of model ids with display names, and `beats`; the first beat is a `scene` with
-   `positions`; later beats are `say`, `narrate`, `positions`, `camera`, `fade`, `pause`, `action` or another `scene`.
-   Add `focus` and `camera` for the shot, `track` to pan, `lookAt` for a gaze, `motion`/`expression` for the speaker,
-   and pre-line `actions` (`at: 0`) for listeners.
+   `positions`; later beats are `say`, `narrate`, `positions`, `camera`, `fade`, `pause`, `action`, `move`, `angle`,
+   `bgm`, `frame`, `frameStop`, `postEffect`, `postEffectStop`, `brightness`, `shake`, `cameraShake`, `flash`,
+   `talkWindow`, `stageEnv`, `still`, `subtitles`, `hideTalk`, or another `scene` (`transition: "dissolve"` optional).
+   Add `focus` and `camera` (`focusTargetHead`, `focusSharp`, `ease`) for the shot, `track` to pan, `lookAt` /
+   `look` (`"stop"` to clear) for gaze, `motion`/`expression` for the speaker, and pre-line `actions` (`at: 0`) for listeners.
 4. **Check.** `check story.json`. Fix errors by `path` (a JSON pointer). `--fix <file>` applies the fixes the tool
    knows (nearest valid name, renamed key, text wrapped to the talk window) and checks again; read the diff of what
    it applied before trusting it.
@@ -55,20 +57,33 @@ do not use its density for a daily scene.
   and flashes).
 - Cut in groups of 3--4 lines: two-shot (`middle`, `focus: 5`) and a speaker close-up (`close`, `focus` that cast)
   alternate. Change `focus` only when the active group changes or at an emotional turn; do not cut every line, and do
-  not stay in one static shot for the whole scene. A 30-line scene needs roughly 7--10 `Focus` changes. `near` (1.2x)
-  is the widest shot, at most once per scene; `close` (2.8x) is the close-up, about one per 8 lines (2--5 in 30 lines)
-  and 1--2 lines each, then return to the two-shot/group, never hold the same `close` to the end. `middle` is the
-  default, `far` for a group. A slow `zoom` (1.03--1.10 in, 0.92--0.98 out, `zoomDuration` 3--5) is optional, 0--2
-  per scene, one per shot at most.
+  not stay in one static shot for the whole scene. A 30-line scene needs roughly 7--10 `Focus` changes. `full` (1.0x)
+  and `near` (1.2x) are wide establishing shots, at most once per scene; `close` (2.8x) is the close-up, about one per
+  8 lines (2--5 in 30 lines) and must recover within 1--3 lines to `middle`/`far` (unless ending the scene), never hold
+  the same `close` indefinitely. `middle` (1.4x) is the default two-shot, `far` (1.8x) for a 3-person group,
+  `very-close` (4x) and `macro` (6x) extreme close-ups (at most once). A slow `zoom` (1.03--1.10 in, 0.92--0.98 out,
+  `zoomDuration` 3--5, `ease: "OutSine"`) is optional, one per shot at most.
 - `focus` may be a cast id, a position, or a focus point 1--9: 1/3/5/7/9 are the slots, 2/4/6/8 frame a pair. Prefer a
-  focus point or position; a character `focus` is for close-ups and the one or two heaviest lines. Pair `focus` with `track`
-  (roughly -0.8..0.8 for two people, larger for a group pan); 0--2 `track` rows per scene, usually 0--1 for two people.
-  Two people on stage must stand at `far-left` / `far-right` with `focus: 5`; `center+right`, `center+left` and
-  `left+right` overlap. Three people use `far-left` / `center` / `far-right` with `camera: far`, `focus: 5`, `track: 0`;
-  the AI defaults to `story.maxOnStage: 3`, and an operator can set 2 to keep only the far pair (the third waits).
+  focus point or position; a character `focus` is for close-ups and emotional turns (`focusTargetHead: true` locks camera
+  height to the target head). Pair `focus` with `track` (roughly -0.8..0.8 for two people, clamped to +/-0.25 in `close`
+  and 0 in `very-close`/`macro`); 0--2 `track` rows per scene, usually 0--1 for two people.
+  Two people on stage stand at `left` / `right` (slots 3/7) with `focus: 5`; never use `center+right` or `center+left`
+  (those overlap), and avoid overly wide `far-left`/`far-right` unless blocking a 3-person group. Three people use
+  `far-left` / `center` / `far-right` with `camera: far`, `focus: 5`, `track: 0` (use position objects `{ at, dz: 0.6..1.5 }`
+  for subtle Z-depth staggering); `story.maxOnStage` defaults to 3, and 2 keeps only the two-person `left`/`right` pair.
+- Use motivated cinematography and FX rather than arbitrary PanV2/Pedestal wobbles on static 2-person dialogue:
+  `OutSine` `zoom` + background `dof` (`dofLayers: 0`; never blur the focused speaker; character `dofLayers: 2` must name
+  a non-speaker `dofTarget`) + optional `bgm: "stop"` on emotional turns; multi-line `PanV2` drifts; `hideTalk: true` +
+  `pause >= 0.6` for silent beats; `thought: true` / `ignoreLipSync: true` for inner monologue and ellipsis lines (compiler
+  auto-sets `IgnoreLipSync: 1` on voiceless ellipsis); `move` (`to`, `dir`, `dx/dy/dz`) for shifts/crouching; `angle`
+  tilts; `shake` (`target: "ui"`) for dialog outbursts; `brightness`/`frame` (`frameAction: "Show_anime"`, `frameStop`)/
+  `postEffect` (`postEffectStop`)/`fadeRule` (`0001`..`0005`)/`transition: "dissolve"` for flashbacks; downcast `look`
+  (`lookY: -0.5..-0.8`) paired with `look: "stop"`. Always close open effects/gaze before a scene change or episode end.
 - One main action for the speaker (`say.motion`) and at most one listener reaction in `actions` at `0`. Official episodes
-  have no mid-line actions, so write `at: 0`; one or two lines in five should have no motion at all. The compiler fades
+  have no mid-line actions, so write `at: 0`; roughly 6% of lines have no motion at all. The compiler fades
   each motion in from the current pose (the clip's own 1 s fade), so you do not need extra beats to cover a switch.
+  Name motions by stem (`mtn_smile01`); the compiler chooses `_R` on left slots (1, 3), `_C` at center (5), and `_L` on
+  right slots (7, 9) toward conversation partners -- specify a full `_L`/`_C`/`_R` name only when deliberately turning away.
 - About 20--26 motions per 20 lines: roughly 12--16 lines with one, 3--5 with two, 3--4 with none. Prefer
   `nod` / `smile` / `check` / `question` / `thinking` / `denial` / `serious`; `surprised` 1--2 times, `angry` and `kime`
   at most once. Repeating a gentle gesture is natural.

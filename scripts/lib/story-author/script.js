@@ -1492,6 +1492,7 @@ export const compileScript = (script, site, language) => {
   let activeTilt = 0;
   let bgBrightness = 1;
   let activeFrame = null;                                       // { asset, action }
+  const hiddenByHideAnime = new Set();                          // frames left isShowing=true by Hide_anime in 0.1.8
   const activePostEffects = new Set();
   let activeCameraShake = false;
   let activeTalkWindow = TALK_WINDOWS.default;
@@ -1563,12 +1564,15 @@ export const compileScript = (script, site, language) => {
     }
     for (const id of [...charBrightness.keys()]) resetCharBrightness(id, dur);
     if (activeFrame) {
+      const useHideAnime = activeFrame.action === "Show_anime";
       row("Frame", {
         TargetAssetName: activeFrame.asset,
-        ...(activeFrame.action ? { Parameter2: "Hide_anime" } : {}),
+        ...(useHideAnime ? { Parameter2: "Hide_anime" } : {}),
         ...(dur ? { Duration: dur } : {}),
         IsNoWait: 1,
       });
+      if (useHideAnime) hiddenByHideAnime.add(activeFrame.asset);
+      else hiddenByHideAnime.delete(activeFrame.asset);
       activeFrame = null;
     }
     for (const asset of [...activePostEffects]) {
@@ -1968,36 +1972,79 @@ export const compileScript = (script, site, language) => {
     }
     if (b.frame && !b.frameStop) {
       const dur = b.frameDuration ?? 0;
-      if (!b.frameAction && activeFrame && activeFrame.asset !== b.frame) {
+      if (activeFrame && activeFrame.asset !== b.frame && b.frameAction !== "Hide_anime") {
+        const useHideAnime = activeFrame.action === "Show_anime";
         row("Frame", {
           TargetAssetName: activeFrame.asset,
-          ...(activeFrame.action ? { Parameter2: "Hide_anime" } : {}),
+          ...(useHideAnime ? { Parameter2: "Hide_anime" } : {}),
           ...(dur ? { Duration: dur } : {}),
           IsNoWait: 1,
         });
+        if (useHideAnime) hiddenByHideAnime.add(activeFrame.asset);
+        else hiddenByHideAnime.delete(activeFrame.asset);
         activeFrame = null;
       }
-      row("Frame", {
-        TargetAssetName: b.frame,
-        ...(b.frameAction ? { Parameter2: b.frameAction } : {}),
-        ...(dur ? { Duration: dur } : {}),
-        IsNoWait: 1,
-      });
-      if (b.frameAction === "Hide_anime") activeFrame = null;
-      else if (b.frameAction === "Show_anime") activeFrame = { asset: b.frame, action: "Show_anime" };
-      else activeFrame = activeFrame && activeFrame.asset === b.frame ? null : { asset: b.frame, action: null };
+      if (b.frameAction === "Hide_anime") {
+        row("Frame", {
+          TargetAssetName: b.frame,
+          Parameter2: "Hide_anime",
+          ...(dur ? { Duration: dur } : {}),
+          IsNoWait: 1,
+        });
+        hiddenByHideAnime.add(b.frame);
+        if (activeFrame && activeFrame.asset === b.frame) activeFrame = null;
+      } else if (b.frameAction === "Show_anime") {
+        row("Frame", {
+          TargetAssetName: b.frame,
+          Parameter2: "Show_anime",
+          ...(dur ? { Duration: dur } : {}),
+          IsNoWait: 1,
+        });
+        hiddenByHideAnime.delete(b.frame);
+        activeFrame = { asset: b.frame, action: "Show_anime" };
+      } else if (activeFrame && activeFrame.asset === b.frame) {
+        const useHideAnime = activeFrame.action === "Show_anime";
+        row("Frame", {
+          TargetAssetName: b.frame,
+          ...(useHideAnime ? { Parameter2: "Hide_anime" } : {}),
+          ...(dur ? { Duration: dur } : {}),
+          IsNoWait: 1,
+        });
+        if (useHideAnime) hiddenByHideAnime.add(b.frame);
+        else hiddenByHideAnime.delete(b.frame);
+        activeFrame = null;
+      } else if (hiddenByHideAnime.has(b.frame)) {
+        // 0.1.8 Hide_anime leaves frame.isShowing === true, so a parameterless toggle would call hide().
+        row("Frame", {
+          TargetAssetName: b.frame,
+          Parameter2: "Show_anime",
+          ...(dur ? { Duration: dur } : {}),
+          IsNoWait: 1,
+        });
+        hiddenByHideAnime.delete(b.frame);
+        activeFrame = { asset: b.frame, action: "Show_anime" };
+      } else {
+        row("Frame", {
+          TargetAssetName: b.frame,
+          ...(dur ? { Duration: dur } : {}),
+          IsNoWait: 1,
+        });
+        activeFrame = { asset: b.frame, action: null };
+      }
     } else if (b.frameStop) {
       const dur = b.frameDuration ?? 0;
       const target = b.frame || activeFrame?.asset;
-      if (target) {
-        const useHideAnime = activeFrame && activeFrame.asset === target && activeFrame.action === "Show_anime";
+      if (activeFrame && target && activeFrame.asset === target) {
+        const useHideAnime = activeFrame.action === "Show_anime";
         row("Frame", {
           TargetAssetName: target,
           ...(useHideAnime ? { Parameter2: "Hide_anime" } : {}),
           ...(dur ? { Duration: dur } : {}),
           IsNoWait: 1,
         });
-        if (activeFrame && activeFrame.asset === target) activeFrame = null;
+        if (useHideAnime) hiddenByHideAnime.add(target);
+        else hiddenByHideAnime.delete(target);
+        activeFrame = null;
       }
     }
     if (b.postEffect && !b.postEffectStop) {
@@ -2007,7 +2054,9 @@ export const compileScript = (script, site, language) => {
       else activePostEffects.add(b.postEffect);
     } else if (b.postEffectStop) {
       const dur = b.postEffectDuration ?? 0;
-      const targets = b.postEffect ? [b.postEffect] : [...activePostEffects];
+      const targets = b.postEffect
+        ? (activePostEffects.has(b.postEffect) ? [b.postEffect] : [])
+        : [...activePostEffects];
       for (const pe of targets) {
         row("PostEffect", { TargetAssetName: pe, ...(dur ? { Duration: dur } : {}) });
         activePostEffects.delete(pe);

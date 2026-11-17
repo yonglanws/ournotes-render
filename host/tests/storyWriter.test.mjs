@@ -1150,3 +1150,152 @@ test("line beats with no direction fields count as missing direction", () => {
     }
   }
 });
+
+test("pruneStoryboard keeps close-middle shot pairs atomic and cascade-cleans camera FX", () => {
+  const dialogue = { lines: Array.from({ length: 12 }, (_, i) =>
+    ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `第${i + 1}句比较长的普通对白。` })) };
+  // directionBudgetFor(12).focusChanges = round(12 * 0.446) = 5.
+  // Scene positions takes 1 structural focus -> allowedLineFocus = 4.
+  // We supply 3 close+middle pairs (6 line focuses), so one pair must drop as an atomic unit, never stranding a close without recovery.
+  const storyboard = { beats: [
+    { scene: "stage_a", camera: "middle", focus: 5, positions: { a: "left", b: "right" } },
+    { line: "l1", camera: "close", focus: "a", zoom: 1.08, zoomDuration: 3, dof: 0.5, dofLayers: 0, pan: 5, panDuration: 3, pedestal: -0.1 },
+    { line: "l2", camera: "middle", focus: 5 },
+    { line: "l3" },
+    { line: "l4", camera: "close", focus: "b", zoom: 1.06, dof: 0.4 },
+    { line: "l5", camera: "middle", focus: 5 },
+    { line: "l6" },
+    { line: "l7", camera: "close", focus: "a", zoom: 1.07, pan: -4 },
+    { line: "l8", camera: "middle", focus: 5 },
+    { line: "l9" },
+    { line: "l10" },
+    { line: "l11" },
+    { line: "l12" },
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
+  const says = merged.doc.beats.filter((b) => "say" in b);
+  let inClose = false;
+  for (const b of says) {
+    if (b.camera === "close") inClose = true;
+    else if (b.camera === "middle" || b.camera === "far") inClose = false;
+    // Also any beat whose camera/focus was pruned must not retain orphaned zoom/dof/pan/pedestal.
+    if (b.camera === undefined && b.focus === undefined) {
+      assert.equal(b.zoom, undefined, "zoom cascade-cleaned when shot trimmed");
+      assert.equal(b.dof, undefined, "dof cascade-cleaned when shot trimmed");
+      assert.equal(b.pan, undefined, "pan cascade-cleaned when shot trimmed");
+      assert.equal(b.pedestal, undefined, "pedestal cascade-cleaned when shot trimmed");
+    }
+  }
+  assert.equal(inClose, false, "no close shot was orphaned without its recovery shot");
+});
+
+test("motion pruning preserves short reaction beats (?, !, ……, <6 chars) over long repetitive runs", () => {
+  const lines = [
+    { id: "l1", say: "a", text: "今天排练结束之后我们一起去练习室把新曲副歌再梳理一遍吧。" },
+    { id: "l2", say: "a", text: "如果先把贝斯和吉他的进拍对齐，后面的过渡段也会顺畅很多吧。" },
+    { id: "l3", say: "a", text: "虽然昨天还有几个小节有点卡顿，但多配合两次肯定没问题吧。" },
+    { id: "l4", say: "b", text: "嗯！" },
+    { id: "l5", say: "a", text: "……真的？" },
+    { id: "l6", say: "b", text: "既然大家难得都在，不如把刚才录音里的细节也一起记下来。" },
+    { id: "l7", say: "a", text: "我先把乐谱抄好，顺便把节拍器的速度标记重新确认一遍就行。" },
+    { id: "l8", say: "b", text: "行！" },
+  ];
+  // 8 lines, each with 1 motion + 1 expression = 16 actions; motionMax for 8 lines is round(8 * 1.40) = 11.
+  // Pruning must protect short reaction beats (l4 "嗯！", l5 "……真的？", l8 "行！") ahead of consecutive same-motion long runs.
+  const storyboard = { beats: [
+    { scene: "stage_a", camera: "middle", focus: 5, positions: { a: "left", b: "right" } },
+    ...lines.map((l) => ({
+      line: l.id,
+      motion: "mtn_smile01",
+      expression: "exp_smile01",
+      actions: [{ at: 0, cast: l.say === "a" ? "b" : "a", expression: "exp_idle01" }],
+    })),
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue: { lines }, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
+  const says = merged.doc.beats.filter((b) => "say" in b);
+  assert.equal(says[3].motion, "mtn_smile01", "short '嗯！' keeps its motion");
+  assert.equal(says[4].motion, "mtn_smile01", "short '……真的？' keeps its motion");
+  assert.equal(says[7].motion, "mtn_smile01", "short '行！' keeps its motion");
+  assert.ok(says.slice(0, 3).some((b) => b.motion === undefined), "long consecutive run trims a redundant gesture");
+});
+
+test("spreadPositions scopes width per blocking segment and preserves dz objects", () => {
+  const beats = [
+    { scene: "stage_a", camera: "middle", focus: 5, positions: { a: "far-left", b: { at: "far-right", dz: 0.4 } } },
+    { say: "a", text: "先是两个人。" },
+    { positions: { a: "left", b: { at: "center", dz: 0.8 }, c: "right" } },
+    { say: "c", text: "我也来了！" },
+    { positions: { a: "far-left", b: "far-right" } },
+    { say: "b", text: "又只剩我们两个了。" },
+  ];
+  const out = spreadPositions(beats, 3, []);
+  assert.equal(out[0].positions.a, "left", "2-person opening stays left");
+  assert.deepEqual(out[0].positions.b, { at: "right", dz: 0.4 }, "2-person opening stays right & preserves dz");
+  assert.equal(out[2].positions.a, "far-left", "3-person segment widens to far-left");
+  assert.deepEqual(out[2].positions.b, { at: "center", dz: 0.8 }, "3-person middle keeps dz");
+  assert.equal(out[2].positions.c, "far-right", "3-person segment widens to far-right");
+  assert.equal(out[2].camera, "far", "enforceGroupShots still applies far camera on 3-person segment");
+  assert.equal(out[4].positions.a, "left", "returning to 2 people narrows back to left");
+  assert.equal(out[4].positions.b, "right", "returning to 2 people narrows back to right");
+});
+
+test("Wave 1/2 DSL fields pass through mergeStagedScript and prepareScript cleanly", () => {
+  const catalog = {
+    ...CATALOG,
+    frames: ["adv_frame_letterbox/adv_frame_letterbox_black"],
+    postEffects: ["adv_effect_posteffect_reminiscence1"],
+    sounds: [{ cue: "sound_se_adv_door_knock", label: "Door Knock" }],
+  };
+  const dialogue = { lines: [
+    { id: "l1", say: "a", text: "……嗯。" },
+    { id: "l2", say: "b", text: "怎么了？" },
+    { id: "l3", say: "a", text: "没什么，走吧。" },
+  ] };
+  const storyboard = { beats: [
+    { scene: "stage_a", transition: "dissolve", transitionDuration: 1.0, stageEnv: { type: "Light", value: 1 }, talkWindow: "center",
+      camera: "middle", focus: 5, positions: { a: "left", b: { at: "right", dz: 0.6 } } },
+    { line: "l1", motion: "mtn_idle01", thought: true, ignoreLipSync: true, ease: "OutSine",
+      camera: "close", focus: "a", focusSharp: true, focusTargetHead: true, cameraDelay: 0.1,
+      dof: 0.5, dofLayers: 0, look: 0.4, lookY: -0.6, lookDuration: 0.4,
+      role: 10, roleDuration: 0.5, tilt: 5, tiltDuration: 0.5,
+      frame: "adv_frame_letterbox_black", frameAction: "Show_anime", frameDuration: 0.5,
+      postEffect: "adv_effect_posteffect_reminiscence1", postEffectDuration: 0.5,
+      brightness: { target: "bg", value: 0.6, duration: 0.5 },
+      zoom: "1.06", zoomDuration: "3.5",
+      bgm: "bgm_a", bgmFade: 1.0, bgmVolume: 0.8, bgmStart: 1.5 },
+    { hideTalk: true },
+    { pause: 0.6 },
+    { line: "l2", camera: "middle", focus: 5, look: "stop", role: 0, tilt: 0,
+      move: { cast: "a", dir: "down", distance: 0.2, duration: 0.4 },
+      angle: { cast: "b", z: -8, duration: 0.4 },
+      shake: { target: "ui", power: 4, duration: 0.4 },
+      cameraShake: "start", cameraShakeFade: 0.2, cameraShakeStrength: 0.5,
+      frameStop: true, postEffectStop: true, bgm: "stop", bgmFade: 0.8 },
+    { line: "l3", lookAt: "stop", cameraShake: "stop", hideTalk: false,
+      brightness: { target: "bg", value: 1, duration: 0.4 } },
+    { subtitles: { text: "傍晚", duration: 1.0 } },
+    { still: { stop: true }, duration: 0.5 },
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog, request: {}, config: STAGED_CONFIG });
+  assert.equal(merged.warnings.filter((w) => w.code === "orphanField").length, 0,
+               `unexpected orphanField: ${JSON.stringify(merged.warnings)}`);
+  const l1 = merged.doc.beats.find((b) => b.say === "a" && b.text === "……嗯。");
+  assert.equal(l1.thought, true);
+  assert.equal(l1.ignoreLipSync, true);
+  assert.equal(l1.ease, "OutSine");
+  assert.equal(l1.focusSharp, true);
+  assert.equal(l1.focusTargetHead, true);
+  assert.equal(l1.frame, "adv_frame_letterbox/adv_frame_letterbox_black");
+  assert.equal(l1.postEffect, "adv_effect_posteffect_reminiscence1");
+  const l2 = merged.doc.beats.find((b) => b.say === "b");
+  assert.equal(l2.look, "stop");
+  assert.equal(l2.frameStop, true);
+  assert.equal(l2.postEffectStop, true);
+  assert.equal(l2.cameraShake, "start");
+  assert.deepEqual(l2.shake, { target: "ui", power: 4, duration: 0.4 });
+  const prepped = prepareScript({ doc: merged.doc, catalog, request: {}, config: STAGED_CONFIG, logger: quietLogger() });
+  assert.deepEqual(prepped.errors, [], `prepareScript errors: ${JSON.stringify(prepped.errors)}`);
+  const preppedL1 = prepped.doc.beats.find((b) => b.say === "a" && b.text === "……嗯。");
+  assert.equal(preppedL1.zoom, 1.06);
+  assert.equal(preppedL1.zoomDuration, 3.5);
+});

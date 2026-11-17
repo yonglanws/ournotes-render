@@ -11,7 +11,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { validateFfmpeg } from "../../host/render/ffmpeg.js";
 import {
-  CAMERA_COMMANDS, duplicateFramePairs, extractPng, frameCheckpoints, frameTarget, validateFrameReport,
+  CAMERA_COMMANDS, duplicateFramePairs, EFFECT_CHECKPOINT_COMMANDS, evaluateDofRoiSharpness,
+  extractPng, frameCheckpoints, frameTarget, regionMeanAbsoluteDifference, validateFrameReport,
 } from "./frame-audit.mjs";
 
 const probe = (() => {
@@ -286,4 +287,85 @@ test("verified frame paths stay inside the output directory", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("effect checkpoints cover MoveToDirection, PanV2, Frame, PostEffect and mid-duration Shake [9]", () => {
+  assert.deepEqual([...EFFECT_CHECKPOINT_COMMANDS], ["MoveToDirection", "Frame", "PostEffect", "Shake"]);
+  const episode = {
+    commands: [
+      { i: 0, cmd: "Focus", CameraDistance: 4, PositionType: 3, Duration: 0.5 },
+      { i: 1, cmd: "DoF", Parameter1: "0.5", Duration: 1.0, CanvasLayers: [0] },
+      { i: 2, cmd: "PanV2", Parameter1: "8", Duration: 2.0 },
+      { i: 3, cmd: "MoveToDirection", TargetName: "a", PositionType: 3, Parameter1: "0.5", Duration: 0.6 },
+      { i: 4, cmd: "Frame", TargetAssetName: "adv_frame_letterbox_black", Parameter2: "Show_anime", Duration: 0.5 },
+      { i: 5, cmd: "PostEffect", TargetAssetName: "adv_effect_posteffect_reminiscence1", Duration: 0.5 },
+      { i: 6, cmd: "Shake", CanvasLayers: [9], Parameter1: "4", Duration: 0.4 },
+    ],
+  };
+  const checks = frameCheckpoints(episode, timelineOf([
+    t(0, "Focus", 1.2), t(1, "DoF", 2.0), t(2, "PanV2", 3.5), t(3, "MoveToDirection", 5.0),
+    t(4, "Frame", 6.5), t(5, "PostEffect", 8.0), t(6, "Shake", 9.5),
+  ]));
+  const cmds = new Map(checks.map((c) => [c.cmd, c]));
+  for (const name of ["DoF", "PanV2", "MoveToDirection", "Frame", "PostEffect", "Shake"]) {
+    assert.ok(cmds.has(name), `missing checkpoint for ${name}`);
+  }
+  assert.equal(cmds.get("DoF").checkDofSharpness, true);
+  assert.deepEqual(cmds.get("Shake").canvasLayers, [9]);
+  // 0.4s duration Shake samples mid-shake at +0.16s (before Shake decays to 0).
+  assert.equal(cmds.get("Shake").afterSeconds, 9.66);
+  assert.equal(cmds.get("Shake").afterCapped, false);
+});
+
+test("DoF ROI sharpness and UI band Shake pixel-diff helpers detect valid vs broken effects", () => {
+  const w = 160, h = 90;
+  const sharpFace = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const inFace = x >= Math.floor(0.30 * w) && x < Math.floor(0.70 * w) &&
+        y >= Math.floor(0.12 * h) && y < Math.floor(0.48 * h);
+      sharpFace[y * w + x] = inFace ? (((x + y) & 1) ? 240 : 10) : 128;
+    }
+  }
+  const okRoi = evaluateDofRoiSharpness(sharpFace, w, h);
+  assert.ok(okRoi.sharpOk && okRoi.faceSharpness > okRoi.backgroundSharpness);
+
+  const invertedFace = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const inBg = (x < Math.floor(0.22 * w) || x >= Math.floor(0.78 * w)) &&
+        y >= Math.floor(0.05 * h) && y < Math.floor(0.55 * h);
+      invertedFace[y * w + x] = inBg ? (((x + y) & 1) ? 240 : 10) : 128;
+    }
+  }
+  const badRoi = evaluateDofRoiSharpness(invertedFace, w, h);
+  assert.equal(badRoi.sharpOk, false);
+
+  const before = new Uint8Array(w * h).fill(20);
+  const after = new Uint8Array(before);
+  for (let y = Math.floor(0.70 * h); y < h; y++) {
+    for (let x = Math.floor(0.15 * w); x < Math.floor(0.85 * w); x++) after[y * w + x] = 200;
+  }
+  assert.ok(regionMeanAbsoluteDifference(before, after, w, h, { x0: 0.08, x1: 0.92, y0: 0.65, y1: 1 }) > 10);
+  assert.equal(regionMeanAbsoluteDifference(before, after, w, h, { x0: 0, x1: 1, y0: 0, y1: 0.65 }), 0);
+
+  let report = reportFixture();
+  report.checks[0] = {
+    ...report.checks[0], i: 9, cmd: "Shake", duration: 0.4,
+    canvasLayers: [9], meanAbsoluteDifference: 5, changed: true, uiMeanAbsoluteDifference: 0.2,
+  };
+  assert.ok(validateFrameReport(report).some((f) => f.code === "uiShakeUnchanged"));
+
+  report = reportFixture();
+  report.checks[0] = {
+    ...report.checks[0], i: 10, cmd: "MoveToDirection", meanAbsoluteDifference: 0.1, changed: false,
+  };
+  assert.ok(validateFrameReport(report).some((f) => f.code === "effectUnchanged"));
+
+  report = reportFixture();
+  report.checks[0] = {
+    ...report.checks[0], i: 11, cmd: "DoF", checkDofSharpness: true,
+    faceSharpness: 1.5, backgroundSharpness: 4.2,
+  };
+  assert.ok(validateFrameReport(report).some((f) => f.code === "dofFaceBlurred"));
 });

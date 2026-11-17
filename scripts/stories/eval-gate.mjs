@@ -21,8 +21,8 @@ export const AGGREGATE_RANGES = Object.freeze([
   ["motionsPerLine", (a) => a.motionsPerLine, 1.0, 1.5],
   ["lookAnyPerLine", (a) => a.lookAnyPerLine, 0.20, 0.42],
   ["zoomPerLine", (a) => a.zoomPerLine, 0.03, 0.16],
-  ["pedestalPerLine", (a) => a.pedestalPerLine, 0.04, 0.15],
-  ["panV2PerLine", (a) => a.panV2PerLine, 0.05, 0.18],
+  ["pedestalPerLine", (a) => a.pedestalPerLine, 0.02, 0.15],
+  ["panV2PerLine", (a) => a.panV2PerLine, 0.03, 0.18],
   ["sePerLine", (a) => a.sePerLine, 0.04, 0.16],
 ]);
 

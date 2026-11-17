@@ -6,9 +6,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import zlib from "node:zlib";
-import { musicLine, soundLine, stageLine } from "../ai/resourceLines.js";
-import { applyStageGuide, loadResourceGuide } from "../story/resourceGuide.js";
+import { frameLine, musicLine, postEffectLine, soundLine, stageLine, transitionLine } from "../ai/resourceLines.js";
+import {
+  applyStageGuide, frameChoices, loadResourceGuide, postEffectChoices,
+  soundChoices, transitionChoices, transitionRuleOf,
+} from "../story/resourceGuide.js";
 import { buildSiteStory, readSiteCatalog } from "../tools/site-story.mjs";
+import { catalogFromSite } from "../story/siteFormat.js";
 import { tmpDir } from "./helpers.mjs";
 
 test("the bundled guide names the official site's stages, music and SE", () => {
@@ -134,4 +138,39 @@ test("pool: false keeps the old base-only vocabulary", { skip: !site }, () => {
   const catalog = readSiteCatalog(site, "stories/10438.json", "zh-Hans", { pool: false });
   assert.deepEqual(catalog.base.stages.map((stage) => stage.id),
                    ["adv_bkg_stage_000084", "adv_bkg_stage_000180", "adv_bkg_stage_000164"]);
+});
+
+test("semantic frame, postEffect, transition and sound catalogs resolve official cues cleanly", () => {
+  const guide = loadResourceGuide("");
+  const frames = frameChoices(["adv_frame_letterbox/adv_frame_letterbox_black", "adv_frame_kirakira_1/adv_frame_kirakira_1", "adv_frame_fog/adv_frame_fog", "adv_frame_fill/adv_frame_fill_black"], guide);
+  assert.equal(frames.length, 4);
+  assert.match(frames[0].name, /黑边|银幕|遮幅|Letterbox/i);
+  assert.ok(frames[0].actions.includes("Show_anime"));
+  assert.match(frameLine(frames[0]), /adv_frame_letterbox_black.*frameAction:/);
+
+  const effects = postEffectChoices(["adv_effect_posteffect_reminiscence1", "adv_effect_posteffect_monochrome", "vignette"], guide);
+  assert.equal(effects.length, 3);
+  assert.ok(effects.every((e) => e.name && e.use));
+  assert.match(postEffectLine(effects[0]), /reminiscence1/);
+
+  assert.equal(transitionRuleOf("adv_transition_0004/adv_transition_0004"), "0004");
+  assert.equal(transitionRuleOf("dissolve"), "dissolve");
+  const transitions = transitionChoices(["adv_transition_0001/adv_transition_0001", "adv_transition_0005/adv_transition_0005"], guide);
+  assert.ok(transitions.some((t) => t.id === "0001" && t.kind === "fadeRule"));
+  assert.ok(transitions.some((t) => t.id === "dissolve" && t.kind === "transition"));
+  assert.match(transitionLine(transitions.find((t) => t.id === "dissolve")), /dissolve/);
+
+  const sounds = soundChoices([{ cue: "sound_se_adv_door_knock" }], guide);
+  assert.equal(sounds[0].cue, "sound_se_adv_door_knock");
+  assert.ok(sounds[0].use);
+});
+
+test("catalogFromSite exposes semantic frameChoices, postEffectChoices, transitionChoices and soundChoices", { skip: !site }, () => {
+  const catalog = catalogFromSite(site, "stories/10438.json", "zh-Hans");
+  assert.ok(Array.isArray(catalog.frameChoices) && catalog.frameChoices.length >= 1);
+  assert.ok(Array.isArray(catalog.postEffectChoices) && catalog.postEffectChoices.length >= 1);
+  assert.ok(Array.isArray(catalog.transitionChoices) && catalog.transitionChoices.some((t) => t.id === "dissolve"));
+  assert.ok(Array.isArray(catalog.soundChoices) && catalog.soundChoices.length >= 18);
+  assert.ok(catalog.frameChoices.every((f) => f.id && f.name && f.use));
+  assert.ok(catalog.postEffectChoices.every((p) => p.id && p.name && p.use));
 });
