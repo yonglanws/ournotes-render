@@ -510,17 +510,17 @@ test("near on a single focused line becomes the official close-up, and a group c
   assert.deepEqual(warnings.map((w) => w.code), ["nearCloseUp", "closeUpFocus"]);
 });
 
-test("a third person on stage uses the group layout with a far, centred camera", () => {
+test("a third person on stage uses the group layout with a near, centred camera", () => {
   const beats = [{ scene: "stage_a", camera: "middle", focus: 6, track: -0.5,
                    positions: { a: "left", b: "center", c: "right" } }];
   spreadPositions(beats, 3);
   assert.deepEqual(beats[0].positions, { a: "far-left", b: "center", c: "far-right" });
   assert.equal(beats[0].focus, 5);
-  assert.equal(beats[0].camera, "far");
+  assert.equal(beats[0].camera, "near");
   assert.equal(beats[0].track, 0);
 });
 
-test("three people keep the far group shot, while a single-person close-up keeps its zoom", () => {
+test("three people keep the near group shot, while a single-person close-up keeps its zoom", () => {
   const beats = [
     { scene: "stage_a", camera: "middle", focus: "a", positions: { a: "left", b: "right" } },
     { positions: { a: "far-left", b: "center", c: "far-right" }, camera: "middle", focus: "b", track: 1 },
@@ -534,18 +534,18 @@ test("three people keep the far group shot, while a single-person close-up keeps
   ];
   const warnings = [];
   spreadPositions(beats, 3, warnings);
-  assert.equal(beats[1].camera, "far");
+  assert.equal(beats[1].camera, "near");
   assert.equal(beats[1].track, 0);
   assert.equal(beats[2].camera, "close", "a close-up that names one person is the allowed solo close-up");
   assert.equal(beats[2].focus, "b");
   assert.equal(beats[2].zoom, 1.06, "its zoom push-in stays");
-  assert.equal(beats[3].camera.distance, "far");
+  assert.equal(beats[3].camera.distance, "near");
   assert.equal(beats[3].focus, 5);
   assert.equal("zoom" in beats[3], false, "a middle group shot loses its push-in");
-  assert.equal("zoom" in beats[4], false, "a group push-in on the far shot is removed");
+  assert.equal("zoom" in beats[4], false, "a group push-in on the group shot is removed");
   assert.equal(beats[5].camera, "close", "a close-up without a focus aims at the speaker");
   assert.equal(beats[5].focus, "a");
-  assert.equal(beats[6].camera, "far", "a camera-only close-up with no person to frame falls back to the group shot");
+  assert.equal(beats[6].camera, "near", "a camera-only close-up with no person to frame falls back to the group shot");
   assert.equal(beats[6].focus, 5);
   assert.equal(beats[8].camera, "close", "once the third person leaves, close-ups are allowed again");
   assert.ok(warnings.some((w) => w.code === "groupCamera"));
@@ -571,8 +571,8 @@ test("a supplied script gets the same three-person framing correction as the AI 
   };
   const r = prepareScript({ doc, catalog, request: {}, config: CONFIG, logger: quietLogger() });
   assert.deepEqual(r.errors, []);
-  assert.equal(r.doc.beats[1].camera, "far");
-  assert.equal(r.doc.beats[2].camera, "far");
+  assert.equal(r.doc.beats[1].camera, "near");
+  assert.equal(r.doc.beats[2].camera, "near");
   assert.equal("zoom" in r.doc.beats[2], false);
   assert.equal(r.doc.beats[3].camera, "close", "the solo close-up in a supplied script is kept");
   assert.equal(r.doc.beats[3].focus, "b");
@@ -638,21 +638,26 @@ test("extended camera and sound fields survive the staged merge", () => {
     { id: "l1", say: "a", text: "第一句。" },
     { id: "l2", say: "b", text: "第二句。" },
   ] };
-  const extra = {
-    focus: 5, track: 0.5,
-    focusDuration: 1.5, trackDuration: 2, pedestal: -0.2, pedestalDuration: 1.5,
-    pan: 12, panDuration: 2.5, panFocusSlide: 0.5, dof: 0.4, dofDuration: 1.5, dofLayers: 2,
+  const extra1 = {
+    focus: 5, track: 0.5, focusDuration: 1.5, trackDuration: 1.5,
+    dof: 0.4, dofDuration: 1.5, dofLayers: 2,
     look: -0.4, lookY: 0.1, lookDuration: 0.5, se: "se_cue", seDuration: 2, seDelay: 0.2,
     seStop: false, motionFadeIn: -1, motionWait: false,
   };
+  const extra2 = {
+    pedestal: -0.2, pedestalDuration: 1.5,
+    pan: 12, panDuration: 2.5, panFocusSlide: 0.5,
+  };
   const storyboard = { beats: [
     { scene: "stage_a", camera: "middle", positions: { a: "far-left", b: "far-right" } },
-    { line: "l1", motion: "mtn_smile01", ...extra },
-    { line: "l2" },
+    { line: "l1", motion: "mtn_smile01", ...extra1 },
+    { line: "l2", ...extra2 },
   ] };
   const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
   const first = merged.doc.beats.find((b) => b.text === "第一句。");
-  for (const [key, value] of Object.entries(extra)) assert.equal(first[key], value, key);
+  const second = merged.doc.beats.find((b) => b.text === "第二句。");
+  for (const [key, value] of Object.entries(extra1)) assert.equal(first[key], value, key);
+  for (const [key, value] of Object.entries(extra2)) assert.equal(second[key], value, key);
 });
 
 test("orphan official modifiers are dropped with a warning instead of failing the storyboard", () => {
@@ -1234,7 +1239,7 @@ test("spreadPositions scopes width per blocking segment and preserves dz objects
   assert.equal(out[2].positions.a, "far-left", "3-person segment widens to far-left");
   assert.deepEqual(out[2].positions.b, { at: "center", dz: 0.8 }, "3-person middle keeps dz");
   assert.equal(out[2].positions.c, "far-right", "3-person segment widens to far-right");
-  assert.equal(out[2].camera, "far", "enforceGroupShots still applies far camera on 3-person segment");
+  assert.equal(out[2].camera, "near", "enforceGroupShots applies near camera on 3-person segment");
   assert.equal(out[4].positions.a, "left", "returning to 2 people narrows back to left");
   assert.equal(out[4].positions.b, "right", "returning to 2 people narrows back to right");
 });
@@ -1321,4 +1326,24 @@ test("enforceGroupShots drops orphan ease when stripping group zoom and preserve
     beats,
   });
   assert.deepEqual(parsed.errors, [], `unexpected parse errors: ${JSON.stringify(parsed.errors)}`);
+});
+
+test("spreadPositions places 4/5-person casts without clipping, recovers out of close/far on speaker switches, and strips colliding durations", () => {
+  const beats = [
+    { scene: "stage_a", camera: "near", focus: 5, positions: { a: "left", b: "center-left", c: "center", d: "right" } },
+    { say: "a", text: "一。", camera: "close", focus: "a" },
+    { say: "d", text: "二。" },
+    { positions: { a: "far-left", b: "left", c: "center", d: "right", e: "far-right" } },
+    { say: "e", text: "三。", focus: 5, focusDuration: 1.5, track: 0.4, trackDuration: 1.5, pan: 10, panDuration: 2, pedestal: -0.1, pedestalDuration: 1.5 },
+  ];
+  const warnings = [];
+  spreadPositions(beats, 5, warnings);
+  assert.deepEqual(beats[0].positions, { a: "far-left", b: "left", c: "right", d: "far-right" });
+  assert.equal(beats[2].camera, "near", "switching speakers after close auto-recovers to near");
+  assert.equal(beats[2].focus, 5);
+  assert.deepEqual(beats[3].positions, { a: "far-left", b: "left", c: "center", d: "right", e: "far-right" });
+  assert.equal(beats[3].camera, "near");
+  assert.equal(beats[4].focusDuration, undefined, "colliding focusDuration stripped alongside pan/pedestal");
+  assert.equal(beats[4].trackDuration, undefined, "colliding trackDuration stripped alongside pan");
+  assert.ok(warnings.some((w) => w.code === "closeRecover"));
 });

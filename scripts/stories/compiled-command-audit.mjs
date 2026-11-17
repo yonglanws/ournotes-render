@@ -14,6 +14,14 @@ import { summarize } from "./story-metrics.mjs";
 
 const COMMANDS = new Set(ADV_COMMAND.filter(Boolean));
 const DIST_ZOOM = Object.freeze([1.0, 1.2, 1.4, 1.8, 2.8, 4.0, 6.0]);
+const FOCUS_WORLD_X = Object.freeze({ 1: -2.1, 2: -1.58, 3: -1.05, 4: -0.53, 5: 0, 6: 0.53, 7: 1.05, 8: 1.58, 9: 2.1 });
+const CAMERA_AXES = Object.freeze({
+  Focus: ["x", "y", "z", "ry", "zoom"],
+  Track: ["x"],
+  Pedestal: ["y"],
+  PanV2: ["x", "z", "ry"],
+  Zoom: ["zoom"],
+});
 
 // Ranges from docs/story-author.md and the approved harness design. Duration and
 // look Parameter2 are optional: official Pedestal/PanV2 rows often omit Duration
@@ -119,6 +127,60 @@ const auditSceneSemantics = (rows, episode, script, failures) => {
   let closeBurstReported = false;
   let seenSceneContent = false;
   let effects = emptyEffects();
+  let activeTransition = null;
+  const activeTweens = new Map();
+
+  const computeCamX = (f, tr) => {
+    const focusTarget = f.targetName && onStage.has(f.targetName) ? onStage.get(f.targetName) : null;
+    const camBaseX = (f.posType in FOCUS_WORLD_X
+      ? FOCUS_WORLD_X[f.posType]
+      : (focusTarget ? (SLOT_WORLD_X[focusTarget.slot] ?? 0) + focusTarget.x : 0));
+    return camBaseX + tr;
+  };
+  const halfWidthAt = (distance, zm, z = 0) => {
+    const distZoom = DIST_ZOOM[distance] ?? 1.4;
+    const fov = 39.6 / (distZoom * (zm || 1));
+    return (5.5 + z) * Math.tan((fov * Math.PI) / 360) * (13 / 6);
+  };
+  const advanceBlockingTime = (sec) => {
+    if (!(sec > 0)) return;
+    if (activeTransition) {
+      activeTransition.remaining = Math.max(0, activeTransition.remaining - sec);
+      if (activeTransition.remaining <= 0.05) activeTransition = null;
+    }
+    for (const [axis, tw] of [...activeTweens.entries()]) {
+      tw.remaining -= sec;
+      if (tw.remaining <= 0.05) activeTweens.delete(axis);
+    }
+  };
+  const checkTweenCollision = (row, index) => {
+    const axes = CAMERA_AXES[row.cmd];
+    if (!axes) return;
+    const dur = numeric(row.Duration) ?? 0;
+    const delay = numeric(row.DelaySeconds) ?? 0;
+    const noWait = row.IsNoWait === 1;
+    for (const axis of axes) {
+      if (!activeTweens.has(axis)) continue;
+      const prev = activeTweens.get(axis);
+      const isSyncedFocusTrack = prev.cmd === "Focus" && row.cmd === "Track" &&
+        dur === prev.dur && delay === prev.delay;
+      if (!isSyncedFocusTrack) {
+        failures.push({
+          code: "tweenCollision", index, cmd: row.cmd, axis, priorIndex: prev.index, priorCmd: prev.cmd,
+          message: `${row.cmd} (dur=${dur}) collides with active ${prev.cmd} tween (dur=${prev.dur}) on axis ${axis}`,
+        });
+        break;
+      }
+    }
+    if (noWait && dur > 0) {
+      for (const axis of axes) {
+        activeTweens.set(axis, { index, cmd: row.cmd, dur, delay, remaining: delay + dur });
+      }
+    } else if (!noWait) {
+      if (dur > 0) advanceBlockingTime(delay + dur);
+      else for (const axis of axes) activeTweens.delete(axis);
+    }
+  };
 
   const scriptTextBeats = Array.isArray(script?.beats)
     ? script.beats.filter((b) => b && typeof b === "object" && ("say" in b || "narrate" in b))
@@ -178,8 +240,19 @@ const auditSceneSemantics = (rows, episode, script, failures) => {
         closeTalkCount = 0;
         closeStartIndex = -1;
         closeBurstReported = false;
+        activeTransition = null;
+        activeTweens.clear();
       }
       seenSceneContent = true;
+      continue;
+    }
+    if (row.cmd === "FadeOut" || row.cmd === "FadeIn") {
+      activeTransition = null;
+      activeTweens.clear();
+      continue;
+    }
+    if (row.cmd === "Delay") {
+      advanceBlockingTime(numeric(row.Duration) ?? 0);
       continue;
     }
     if (row.cmd === "In") {
@@ -195,6 +268,7 @@ const auditSceneSemantics = (rows, episode, script, failures) => {
     }
     if (row.cmd === "Out") {
       if (row.TargetName) onStage.delete(String(row.TargetName));
+      if (row.IsNoWait !== 1) advanceBlockingTime(numeric(row.Duration) ?? 0);
       continue;
     }
     if (row.cmd === "MoveToDirection") {
@@ -204,6 +278,7 @@ const auditSceneSemantics = (rows, episode, script, failures) => {
         m.y += numeric(row.Parameter2) ?? 0;
         m.z += numeric(row.Parameter3) ?? 0;
       }
+      if (row.IsNoWait !== 1) advanceBlockingTime(numeric(row.Duration) ?? 0);
       continue;
     }
     if (row.cmd === "MoveToLeft" || row.cmd === "MoveToRight" || row.cmd === "MoveToUp" ||
@@ -218,16 +293,25 @@ const auditSceneSemantics = (rows, episode, script, failures) => {
         else if (row.cmd === "MoveToForward") m.z -= amt;
         else if (row.cmd === "MoveToBack") m.z += amt;
       }
+      if (row.IsNoWait !== 1) advanceBlockingTime(numeric(row.Duration) ?? 0);
       continue;
     }
     if (row.cmd === "Focus") {
       seenSceneContent = true;
+      checkTweenCollision(row, index);
+      const prevCam = { camX: computeCamX(focus, trackOffset), distance: focus.distance, zoomMul };
       const d = numeric(row.CameraDistance) ?? 2;
       const p = numeric(row.PositionType) ?? focus.posType;
       const t = row.TargetName ? String(row.TargetName) : "";
       focus = { distance: d, posType: p, targetName: t };
       trackOffset = 0;
       zoomMul = 1;
+      const dur = numeric(row.Duration) ?? 0;
+      if (row.IsNoWait === 1 && dur > 0) {
+        activeTransition = { ...prevCam, remaining: dur, focusIndex: index };
+      } else {
+        activeTransition = null;
+      }
       if (d < 4) {
         inClose = false;
         closeTalkCount = 0;
@@ -242,11 +326,30 @@ const auditSceneSemantics = (rows, episode, script, failures) => {
       continue;
     }
     if (row.cmd === "Track") {
+      checkTweenCollision(row, index);
+      const dur = numeric(row.Duration) ?? 0;
+      if (row.IsNoWait === 1 && dur > 0) {
+        if (!activeTransition) {
+          activeTransition = {
+            camX: computeCamX(focus, trackOffset), distance: focus.distance, zoomMul,
+            remaining: dur, focusIndex: index,
+          };
+        } else {
+          activeTransition.remaining = Math.max(activeTransition.remaining, dur);
+        }
+      } else if (row.IsNoWait !== 1) {
+        activeTransition = null;
+      }
       const tr = numeric(row.Parameter1);
       if (tr !== null) trackOffset = tr;
       continue;
     }
+    if (row.cmd === "Pedestal" || row.cmd === "PanV2") {
+      checkTweenCollision(row, index);
+      continue;
+    }
     if (row.cmd === "Zoom") {
+      checkTweenCollision(row, index);
       const zm = numeric(row.Parameter1);
       if (zm !== null) zoomMul = zm <= 0 ? 1 : zm;
       continue;
@@ -377,24 +480,49 @@ const auditSceneSemantics = (rows, episode, script, failures) => {
                           message: "close/very-close burst exceeded 3 lines without recovering to middle/far" });
         }
       }
-      if (row.TargetName && onStage.has(String(row.TargetName)) && (focus.distance >= 4 || Math.abs(trackOffset) > 1e-6)) {
+      const camX = computeCamX(focus, trackOffset);
+      if (row.AdvTextID && row.TargetName && onStage.has(String(row.TargetName))) {
         const char = onStage.get(String(row.TargetName));
         const charX = (SLOT_WORLD_X[char.slot] ?? 0) + char.x;
-        const focusTarget = focus.targetName && onStage.has(focus.targetName) ? onStage.get(focus.targetName) : null;
-        const camBaseX = (focus.posType in SLOT_WORLD_X
-          ? SLOT_WORLD_X[focus.posType]
-          : (focusTarget ? (SLOT_WORLD_X[focusTarget.slot] ?? 0) + focusTarget.x : 0));
-        const camX = camBaseX + trackOffset;
-        const distZoom = DIST_ZOOM[focus.distance] ?? 1.4;
-        const fov = 39.6 / (distZoom * zoomMul);
-        const halfWidth = (5.5 + char.z) * Math.tan((fov * Math.PI) / 360) * (13 / 6);
-        if (halfWidth > 0 && Math.abs(charX - camX) > 0.7 * halfWidth) {
-          failures.push({
-            code: "speakerOutsideCentralBand", index, cmd: "Talk", target: String(row.TargetName),
-            ratio: Number((Math.abs(charX - camX) / halfWidth).toFixed(3)),
-            message: `Speaker ${row.TargetName} head is outside central 70% band (${Math.round((Math.abs(charX - camX) / halfWidth) * 100)}%)`,
-          });
+        if (activeTransition && activeTransition.remaining > 0.05) {
+          const fromHalfWidth = halfWidthAt(activeTransition.distance, activeTransition.zoomMul, char.z);
+          if (fromHalfWidth > 0 && Math.abs(charX - activeTransition.camX) > 0.7 * fromHalfWidth) {
+            failures.push({
+              code: "speakerOffScreenMidTransition", index, focusIndex: activeTransition.focusIndex,
+              cmd: "Talk", target: String(row.TargetName),
+              remaining: Number(activeTransition.remaining.toFixed(2)),
+              message: `Speaker ${row.TargetName} is outside the starting frame during an IsNoWait=1 camera transition (${activeTransition.remaining.toFixed(2)}s remaining)`,
+            });
+          }
         }
+        if (focus.distance >= 3 || Math.abs(trackOffset) > 1e-6) {
+          const halfWidth = halfWidthAt(focus.distance, zoomMul, char.z);
+          if (halfWidth > 0 && Math.abs(charX - camX) > 0.7 * halfWidth) {
+            failures.push({
+              code: "speakerOutsideCentralBand", index, cmd: "Talk", target: String(row.TargetName),
+              ratio: Number((Math.abs(charX - camX) / halfWidth).toFixed(3)),
+              message: `Speaker ${row.TargetName} head is outside central 70% band (${Math.round((Math.abs(charX - camX) / halfWidth) * 100)}%)`,
+            });
+          }
+        }
+      }
+      if (row.AdvTextID && onStage.size >= 2 && focus.posType === 5 && !focus.targetName &&
+          (focus.distance >= 3 || (focus.distance >= 2 && (zoomMul > 1.05 || Math.abs(trackOffset) > 0.2)))) {
+        for (const [castId, char] of onStage.entries()) {
+          const charX = (SLOT_WORLD_X[char.slot] ?? 0) + char.x;
+          const halfWidth = halfWidthAt(focus.distance, zoomMul, char.z);
+          if (halfWidth > 0 && Math.abs(charX - camX) > halfWidth - 0.45) {
+            failures.push({
+              code: "outerSlotClipping", index, cmd: "Talk", target: castId,
+              margin: Number((halfWidth - Math.abs(charX - camX)).toFixed(3)),
+              message: `Character ${castId} at x=${charX.toFixed(2)} is clipped horizontally at distance ${focus.distance} (halfWidth=${halfWidth.toFixed(2)})`,
+            });
+          }
+        }
+      }
+      if (row.AdvTextID) {
+        activeTransition = null;
+        activeTweens.clear();
       }
     }
   }

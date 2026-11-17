@@ -374,8 +374,8 @@ test("director beats compile to focus, timed actions, fades, pauses and silent a
     { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_R" },
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 3, CameraDistance: 3 },
-    // the line's own camera (a wider distance eases back over 1.2 s), then the speaker's motion and the reactions
-    { cmd: "Focus", PositionType: 7, CameraDistance: 1, Duration: 1.2, IsNoWait: 1 },
+    // the line's own camera (a wider distance eases back over 0.5 s), then the speaker's motion and the reactions
+    { cmd: "Focus", PositionType: 7, CameraDistance: 1, Duration: 0.5, IsNoWait: 1 },
     { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_C", MotionFadeIn: -1, ExpressionName: "exp_idle01" },
     { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"], TargetTextColors: ["#FFFFFF"],
       HostActions: [{ at: 0.45, TargetName: "b", MotionFadeIn: 0.15, ExpressionName: "exp_idle01" },
@@ -416,11 +416,11 @@ test("official close-ups: 2.8x and 4x, cut in, ease back, and a cast focus aims 
   const focusRows = strip(c.episode.commands).filter((r) => r.cmd === "Focus");
   assert.deepEqual(focusRows, [
     { cmd: "Focus", PositionType: 5, CameraDistance: 2 },
-    { cmd: "Focus", PositionType: 7, CameraDistance: 4, IsNoWait: 1 },
-    { cmd: "Focus", PositionType: 3, CameraDistance: 4, IsNoWait: 1 },
-    { cmd: "Focus", PositionType: 5, CameraDistance: 2, Duration: 1.2, IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 7, CameraDistance: 4, TargetName: "b", IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 3, CameraDistance: 4, TargetName: "a", IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 5, CameraDistance: 2, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 7, CameraDistance: 2, Duration: 0.5, IsNoWait: 1 },
-    { cmd: "Focus", PositionType: 3, CameraDistance: 5, IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 3, CameraDistance: 5, TargetName: "a", IsNoWait: 1 },
   ]);
 });
 
@@ -653,10 +653,10 @@ test("track, focus points and pre-line reactions compile to the game's continuou
     // the scene establishes a two-shot with a focus point between the two slots plus a pan
     { cmd: "Focus", PositionType: 5, CameraDistance: 3 },
     { cmd: "Track", Parameter1: "0.5", IsNoWait: 1 },
-    // the line eases from the group to a focus point between far-left and left over 1.2 s, pans with it, reacts,
+    // the line eases from the group to a focus point between far-left and left over 0.5 s, pans with it, reacts,
     // then speaks and looks over
-    { cmd: "Focus", PositionType: 2, CameraDistance: 2, Duration: 1.2, IsNoWait: 1 },
-    { cmd: "Track", Parameter1: "-0.3", Duration: 1.2, IsNoWait: 1 },
+    { cmd: "Focus", PositionType: 2, CameraDistance: 2, Duration: 0.5, IsNoWait: 1 },
+    { cmd: "Track", Parameter1: "-0.3", Duration: 0.5, IsNoWait: 1 },
     { cmd: "Expression", TargetName: "b", ExpressionName: "exp_idle01", MotionFadeIn: -1 },
     { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_C", MotionFadeIn: -1, ExpressionName: "exp_idle01" },
     { cmd: "LookTarget", TargetName: "a", PositionType: 7, Duration: 0.2, IsNoWait: 1 },
@@ -1296,4 +1296,30 @@ test("Frame/PostEffect stops never toggle inactive effects on, and Hide_anime re
       ["adv_frame_letterbox/adv_frame_letterbox_black", "Hide_anime"],
     ],
   );
+});
+
+test("close shots auto-target head height unless focusTargetHead is false, and off-screen jumps never run slow IsNoWait pull-backs", () => {
+  const s = script([
+    { scene: "garden", camera: "near", focus: 5, positions: { a: "far-left", c: "center", b: "far-right" } },
+    { say: "a", text: "一。", camera: "close", focus: "a" },
+    // Speaker b is at far-right (+2.10) while cam is at far-left (-2.10) in close (2.8x):
+    // pulling out to near/center snaps in 0s so b is never off-screen mid-transition.
+    { say: "b", text: "二。", camera: "near", focus: 5 },
+    // Explicit focusDuration on a say beat when speaker is off-screen blocks before Talk.
+    { say: "a", text: "三。", camera: "close", focus: "a", focusTargetHead: false },
+    { say: "b", text: "四。", camera: "near", focus: 5, focusDuration: 0.5 },
+    // Same-beat Zoom/PanV2/Pedestal snaps auto Focus/Track to 0s to avoid AdvCamera._axis tween collisions.
+    { say: "a", text: "五。", camera: "near", focus: 5, zoom: 1.08, zoomDuration: 3 },
+    { say: "b", text: "六。", camera: "middle", focus: "b", track: 0.2, pan: 10, panDuration: 2 },
+  ], { cast: { a: { model: "m_a", name: "Ann" }, b: { model: "m_b", name: "Bea" }, c: { model: "m_a", name: "Cat" } } });
+  const rows = strip(compiled(s).episode.commands);
+  const focusRows = rows.filter((r) => r.cmd === "Focus");
+  const trackRows = rows.filter((r) => r.cmd === "Track");
+  assert.deepEqual(focusRows[1], { cmd: "Focus", PositionType: 1, CameraDistance: 4, TargetName: "a", IsNoWait: 1 });
+  assert.deepEqual(focusRows[2], { cmd: "Focus", PositionType: 5, CameraDistance: 1, IsNoWait: 1 }, "off-screen auto pull-back hard-cuts in 0s");
+  assert.equal(focusRows[3].TargetName, undefined, "explicit focusTargetHead: false suppresses TargetName");
+  assert.deepEqual(focusRows[4], { cmd: "Focus", PositionType: 5, CameraDistance: 1, Duration: 0.5 }, "explicit duration while off-screen blocks without IsNoWait");
+  assert.deepEqual(focusRows[5], { cmd: "Focus", PositionType: 5, CameraDistance: 1, IsNoWait: 1 }, "same-beat Zoom snaps Focus to 0s");
+  assert.deepEqual(focusRows[6], { cmd: "Focus", PositionType: 9, CameraDistance: 2, IsNoWait: 1 }, "same-beat PanV2 snaps Focus to 0s");
+  assert.deepEqual(trackRows[0], { cmd: "Track", Parameter1: "0.2", IsNoWait: 1 }, "same-beat PanV2 snaps Track to 0s");
 });

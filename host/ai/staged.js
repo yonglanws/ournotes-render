@@ -200,7 +200,7 @@ ${stages}
 ${musicLines}
 
 ## 要求
-- 选 ${maxOnStage === 2 ? "2 名" : "2~3 名"}角色（用户明确要求独白时才可以 1 人）。同一角色的不同服装只能选一个模型，model 写完整 id（含服装后缀），不要只写角色名。两人同台用 left / right；${maxOnStage === 2 ? "同台最多 2 人，所以不要选第三个人。" : "三人同台时用 far-left / center / far-right，默认 far 群像（focus 5、track 0）；近景只拍单人特写（close/very-close，focus 该角色），不拍中景/群像推近。"}
+- 选 ${maxOnStage === 2 ? "2 名" : "2~3 名"}角色（用户明确要求独白时才可以 1 人）。同一角色的不同服装只能选一个模型，model 写完整 id（含服装后缀），不要只写角色名。两人同台用 left / right；${maxOnStage === 2 ? "同台最多 2 人，所以不要选第三个人。" : "三人同台时用 far-left / center / far-right，默认 near 群像（focus 5、track 0）；近景只拍单人特写（close/very-close，focus 该角色），不用 far（1.8× 会裁切两侧角色）或群像推近。"}
 - 服装按乐队尽量统一：同一支乐队同台的角色优先穿同一类服装（队服 / 校服 / 便服 / 虚拟舞台服 / 打工服；校服的不同年级算同一类）。先选覆盖出场角色最多的一类；个别角色没有这一类时可以例外，但不要让一个例外角色把全队带偏（例如不要为了一个便服角色让其他人全换便服）。**避免一个人穿队服、另一个人穿初中校服这种强烈冲突。**
 - 两位角色的说话量要有反差：至少一位话多、愿意解释或吐槽，另一位可以寡言；不要两位都只会 2~5 字的短句。
 - 选的角色要能自然演完一个日常小事件：拍照、找东西、等人、收拾器材、分零食、试新曲、发消息之类。
@@ -750,7 +750,7 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
       "zoom": 1.06, "zoomDuration": 4,
       "actions": [{ "at": 0, "cast": "${plan.cast[0]?.id || "a"}", "expression": "表情名" }] },
     { "line": "l3", "motion": "动作名", "expression": "表情名", "focus": 5, "camera": "middle", "track": 0.5,
-      "focusDuration": ${OFFICIAL_TARGETS.focusDurationDefault}, "trackDuration": 2, "pedestal": -0.2, "pedestalDuration": 1.5,
+      "focusDuration": 0, "trackDuration": 0, "pedestal": -0.2, "pedestalDuration": 1.5,
       "pan": 12, "panDuration": 2.5, "panFocusSlide": 0.5, "dof": 0.4, "dofDuration": 1.5, "dofLayers": 2,
       "look": -0.4, "lookY": 0.1, "lookDuration": 0.5, ${exampleSe ? `"se": ${JSON.stringify(exampleSe)}, "seDuration": 2, "seDelay": 0.2, ` : ""}"motionFadeIn": ${OFFICIAL_TARGETS.motionFadeInDefault}, "motionWait": false },
     { "pause": 0.3 }
@@ -763,9 +763,9 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
 - 非 line beat 可插在合适的台词之间：scene / positions / camera / fade / pause / action / move / angle / bgm / frame / frameStop / postEffect / postEffectStop / brightness / shake / cameraShake / flash / talkWindow / stageEnv / still / subtitles / hideTalk；不要为每一句新开 scene，也不要反复 fade。
 - line beat 可写演出与特效字段：motion、expression、lookAt、focus、camera、track、zoom、zoomDuration、actions、thought、ignoreLipSync、hideTalk、focusSharp、focusTargetHead、ease、cameraDelay、focusDuration、trackDuration、pedestal、pedestalDuration、pan、panDuration、panFocusSlide、dof、dofDuration、dofLayers、dofTarget、role、roleDuration、tilt、tiltDuration、look、lookY、lookDuration、move、angle、bgm、bgmFade、bgmVolume、bgmStart、frame、frameAction、frameDuration、frameStop、postEffect、postEffectDuration、postEffectStop、brightness、shake、cameraShake、cameraShakeFade、cameraShakeStrength、flash、talkWindow、se、seDuration、seDelay、seStop、motionFadeIn、motionWait。不写 focus/camera/track 就保持当前镜头。trackDuration 只在写了 track 时有效，focusDuration/focusSharp/focusTargetHead 只在写了 focus/camera 时有效。
 - narrate 台词（[narrate]）没有说话者，不能写 motion、expression、lookAt、look、lookY、lookDuration、se、seDuration、seDelay、seStop、motionFadeIn、motionWait；只写 focus/camera/track/zoom/运镜字段、thought/ignoreLipSync/hideTalk/talkWindow 和 actions（actions 必须带 cast）。
-- 每个说话者开口前必须已经在台上；用 positions 让他进场。**两人同台用 left / right**（不要用 far-left / far-right，间隔太开）；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0），默认 far 群像（可用 positions 的 dz: 0.6~1.5 做景深错位）；近景只拍单人特写（close/very-close，focus 指向一个人），不拍中景/群像推近" : "同台最多 2 人，第 3 人必须等一人退场后再进场"}；不要用 center+right 或 center+left（会重叠）。
-- **镜头预算**：全场约 ${budget.focusChanges} 个 focus（含 scene/positions 上的；官方 Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句），其中 close 近景约 ${budget.closeUps} 次（距离 4 约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行），near 全景 0~1 次。close 停 1~2 句（偶尔 3 句），下一句用 middle + focus 5 回到二人/群像；不要连续两句 close，也不要停在同一个 close 上直到结尾；三人同台时 close 只拍单人特写。
-  大部分 line beat 不要写 focus/camera/track，只有真的换机位时才写；同一机位保持 3~4 句，连续两句都写 focus 通常就是切太碎。推近（middle/far → close）是硬切，拉回（close → middle/far）会自动缓推，不需要写 duration；三人同台时只有单人特写可以推近。
+- 每个说话者开口前必须已经在台上；用 positions 让他进场。**两人同台用 left / right**（不要用 far-left / far-right，间隔太开）；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera near，focus 5，track 0），默认 near 1.2× 群像（可用 positions 的 dz: 0.6~1.5 做景深错位）；近景只拍单人特写（close/very-close，focus 指向一个人），不用 far（1.8× 会切掉两侧角色）或群像推近" : "同台最多 2 人，第 3 人必须等一人退场后再进场"}；不要用 center+right 或 center+left（会重叠）。
+- **镜头预算**：全场约 ${budget.focusChanges} 个 focus（含 scene/positions 上的；官方 Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 2)}/句），其中 close 近景约 ${budget.closeUps} 次（距离 4 约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行），双人戏 near 全景 0~1 次。close 停 1~2 句（偶尔 3 句），下一句用 middle（双人）/ near（三人）+ focus 5 回到二人/群像；不要连续两句 close，也不要停在同一个 close 上直到结尾；三人同台时 close 只拍单人特写。
+  大部分 line beat 不要写 focus/camera/track，只有真的换机位时才写；同一机位保持 3~4 句，连续两句都写 focus 通常就是切太碎。推近（near/middle/far → close）是硬切，换人拉回也会硬切或快速收镜（同人拉回约 0.5 秒），不需要写 focusDuration；与同拍 zoom/pan/pedestal 并用时不要写非 0 的 focusDuration（避免同轴 tween 冲突）；三人同台时只有单人特写可以推近，且 close/very-close 会自动对准头部高度（TargetName）。
 - **换机位上限**：整场只有 ${Math.max(0, budget.focusChanges - 2)} 句 line beat 可以写 focus/camera/track（scene/positions 的 Focus 另计）；请把镜头字段集中到真正的剪辑句，其余 line beat 一个镜头字段都不要写；多写的会在合并时删除。
 - **慢推镜**：全场约 ${budget.zoomMin}~${budget.zoomMax} 次 zoom，写在情绪句/近景或结尾：推近 1.03~1.10，拉远 0.92~0.98，zoomDuration 3~5 秒、ease "OutSine"。一个机位最多 1 次；不写就静止，不要每个镜头都推。
 - **视线预算**：全场总视线（lookAt + 独立 look）约 ${gaze.total} 次；双人戏每 3~4 句最多 1 个 lookAt，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名、1~9 构图点或 "stop"；不要每句都看着对方。独立 look 最多 ${gaze.independentMax} 个（计入上面的总视线，不额外增加），如低头回避 "look": 0.4, "lookY": -0.6, "lookDuration": 0.4，结束后用 "look": "stop" 收回。
@@ -922,13 +922,14 @@ const focusedCast = (focus, positions) => {
   return Object.keys(positions).find((id) => positionNumber(positions[id]) === n) || "";
 };
 
-// The operator's framing rule: with three people on stage the frame defaults to the official far group shot, because a
-// middle shot at that distance crowds them together. A close-up is still welcome, but only as a single-person
-// close-up: the focus must name one person (or the speaker), and then its zoom push-in stays. A group close-up or a
-// group push-in is rewritten to far + focus 5. Both the AI merge and a supplied script go through this.
+// The operator's framing rule: with three or more people on stage the frame defaults to the official wide `near` (1.2x)
+// group shot, because `far` (1.8x, halfWidth ~2.32m) and `middle` (1.4x) clip outer slots (1/9 at +-2.10m).
+// A close-up is still welcome, but only as a single-person close-up: the focus must name one person (or the speaker),
+// and then its zoom push-in stays. A group close-up or a group push-in is rewritten to near + focus 5.
+// Both the AI merge and a supplied script go through this.
 export const enforceGroupShots = (beats, maxOnStage = 3, warnings = []) => {
   const limit = Math.max(2, Math.min(3, Math.round(Number(maxOnStage) || 3)));
-  if (limit < 3 || !Array.isArray(beats)) return { shotFixes: 0, zoomFixes: 0 };
+  if (!Array.isArray(beats)) return { shotFixes: 0, zoomFixes: 0 };
   let stageSize = 0, positions = {}, shotFixes = 0, zoomFixes = 0, inSingleClose = false;
   const dropZoom = (beat) => {
     delete beat.zoom;
@@ -945,19 +946,21 @@ export const enforceGroupShots = (beats, maxOnStage = 3, warnings = []) => {
       positions = beat.positions;
       inSingleClose = false;
     }
-    if (stageSize < 3) {
+    if (stageSize < 3 || (limit < 3 && stageSize <= 2)) {
       inSingleClose = false;
       continue;
     }
     const distance = cameraNumber(beat.camera);
     if (isObj(beat.positions) && beat.camera === undefined) {
-      beat.camera = "far";
+      beat.camera = "near";
+      if (beat.focus === undefined || beat.focus !== 5) beat.focus = 5;
+      if (beat.track !== undefined) beat.track = 0;
       shotFixes++;
       if (Number(beat.zoom) > 1) dropZoom(beat);
       continue;
     }
-    // close/very-close: allowed only when it frames one person; the speaker is the person when focus is the group point.
-    if (distance === CAMERA_NUMBER.close || distance === CAMERA_NUMBER["very-close"]) {
+    // close/very-close/macro: allowed only when it frames one person; the speaker is the person when focus is the group point.
+    if (distance !== undefined && distance >= CAMERA_NUMBER.close) {
       const focus = beat.focus;
       const groupFocus = focus === undefined || focus === 5 || focus === "center" || focus === "";
       let target = groupFocus ? "" : focusedCast(focus, positions);
@@ -967,7 +970,7 @@ export const enforceGroupShots = (beats, maxOnStage = 3, warnings = []) => {
         inSingleClose = true;
         continue;
       }
-      setCameraDistance(beat, "far");
+      setCameraDistance(beat, "near");
       beat.focus = 5;
       if (beat.track !== undefined) beat.track = 0;
       inSingleClose = false;
@@ -975,9 +978,10 @@ export const enforceGroupShots = (beats, maxOnStage = 3, warnings = []) => {
       if (Number(beat.zoom) > 1) dropZoom(beat);
       continue;
     }
-    // near/middle with three people is a group shot at a closer distance: keep the far group framing.
-    if (beat.camera !== undefined && distance !== undefined && distance !== CAMERA_NUMBER.far) {
-      setCameraDistance(beat, "far");
+    // middle (1.4x) / far (1.8x) with 3+ people clips outer slots (1/9 at +-2.10m): widen to near (1.2x) group framing.
+    if (beat.camera !== undefined && distance !== undefined &&
+        distance !== CAMERA_NUMBER.near && distance !== CAMERA_NUMBER.full) {
+      setCameraDistance(beat, "near");
       beat.focus = 5;
       if (beat.track !== undefined) beat.track = 0;
       inSingleClose = false;
@@ -985,24 +989,33 @@ export const enforceGroupShots = (beats, maxOnStage = 3, warnings = []) => {
       if (Number(beat.zoom) > 1) dropZoom(beat);
       continue;
     }
-    if (distance === CAMERA_NUMBER.far || beat.focus === 5 || beat.focus === "center") {
+    if (distance === CAMERA_NUMBER.near || distance === CAMERA_NUMBER.full) {
+      if (beat.focus !== undefined && beat.focus !== 5 && beat.focus !== "center") {
+        beat.focus = 5;
+        shotFixes++;
+      }
+      if (beat.track !== undefined && Number(beat.track) !== 0) beat.track = 0;
+      inSingleClose = false;
+    } else if (beat.focus === 5 || beat.focus === "center") {
       inSingleClose = false;
     }
     // Carry-over single-person close-up allows slow push-in without repeating camera/focus; group shots crop outer cast.
     if (!inSingleClose && Number(beat.zoom) > 1) dropZoom(beat);
   }
   if (shotFixes) warnings.push({ code: "groupCamera",
-    message: `三人同台 ${shotFixes} 处镜头改用 far 群像（单人特写除外）` });
+    message: `三人同台 ${shotFixes} 处镜头改用 near 群像（单人特写除外）` });
   if (zoomFixes) warnings.push({ code: "groupZoom",
     message: `三人同台取消 ${zoomFixes} 处非单人特写的 zoom 推近` });
   return { shotFixes, zoomFixes };
 };
 
-// The published slots are 1.6 world units apart, so two people at center+right touch. The official base story puts a
+// The published slots are 1.05 world units apart, so two people at center+right touch. The official base story puts a
 // two-person scene at left / right (slots 3/7) in 76 of its two-person frames; far-left/far-right (1/9) is a wider
 // variant and leaves too much empty space for a conversation. Normalize every position snapshot in a scene:
 //   2 people -> left / right (the official two-shot pair)
-//   3 people -> far-left / center / far-right (the official group framing)
+//   3 people -> far-left / center / far-right (the official group framing at near 1.2x)
+//   4 people -> far-left / left / right / far-right (symmetric 4-person framing at near/full)
+//   5 people -> far-left / left / center / right / far-right
 // A solo opening is put at left and its camera focus follows, so the first person does not have to move when the
 // second enters at right.
 // Sub-segment staging normalization: computes active on-stage count per blocking segment (between `positions`
@@ -1033,7 +1046,9 @@ export const spreadPositions = (beats, maxOnStage = 3, warnings = []) => {
         if (nextMulti) {
           const nextIds = Object.keys(nextMulti.positions).sort((a, b) =>
             positionNumber(nextMulti.positions[a]) - positionNumber(nextMulti.positions[b]));
-          const layout = nextIds.length >= 3 ? ["far-left", "center", "far-right"] : ["left", "right"];
+          const layout = nextIds.length >= 5 ? ["far-left", "left", "center", "right", "far-right"]
+            : nextIds.length === 4 ? ["far-left", "left", "right", "far-right"]
+              : nextIds.length === 3 ? ["far-left", "center", "far-right"] : ["left", "right"];
           const futureSlot = layout[nextIds.indexOf(onlyId)] || "left";
           targetSlot = futureSlot === "far-right" ? "right" : futureSlot === "far-left" ? "left" : futureSlot;
         } else if (prevSlots.has(onlyId)) {
@@ -1047,7 +1062,10 @@ export const spreadPositions = (beats, maxOnStage = 3, warnings = []) => {
         const sorted = [...ids].sort((a, b) =>
           positionNumber(beat.positions[a]) - positionNumber(beat.positions[b]) ||
           (POSITION_NUMBER[prevSlots.get(a)] ?? 5) - (POSITION_NUMBER[prevSlots.get(b)] ?? 5));
-        const layout = activeCount === 2 ? ["left", "right"] : ["far-left", "center", "far-right", "left", "right"];
+        const layout = activeCount === 2 ? ["left", "right"]
+          : activeCount === 3 ? ["far-left", "center", "far-right"]
+            : activeCount === 4 ? ["far-left", "left", "right", "far-right"]
+              : ["far-left", "left", "center", "right", "far-right"];
         sorted.forEach((id, i) => {
           next[id] = withSlot(beat.positions[id], layout[i] || "center");
         });
@@ -1073,22 +1091,87 @@ export const spreadPositions = (beats, maxOnStage = 3, warnings = []) => {
       }
     }
     let stage = {};
+    let activeDistance = CAMERA_NUMBER.middle;
+    let activeFocusCast = "";
     for (const beat of section) {
-      if (isObj(beat.positions)) stage = beat.positions;
       if (!isObj(beat)) continue;
-      const distance = cameraNumber(beat.camera);
-      if (distance === CAMERA_NUMBER.near && (beat.say || beat.narrate) && Object.keys(stage).length >= 2) {
-        const id = focusedCast(beat.focus, stage);
-        if (id) {
-          setCameraDistance(beat, "close");
-          warnings.push({ code: "nearCloseUp", message: "near 是全景；单人台词改用 close 近景" });
+      if (isObj(beat.positions)) {
+        stage = beat.positions;
+        const stageSize = Object.keys(stage).length;
+        if (activeDistance >= CAMERA_NUMBER.close && beat.camera === undefined) {
+          beat.camera = stageSize >= 3 ? "near" : "middle";
+          if (stageSize >= 2) beat.focus = 5;
+          warnings.push({ code: "closeRecover", message: "换位时自动从近景拉回全景/双人镜头" });
+        }
+        const posDist = cameraNumber(beat.camera);
+        if (posDist !== undefined) activeDistance = posDist;
+        else if (stageSize >= 3) activeDistance = CAMERA_NUMBER.near;
+        if (stageSize === 1) {
+          activeFocusCast = Object.keys(stage)[0] || "";
+        } else if (beat.focus === undefined || beat.focus === 5 || beat.focus === "center") {
+          activeFocusCast = "";
+        } else {
+          activeFocusCast = focusedCast(beat.focus, stage);
+        }
+      } else {
+        const stageSize = Object.keys(stage).length;
+        let distance = cameraNumber(beat.camera);
+        if (distance === CAMERA_NUMBER.near && (beat.say || beat.narrate) && stageSize >= 2 &&
+            beat.focus !== undefined && beat.focus !== 5 && beat.focus !== "center") {
+          const id = focusedCast(beat.focus, stage);
+          if (id) {
+            setCameraDistance(beat, "close");
+            distance = CAMERA_NUMBER.close;
+            warnings.push({ code: "nearCloseUp", message: "near 是全景；单人台词改用 close 近景" });
+          }
+        }
+        if (distance !== undefined && distance >= CAMERA_NUMBER.close && stageSize >= 2 &&
+            (beat.focus === undefined || beat.focus === 5 || beat.focus === "center") &&
+            beat.say && Object.prototype.hasOwnProperty.call(stage, beat.say)) {
+          beat.focus = beat.say;
+          warnings.push({ code: "closeUpFocus", message: "近景改为对着说话者，避免镜头对着空处" });
+        }
+        // Auto-recover out of close (or single-target far) when switching speakers without camera/focus,
+        // or when resetting focus to group center (5/"center") without specifying camera.
+        if (distance === undefined && stageSize >= 2 && activeDistance >= CAMERA_NUMBER.close &&
+            (beat.focus === 5 || beat.focus === "center")) {
+          setCameraDistance(beat, stageSize >= 3 ? "near" : "middle");
+          distance = cameraNumber(beat.camera);
+          warnings.push({ code: "closeRecover", message: "切回中心焦点时自动从近景拉回全景/双人镜头" });
+        } else if (beat.say && stageSize >= 2 && distance === undefined && beat.focus === undefined) {
+          const switchedFromClose = activeDistance >= CAMERA_NUMBER.close &&
+            (!activeFocusCast || beat.say !== activeFocusCast);
+          const switchedFromSingleFar = activeDistance === CAMERA_NUMBER.far &&
+            Boolean(activeFocusCast) && beat.say !== activeFocusCast;
+          if (switchedFromClose || switchedFromSingleFar) {
+            beat.camera = stageSize >= 3 ? "near" : "middle";
+            beat.focus = 5;
+            if (beat.track !== undefined) beat.track = 0;
+            distance = cameraNumber(beat.camera);
+            warnings.push({ code: "closeRecover", message: "切到其他说话者时自动从近景拉回全景/双人镜头" });
+          }
+        }
+        if (distance !== undefined) activeDistance = distance;
+        if (distance !== undefined || beat.focus !== undefined) {
+          if (stageSize === 1) {
+            activeFocusCast = Object.keys(stage)[0] || "";
+          } else if (beat.focus === 5 || beat.focus === "center" ||
+              (beat.focus === undefined && activeDistance < CAMERA_NUMBER.close)) {
+            activeFocusCast = "";
+          } else if (beat.focus !== undefined) {
+            activeFocusCast = focusedCast(beat.focus, stage);
+          }
         }
       }
-      if (distance >= CAMERA_NUMBER.close && Object.keys(stage).length >= 2 &&
-          (beat.focus === undefined || beat.focus === 5 || beat.focus === "center") &&
-          beat.say && Object.prototype.hasOwnProperty.call(stage, beat.say)) {
-        beat.focus = beat.say;
-        warnings.push({ code: "closeUpFocus", message: "近景改为对着说话者，避免镜头对着空处" });
+      // Prevent same-beat Focus vs Zoom/PanV2/Pedestal/Track tween collisions in AI-generated scripts.
+      if ((beat.camera !== undefined || beat.focus !== undefined) && Number(beat.focusDuration) > 0 &&
+          (beat.zoom !== undefined || beat.pan !== undefined || beat.pedestal !== undefined ||
+           (beat.track !== undefined && beat.trackDuration !== undefined &&
+            Number(beat.trackDuration) !== Number(beat.focusDuration)))) {
+        delete beat.focusDuration;
+      }
+      if (beat.track !== undefined && beat.pan !== undefined && Number(beat.trackDuration) > 0) {
+        delete beat.trackDuration;
       }
     }
     start = end;

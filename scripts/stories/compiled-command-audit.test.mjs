@@ -464,3 +464,80 @@ test("speakerOutsideCentralBand accounts for MoveToDirection and updated Focus.P
   const bandFailures = auditCompiledStory(spreadClose).failures.filter((f) => f.code === "speakerOutsideCentralBand");
   assert.deepEqual(bandFailures, []);
 });
+
+test("outerSlotClipping catches outer 1/9 characters framed at CameraDistance >= 3", () => {
+  const row = (i, cmd, fields = {}) => ({ i, cmd, raw: ADV_COMMAND.indexOf(cmd), ...fields });
+  const clipped = {
+    commandCount: 6,
+    commands: [
+      row(0, "Stage", { TargetAssetName: "st/garden" }),
+      row(1, "In", { TargetName: "a", PositionType: 1, IsNoWait: 1 }),
+      row(2, "In", { TargetName: "b", PositionType: 5, IsNoWait: 1 }),
+      row(3, "In", { TargetName: "c", PositionType: 9, IsNoWait: 1 }),
+      row(4, "Focus", { PositionType: 5, CameraDistance: 3 }),
+      row(5, "Talk", { AdvTextID: "t1", TargetName: "b" }),
+    ],
+    text: { t1: { "zh-Hans": "三个人站在一起。" } },
+    sounds: {}, cuesheets: {},
+  };
+  const clipFailures = auditCompiledStory({ episode: clipped }).failures.filter((f) => f.code === "outerSlotClipping");
+  assert.equal(clipFailures.length, 2);
+  assert.deepEqual(clipFailures.map((f) => [f.index, f.target]), [[5, "a"], [5, "c"]]);
+});
+
+test("speakerOffScreenMidTransition catches IsNoWait pull-backs when speaker starts outside frame", () => {
+  const row = (i, cmd, fields = {}) => ({ i, cmd, raw: ADV_COMMAND.indexOf(cmd), ...fields });
+  const stranded = {
+    commandCount: 7,
+    commands: [
+      row(0, "Stage", { TargetAssetName: "st/garden" }),
+      row(1, "In", { TargetName: "a", PositionType: 1, IsNoWait: 1 }),
+      row(2, "In", { TargetName: "b", PositionType: 9, IsNoWait: 1 }),
+      row(3, "Focus", { PositionType: 1, CameraDistance: 4, TargetName: "a", IsNoWait: 1 }),
+      row(4, "Talk", { AdvTextID: "t1", TargetName: "a" }),
+      row(5, "Focus", { PositionType: 5, CameraDistance: 2, Duration: 1.2, IsNoWait: 1 }),
+      row(6, "Talk", { AdvTextID: "t2", TargetName: "b" }),
+    ],
+    text: { t1: { "zh-Hans": "我来说。" }, t2: { "zh-Hans": "嗯。" } },
+    sounds: {}, cuesheets: {},
+  };
+  const failures = auditCompiledStory({ episode: stranded }).failures;
+  assert.ok(failures.some((f) => f.code === "speakerOffScreenMidTransition" && f.index === 6));
+});
+
+test("tweenCollision flags same-beat AdvCamera axis collisions and allows synced Focus + Track", () => {
+  const row = (i, cmd, fields = {}) => ({ i, cmd, raw: ADV_COMMAND.indexOf(cmd), ...fields });
+  const colliding = {
+    commandCount: 8,
+    commands: [
+      row(0, "Stage", { TargetAssetName: "st/garden" }),
+      row(1, "In", { TargetName: "a", PositionType: 3, IsNoWait: 1 }),
+      row(2, "Focus", { PositionType: 3, CameraDistance: 2, Duration: 0.5, IsNoWait: 1 }),
+      row(3, "Zoom", { Parameter1: "1.08", Duration: 3, IsNoWait: 1 }),
+      row(4, "Talk", { AdvTextID: "t1", TargetName: "a" }),
+      row(5, "Focus", { PositionType: 5, CameraDistance: 2, Duration: 0.5, IsNoWait: 1 }),
+      row(6, "Track", { Parameter1: "0.2", Duration: 0.5, IsNoWait: 1 }),
+      row(7, "Talk", { AdvTextID: "t2", TargetName: "a" }),
+    ],
+    text: { t1: { "zh-Hans": "推近。" }, t2: { "zh-Hans": "平稳移动。" } },
+    sounds: {}, cuesheets: {},
+  };
+  const failures = auditCompiledStory({ episode: colliding }).failures.filter((f) => f.code === "tweenCollision");
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].index, 3);
+  assert.match(failures[0].message, /zoom/);
+});
+
+test("clean 3-person near group framing with close hard cuts passes audit with 0 failures", () => {
+  const clean = compiledOf({
+    ...scene([
+      { scene: "garden", camera: "near", focus: 5, positions: { a: "far-left", c: "center", b: "far-right" } },
+      { say: "a", text: "大家都在这里呢。" },
+      { say: "b", text: "先听我说。", camera: "close", focus: "b" },
+      { say: "c", text: "等等，我也想说！", camera: "near", focus: 5 },
+    ]),
+    cast: { a: { model: "m_a", name: "Ann" }, b: { model: "m_b", name: "Bea" }, c: { model: "m_a", name: "Cat" } },
+  });
+  const result = auditCompiledStory(clean);
+  assert.deepEqual(result.failures, []);
+});

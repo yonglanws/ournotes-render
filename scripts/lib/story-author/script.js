@@ -48,10 +48,12 @@ const CAST_FADE = 0.2;                                         // seconds a char
 // the MyGO motions), so a new motion cross-fades from the pose on screen.
 const MOTION_FADE = -1;
 const FOCUS_MOVE = 0.5;                                        // seconds the camera takes to follow a positions beat
-// The official episodes cut in to a closer shot (no Duration) and ease back out over about 1.2 s; a lateral move at
-// the same distance is a short 0.5 s pan, except between close-ups, which cut.
-const FOCUS_RETURN = 1.2;
+// Official episodes hard-cut (0 s) when jumping across zoomed subjects or cutting to an off-screen speaker, and use
+// fast 0.35-0.5 s transitions when easing out from an already-framed speaker or panning laterally at wide/medium shots.
+const FOCUS_RETURN = 0.5;
 const FOCUS_PAN = 0.5;
+const FOCUS_WORLD_X = Object.freeze({ 1: -2.1, 2: -1.58, 3: -1.05, 4: -0.53, 5: 0, 6: 0.53, 7: 1.05, 8: 1.58, 9: 2.1 });
+const DIST_ZOOM_RATES = Object.freeze([1.0, 1.2, 1.4, 1.8, 2.8, 4.0, 6.0]);
 const BGM_FADE = "1.5";
 const TITLE_ID = "custom_title";
 const CAST_ID = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -1624,7 +1626,9 @@ export const compileScript = (script, site, language) => {
       if (staged.size === 1) headTarget = [...staged.keys()][0];
     }
     if (b.focusSharp) fields.Parameter1 = "Sharp";
-    if (b.focusTargetHead && headTarget) fields.TargetName = headTarget;
+    if (headTarget && (b.focusTargetHead === true || (b.focusTargetHead !== false && distance >= CAMERAS.close))) {
+      fields.TargetName = headTarget;
+    }
     return fields;
   };
   const stagePositionOf = (target, staged) => {
@@ -1635,13 +1639,14 @@ export const compileScript = (script, site, language) => {
     }
     return target && staged.get(target) ? staged.get(target).stageSlot : 0;
   };
-  const autoDuration = (fields, distance) => {
-    if (!lastShot) return 0;
-    if (distance > lastShot.distance) return 0;
-    if (distance < lastShot.distance) return FOCUS_RETURN;
-    if ((fields.PositionType ?? 0) !== lastShot.pos || (fields.TargetName || "") !== lastShot.name)
-      return distance >= CAMERAS.close ? 0 : FOCUS_PAN;
-    return 0;
+  const isInFrame = (id, shot, staged) => {
+    if (!shot || !id || !staged.has(id)) return true;
+    const m = staged.get(id);
+    const charX = (SLOT_WORLD_X[m.slot] ?? 0) + m.offset.x;
+    const distZoom = DIST_ZOOM_RATES[shot.distance] ?? 1.4;
+    const fov = 39.6 / (distZoom * (shot.zoomMul || 1));
+    const halfWidth = (5.5 + m.offset.z) * Math.tan((fov * Math.PI) / 360) * (13 / 6);
+    return Math.abs(charX - shot.camX) <= 0.7 * halfWidth;
   };
   const camExtras = (b, dur, cmd) => {
     const e = easeFor(b.ease, dur, cmd);
@@ -1652,27 +1657,64 @@ export const compileScript = (script, site, language) => {
   };
   const cameraRows = (b, staged, distance, { duration = 0, noWait = false, focusAlways = false, auto = false } = {}) => {
     let move = duration, hasFocusRow = false;
+    const hasSameBeatTweenOp = b.zoom !== undefined || b.pan !== undefined || b.pedestal !== undefined ||
+      (b.track !== undefined && b.trackDuration !== undefined);
+    const speakerVisible = b.kind === "say" && b.speaker ? isInFrame(b.speaker, lastShot, staged) : true;
+    const stagedAllVisible = b.kind === "positions"
+      ? [...staged.keys()].every((id) => isInFrame(id, lastShot, staged)) : true;
+    const autoDuration = (fields) => {
+      if (!lastShot) return 0;
+      if (hasSameBeatTweenOp) return 0;
+      if (distance > lastShot.distance) return 0;
+      if (b.kind === "say" && !speakerVisible) return 0;
+      if (distance < lastShot.distance) return FOCUS_RETURN;
+      if ((fields.PositionType ?? 0) !== lastShot.pos || (fields.TargetName || "") !== lastShot.name)
+        return distance >= CAMERAS.close ? 0 : FOCUS_PAN;
+      return 0;
+    };
+    let focusNoWait = noWait;
     if (b.focus || b.camera !== undefined || b.track === undefined || focusAlways) {
       const fields = focusFields(b, staged, distance);
       if (b.focusDuration !== undefined) move = b.focusDuration;
       else if (b.cameraDuration !== undefined) move = b.cameraDuration;
-      else if (auto) move = autoDuration(fields, distance);
+      else if (auto) move = autoDuration(fields);
+      else if (b.kind === "positions" && hasSameBeatTweenOp) move = 0;
+
+      if (move > 0) {
+        if (b.kind === "say" && !speakerVisible) focusNoWait = false;
+        else if (b.kind === "camera" && auto && lastShot && distance < lastShot.distance) focusNoWait = false;
+        else if (b.kind === "positions" && lastShot && (lastShot.distance >= CAMERAS.close || !stagedAllVisible)) {
+          if (hasSameBeatTweenOp) move = 0;
+          else focusNoWait = false;
+        }
+      }
       if (move) fields.Duration = move;
       Object.assign(fields, camExtras(b, move, "Focus"));
-      if (noWait) fields.IsNoWait = 1;
+      if (focusNoWait) fields.IsNoWait = 1;
       row("Focus", fields);
-      lastShot = { distance, pos: fields.PositionType ?? 0, name: fields.TargetName || "" };
+      const posX = FOCUS_WORLD_X[fields.PositionType] ?? 0;
+      const trackX = b.track !== undefined ? clampTrack(b.track, distance) : 0;
+      lastShot = {
+        distance, pos: fields.PositionType ?? 0, name: fields.TargetName || "",
+        camX: posX + trackX, zoomMul: 1,
+      };
       hasFocusRow = true;
     }
     if (b.track !== undefined) {
-      const trackMove = b.trackDuration ?? (hasFocusRow ? move : b.cameraDuration ?? 0);
+      const trackMove = b.trackDuration ?? (
+        b.pan !== undefined && (!hasFocusRow || move === 0) ? 0
+          : (hasFocusRow ? move : b.cameraDuration ?? 0));
       const clamped = clampTrack(b.track, distance);
+      const trackBlocking = !focusNoWait && trackMove > 0 && hasFocusRow;
       row("Track", {
         Parameter1: String(clamped),
         ...(trackMove ? { Duration: trackMove } : {}),
         ...camExtras(b, trackMove, "Track"),
-        IsNoWait: 1,
+        ...(trackBlocking ? {} : { IsNoWait: 1 }),
       });
+      if (!hasFocusRow && lastShot) {
+        lastShot = { ...lastShot, camX: (FOCUS_WORLD_X[lastShot.pos] ?? 0) + clamped };
+      }
     }
   };
 
@@ -1773,6 +1815,7 @@ export const compileScript = (script, site, language) => {
       ...camExtras(b, dur, "Zoom"),
       IsNoWait: 1,
     });
+    if (lastShot) lastShot.zoomMul = b.zoom <= 0 ? 1 : b.zoom;
   };
 
   const seRow = (b) => {
@@ -2196,6 +2239,7 @@ export const compileScript = (script, site, language) => {
         }
       }
       camera = b.camera ?? CAMERAS.middle;
+      lastShot = null;
       cameraRows(b, next, camera, { focusAlways: true });
       officialRows(b, "", dofTargetOf(b, next));
       emitEffects(b);

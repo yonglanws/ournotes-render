@@ -170,8 +170,8 @@ export const buildPlanMessages = ({ catalog, request, config }) => {
         "先写一份短小的导演计划，只输出一个 JSON 对象，不要 markdown 或解释。",
         `计划服务于后面要写的 ournotes.story-script/1：一场戏只写一个很小的具体事件，同台最多 ${maxOnStage} 人，`,
         "通常只有一个 stage，靠 positions 换组、focus/track 换镜头，而不是靠 fade 换场。",
-        "镜头每 3~4 句换一次：双人戏用二人同框（middle）和说话者近景（close）交替；三人同台默认 far 群像，近景只拍单人特写（focus 指向一个人）。不要每 1~2 句切。",
-        "镜头档位：near 1.2× 是最广的全景（少用）；middle 1.4× 是双人中景；far 1.8× 是群像；close 2.8× 是情绪近景；very-close 4× 是大特写。",
+        "镜头每 3~4 句换一次：双人戏用二人同框（middle）和说话者近景（close）交替；三人同台默认 near 群像（1.2×），近景只拍单人特写（focus 指向一个人）。不要每 1~2 句切。",
+        "镜头档位：full 1.0× / near 1.2× 是宽景与多人全景（三人 1/5/9 或 4~5 人同台默认用 near 1.2×）；middle 1.4× 是双人中景；far 1.8× 是紧中景（只用于单人或 left/right 紧双人，不能拍 1/5/9 三人群像）；close 2.8× 是情绪近景；very-close 4× 是大特写。",
       ].join("\n"),
     },
     {
@@ -232,10 +232,10 @@ export const stagingRules = (maxOnStage = 3, budget = null) => {
       ? "同一场最多 2 人同台；开场先 1 人，2~4 句后用 positions 让下一人进场；第 3 人必须等一人退场后再进场；换组时已有人保持原位，只让 1 人进出。"
       : "同一场最多 3 人同台；开场先 1 人，2~4 句后用 positions 让下一人进场；换组时已有人保持原位，只让 1 人进出。",
     limit === 3
-      ? "两人同台用 left / right（间隔自然，不要用 far-left / far-right）；三人同台用 far-left / center / far-right（camera far，focus 5，track 0），默认 far 群像（可用 positions 的 dz: 0.6~1.5 做景深错位）；近景只允许 close/very-close 的单人特写（focus 指向一个人），不拍 middle 中景或群像推近。不要用 center+right 或 center+left，两个角色会叠在一起。"
+      ? "两人同台用 left / right（间隔自然，不要用 far-left / far-right）；三人同台用 far-left / center / far-right（camera near，focus 5，track 0），默认 near 1.2× 群像（可用 positions 的 dz: 0.6~1.5 做景深错位）；近景只允许 close/very-close 的单人特写（focus 指向一个人），不用 far（1.8× 会切掉两侧角色），也不写群像推近。不要用 center+right 或 center+left，两个角色会叠在一起。"
       : "两人同台用 left / right（间隔自然，不要用 far-left / far-right）；不要用 center+right 或 center+left，两个角色会叠在一起。",
-    "镜头档位：full 1.0× / near 1.2× 是最广的全景（只在开场/收尾用，全场 0~1 次）；middle 1.4× 是双人中景（默认）；far 1.8× 是群像/紧中景；close 2.8× 是情绪近景；very-close 4× / macro 6× 是大特写（最多 1 次）。不要把 near 当近景。",
-    "镜头每 3~4 句换一次：双人戏用二人同框（middle，focus 5）和说话者近景（close，focus 该角色）交替；三人同台用 far + focus 5 群像，或单人特写（close，focus 该角色），不拍 middle 中景，也不写群像推近。不要每句切，也不要只在一个机位站桩。近景停 1~2 句（偶尔 3 句），随后回到二人/群像；不要连续两句都切 close。",
+    "镜头档位：full 1.0× / near 1.2× 是最广的多人全景（三人 1/5/9 或 4~5 人同台默认用 near 1.2×，双人戏开场/收尾可用 0~1 次，不要把 near 当近景）；middle 1.4× 是双人中景（默认）；far 1.8× 是紧中景（只用于单人中近景或 left/right 紧双人，绝不用于 1/5/9 三人群像）；close 2.8× 是情绪近景；very-close 4× / macro 6× 是大特写（最多 1 次）。",
+    "镜头每 3~4 句换一次：双人戏用二人同框（middle，focus 5）和说话者近景（close，focus 该角色）交替；三人同台用 near + focus 5 群像，或单人特写（close，focus 该角色），不用 far 拍三人同框，也不写群像推近。不要每句切，也不要只在一个机位站桩。近景停 1~2 句（偶尔 3 句），随后回到二人/群像；不要连续两句都切 close。",
     budgetLine,
     extensionBudget,
     `慢推镜（可选）：zoom 1.03~1.10 缓慢推近、0.92~0.98 拉远，zoomDuration 3~5 秒、ease "OutSine"；${budget ? `一场 ${budget.zoomMin}~${budget.zoomMax} 次` : "次数按本场预算"}，官方最常见值是 ${OFFICIAL_TARGETS.zoomDefault}，但本脚本默认只写缓慢推拉；只给情绪句、近景或结尾，一个机位最多 1 次。`,
@@ -246,7 +246,7 @@ export const stagingRules = (maxOnStage = 3, budget = null) => {
       "- 走位与蹲起：已出场角色换位直接用 positions 或 move（{cast, to/dir/dx/dy/dz, duration}），不要 Out+In 闪人；弯腰/蹲下找东西用 move {dir: \"down\", distance: 0.25} 配合 pedestal -0.25 与 focusTargetHead: true，起身用 dir: \"up\" 恢复。\n" +
       "- 倾斜、冲击与视线：angle {z: -12~12} 做歪头/迟疑；爆发/吐槽用 shake {target: \"ui\", power: 3~5} 震动对话框；低头回避用 look: 0.4, lookY: -0.5~-0.8，抬头用 look: \"stop\"（或 lookAt: \"stop\"）收回。\n" +
       "- 回忆与独白：用 postEffect（如 reminiscence1/2）、frame（如 letterbox_black/fog）、brightness {target: \"bg\", value: 0.5}、fadeColor \"#FFFFFF\" / transition \"dissolve\"，结束时用 postEffectStop: true / frameStop: true / brightness 1 复位。",
-    `表演：一句台词最多一个说话者动作，听者反应最多一个；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的台词没有 Motion；表情和动作一起写，默认 idle，不要每句都笑。动作写 stem（如 mtn_smile01），编译器会按左 _R / 中 _C / 右 _L 自动面向对话伙伴；只有刻意转头避开或正对镜头时才写完整 _L/_C/_R 后缀。单人近景或身高差/蹲起时可设 focusTargetHead: true（编译 TargetName 对齐角色头部高度）。`,
+    `表演：一句台词最多一个说话者动作，听者反应最多一个；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的台词没有 Motion；表情和动作一起写，默认 idle，不要每句都笑。动作写 stem（如 mtn_smile01），编译器会按左 _R / 中 _C / 右 _L 自动面向对话伙伴；只有刻意转头避开或正对镜头时才写完整 _L/_C/_R 后缀。close/very-close 单人近景自动对齐角色头部高度（TargetName），middle/far 蹲起或身高差时也可显式设 focusTargetHead: true。`,
     limit === 2
       ? `视线：双人戏每 3~4 句写一个 lookAt，不要每 1~2 句都写；角色把视线移开时用独立 look/lookY（最多 ${gaze?.independentMax ?? 2} 次，计入总视线预算），结束后用 look: "stop" 收回。`
       : `视线：双人戏每 3~4 句写一个 lookAt，三人以上只在被点名或明显反应时用；角色把视线移开时用独立 look/lookY（最多 ${gaze?.independentMax ?? 2} 次，计入总视线预算），结束后用 look: "stop" 收回。`,
@@ -432,13 +432,13 @@ ${JSON.stringify(example, null, 2)}
 
 ## beat 规则
 - 第一个 beat 必须是 scene。scene beat：{"scene": 舞台 id, "location": 地点文字, "camera": "full|near|middle|far|close|very-close|macro" 或 {"distance","focus","track"}, "focus": 可选, "track": 可选, "music": 可选, "transition": "fade|dissolve", "transitionDuration": 可选, "fadeRule": "0001..0005", "fadeColor": "#000000|#FFFFFF", "positions": {角色: 位置或 {"at","dx","dy","dz","motion","expression"}}, "id": 可选}。scene 的 positions 只放 1 人，其余角色 2~4 句后再进场。
-- positions beat：{"positions": {角色: 位置或 {"at","dx","dy","dz"}}, "camera": 可选, "focus": 可选, "track": 可选, "moveDuration": 可选}。位置只能是 far-left, left, center, right, far-right；两个角色不能占同一位置。省略的角色退场，新角色进场。**两人同台用 left / right**（不要用 far-left / far-right，间隔太开）；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera far，focus 5，track 0），默认 far 群像；近景只拍单人特写（close/very-close，focus 指向一个人），不拍中景/群像推近" : `同台最多 ${maxOnStage} 人，第 3 人必须等一人退场后再进场`}；不要用 center+right 或 center+left（会重叠）。一场最多 2 次 positions 变化；换组时让已有人物保持原位，只让 1 人进出；已出场角色微调位置会由 MoveToDirection 平滑移动（不要靠 Out+In 闪人）。
+- positions beat：{"positions": {角色: 位置或 {"at","dx","dy","dz"}}, "camera": 可选, "focus": 可选, "track": 可选, "moveDuration": 可选}。位置只能是 far-left, left, center, right, far-right；两个角色不能占同一位置。省略的角色退场，新角色进场。**两人同台用 left / right**（不要用 far-left / far-right，间隔太开）；${maxOnStage === 3 ? "三人同台用 far-left / center / far-right（camera near，focus 5，track 0），默认 near 群像；近景只拍单人特写（close/very-close，focus 指向一个人），不用 far（1.8× 会切掉两侧角色）或群像推近" : `同台最多 ${maxOnStage} 人，第 3 人必须等一人退场后再进场`}；不要用 center+right 或 center+left（会重叠）。一场最多 2 次 positions 变化；换组时让已有人物保持原位，只让 1 人进出；已出场角色微调位置会由 MoveToDirection 平滑移动（不要靠 Out+In 闪人）。
 - say beat：{"say": 角色 cast id, "text": 台词, "thought": 可选布尔, "ignoreLipSync": 可选布尔, "hideTalk": 可选布尔, "motion": 可选说话者动作, "expression": 可选说话者表情, "lookAt": 可选或"stop", "focus": 可选, "camera": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "focusTargetHead": 可选布尔, "ease": 可选, "actions": 可选, "id": 可选}。说话者必须已经站在舞台上。**不写 focus/camera/track 就保持当前镜头**；同一组连续对话不要每句都写镜头字段。表情尽量和 motion 一起写；没有 motion 就尽量不改表情。
 - narrate beat：{"narrate": 旁白文字, "thought": 可选, "ignoreLipSync": 可选, "hideTalk": 可选, "focus": 可选, "camera": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "actions": 可选}。旁白的 actions 必须写 cast。narrate 全场 0~2 句，放在开场、沉默反应或收尾，用「（……）」这种短句，不要小说式描写。
-- camera beat：{"camera": "full|near|middle|far|close|very-close|macro" 或 {"distance","focus","track"}, "focus": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "cameraDuration": 可选秒, "ease": 可选}。只移动镜头，不改变站位。只改距离时保持同一个 focus；near 是全景，全场最多 1 次；close 近景约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行（本场约 ${direction.closeUps} 次），每次 1~2 句（偶尔 3 句）。
+- camera beat：{"camera": "full|near|middle|far|close|very-close|macro" 或 {"distance","focus","track"}, "focus": 可选, "track": 可选, "zoom": 可选, "zoomDuration": 可选, "cameraDuration": 可选秒, "ease": 可选}。只移动镜头，不改变站位。只改距离时保持同一个 focus；near 是宽景/三人全景（双人戏最多 1 次）；close 近景约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行（本场约 ${direction.closeUps} 次），每次 1~2 句（偶尔 3 句）。
 - fade / pause / action / move / angle / bgm / frame / postEffect / brightness / shake / cameraShake / flash / talkWindow / hideTalk beat：fade 只用于时间/地点跳跃（可配 fadeRule/fadeColor）；pause 用于 0.1~0.5 秒呼吸或 >= 0.6 秒 hideTalk 沉默拍；action 是无台词反应镜头；bgm: {"bgm": cue 或 "stop", "bgmFade": 秒} 可在场中转折停乐或换曲；其余 FX beat 见下方扩展字段。
-- focus：优先写位置名；两人同框用 focus: 5，单人近景用角色 id 或该角色的位置名；角色 focus 只给情绪最重的 1~2 句。不要用 2/4/6/8 去框 left/right 的两个人。close / very-close **必须**给角色 id 或该角色的位置名，不要用 focus 5。单人特写或蹲起可设 focusTargetHead: true 对准头部锚点。
-- 近景节奏：close 只切给情绪最重的 1~2 句；下一句用 middle + focus 5 回到二人/群像，不要连续两句 close，也不要从 close 直接切到另一个 close；三人同台时用 far 群像，近景只给单人特写（close/very-close，focus 该角色），不要 middle 中景或群像推近（画面会挤）。推近时保持同一侧 focus，只改 camera distance，不要换焦点。
+- focus：优先写位置名；两人同框用 focus: 5，单人近景用角色 id 或该角色的位置名；角色 focus 只给情绪最重的 1~2 句。不要用 2/4/6/8 去框 left/right 的两个人。close / very-close **必须**给角色 id 或该角色的位置名，不要用 focus 5；单人特写默认对准头部锚点，蹲起或身高差可显式设 focusTargetHead: true。
+- 近景节奏：close 只切给情绪最重的 1~2 句；下一句用 middle（双人）/ near（三人）+ focus 5 回到二人/群像，不要连续两句 close，也不要从 close 直接切到另一个 close；三人同台时用 near 群像，近景只给单人特写（close/very-close，focus 该角色），不用 far 拍三人群像（1.8× 会切掉两侧角色），也不写群像推近。推近时保持同一侧 focus，只改 camera distance，不要换焦点。
 - track：镜头相对焦点的横向偏移，-4~4（close 时自动限幅 ±0.25，very-close 强制 0）；0 是正对焦点。两人对话用 ±0.2~0.8，群像横移可用 ±1.2~2。一场 0~${direction.track} 次，双人通常 0~1 次；只在换组/群像横移时写，不要每句微调。
 - zoom：镜头缓慢推近/拉远，1.03~1.10 推近、0.92~0.98 拉远；zoomDuration 3~5 秒、ease "OutSine"。一场 ${direction.zoomMin}~${direction.zoomMax} 次，只给情绪句、近景或结尾，一个机位最多 1 次；不写就静止。
 - actions：一句台词内的听者反应，最多 1 条（加上 say.motion 共 2 个动作）：{"at": 0~1, "cast": 可选（默认说话者）, "motion": 可选, "expression": 可选, "lookAt": 可选或"stop"}。至少写 motion/expression/lookAt 之一；cast 必须在台上。**听者反应一律写 at: 0**；官方样本没有句中动作，不要用 0.3~0.7。
@@ -452,7 +452,7 @@ ${JSON.stringify(example, null, 2)}
 
 ## 扩展运镜、演出特效与声音字段（可直接写在对应 beat 顶层）
 按剧情动机选用，静坐日常对话不强求填满；所有开启的状态效果（DoF/Role/Tilt/Brightness/Frame/PostEffect/CameraShake/Look）在转折结束或离场前需成对收回。只能使用下方清单里已有的名称，数值不要越界。
-- focusDuration / trackDuration / moveDuration / ease / cameraDelay / focusSharp / focusTargetHead：focusDuration/trackDuration 0~20 秒（0=硬切，${fixed(OFFICIAL_TARGETS.focusDurationDefault, 1)} 常见）；ease 可选 OutQuad / OutSine / Linear / OutQuint / InOutSine / InOutQuad（Zoom/PanV2 >= 0.8s 默认 OutSine，>= 4s 默认 Linear）；cameraDelay 0~20s；focusSharp: true 清掉景深；focusTargetHead: true 瞄准单人头部高度。
+- focusDuration / trackDuration / moveDuration / ease / cameraDelay / focusSharp / focusTargetHead：focusDuration/trackDuration 0~20 秒（0=硬切，${fixed(OFFICIAL_TARGETS.focusDurationDefault, 1)} 常见；与同拍 zoom/pan/pedestal 并用时 focusDuration 保持 0，避免同轴 tween 冲突）；ease 可选 OutQuad / OutSine / Linear / OutQuint / InOutSine / InOutQuad（Zoom/PanV2 >= 0.8s 默认 OutSine，>= 4s 默认 Linear）；cameraDelay 0~20s；focusSharp: true 清掉景深；focusTargetHead: true 瞄准单人头部高度。
 - pedestal / pedestalDuration：Y 偏移 -4~5，duration 0~20，默认 1.5；本场建议 ${budgetCount(0, direction.pedestal)} 次（如蹲下查找时 "pedestal": -0.25，静坐对话可为 0）。
 - pan / panDuration / panFocusSlide：角度 -30~30，duration 0~20，focus slide 0~1；本场建议 ${budgetCount(0, direction.panV2)} 次（如多句倾诉 "pan": -8, "panDuration": 4, "ease": "OutSine"，静坐对话可为 0）。
 - dof / dofDuration / dofLayers / dofTarget：强度 0~1，duration 0.5~10，layers 0（背景虚化，默认）/ 2（角色虚化）；本场建议 ${budgetCount(0, direction.dof)} 次（"dof": 0.5, "dofLayers": 0）。**背景虚化用 dofLayers: 0 不需 target；dofLayers: 2 必须写 dofTarget 指向非聚焦角色（绝不虚化聚焦说话者）。**
@@ -465,8 +465,8 @@ ${JSON.stringify(example, null, 2)}
 - brightness / shake / cameraShake / flash / talkWindow / hideTalk / thought / ignoreLipSync：brightness {"target": "bg"|"cast"|castId, "value": 0~1, "duration"?}；shake {"target": "ui"|"stage"|"all"|castId, "power": 0.2~10, "duration"?}（惊呼用 target: "ui"）；cameraShake "start"|"stop"（配 cameraShakeStrength 0.01~20）；flash true；talkWindow "default"|"center"；hideTalk true；thought/ignoreLipSync true。
 - se / seDuration / seDelay / seStop：se 必须是站点声音清单里的 cue（清单为 (none) 时不要写 se/seStop）；duration 0.5~10，delay 0~10；seStop 与 se 互斥。
 - motionFadeIn / motionWait：fade -1~2，wait 布尔；默认 ${OFFICIAL_TARGETS.motionFadeInDefault}/false，只在明确需要节奏时写。
-示例（只演示字段位置，不要照抄数值）：
-{"say": "a", "text": "……嗯。", "focus": 5, "camera": "middle", "track": 0.2, "focusDuration": 1.5, "trackDuration": 2,
+示例（只演示字段位置，不要照抄数值；同一拍 Focus 与慢推/环绕并用时 focusDuration 为 0）：
+{"say": "a", "text": "……嗯。", "focus": 5, "camera": "middle", "track": 0.2, "focusDuration": 0, "trackDuration": 0,
  "pedestal": -0.2, "pedestalDuration": 1.5,
  "pan": 12, "panDuration": 2.5, "panFocusSlide": 0.5, "dof": 0.4, "dofDuration": 1.5, "dofLayers": 2,
  "look": -0.4, "lookY": 0.1, "lookDuration": 0.5, ${exampleSe ? `"se": ${JSON.stringify(exampleSe)}, "seDuration": 2, "seDelay": 0.2, ` : ""}"motionFadeIn": ${OFFICIAL_TARGETS.motionFadeInDefault}, "motionWait": false}
@@ -485,8 +485,8 @@ ${JSON.stringify(example, null, 2)}
 
 ## 演出质量
 - 先选一个具体的小事件，整场围绕它；结构是“小事件开场 → 2~3 句闲聊/跑题 → 一个很小的发现或请求 → 情绪转一次 → 收尾”，不要写成起承转合齐全的短篇小说。
-- 镜头：二人同框 ↔ 说话者一侧，3~4 句一组；三人同台用 far 群像或单人特写（close，focus 该角色），不拍两人构图/群像推近；换组才切。Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTextLine, 2)}/有文本行（官方 Talk 行口径 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 3)}/句）：本场约 ${direction.focusChanges} 次 Focus 变化（含换组、推近、回到群像），不要只写 4 个 Focus 就停。
-- 一场最多一次 near（全景）；情绪近景用 close，约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行（本场约 ${direction.closeUps} 次），每次 1~2 句（偶尔 3 句），随后用 middle + focus 5 回到二人或群像，不要停在同一个 close 上直到结尾。三人同台时 close 只拍单人特写。推近时保持同一侧 focus，只改 camera distance，不要换焦点。
+- 镜头：二人同框 ↔ 说话者一侧，3~4 句一组；三人同台用 near 群像或单人特写（close，focus 该角色），不用 far 拍三人同框，也不写群像推近；换组才切。Focus 约 ${fixed(OFFICIAL_TARGETS.focusPerTextLine, 2)}/有文本行（官方 Talk 行口径 ${fixed(OFFICIAL_TARGETS.focusPerTalkRow, 3)}/句）：本场约 ${direction.focusChanges} 次 Focus 变化（含换组、推近、回到群像），不要只写 4 个 Focus 就停。
+- 双人戏最多一次 near（全景）；情绪近景用 close，约占 ${pct1(OFFICIAL_TARGETS.distance4TextLineShare)}% 的有文本行（本场约 ${direction.closeUps} 次），每次 1~2 句（偶尔 3 句），随后用 middle（双人）/ near（三人）+ focus 5 回到二人或群像，不要停在同一个 close 上直到结尾。三人同台时 close 只拍单人特写。推近时保持同一侧 focus，只改 camera distance，不要换焦点。
 - 动作预算：Motion 约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句（本场约 ${direction.motionMin}~${direction.motionMax} 个）；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的句子没有 Motion；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；不要给同一角色同一句叠 2 个动作。
 - 表情跟动作走，默认 idle；不要连续三句笑，也不要给同一角色连续两句相反表情；独立表情默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 次（只改表情的静镜头）。
 - 情绪只转一次；结尾停在小动作、短句或没说完的话，不要总结主题。
