@@ -284,11 +284,11 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
 
 | 方法 | 端点 | 说明 |
 | --- | --- | --- |
-| GET | `/api/v1/health` | 服务、站点、ffmpeg、浏览器、LLM/TTS、队列；不需要鉴权 |
-| GET | `/api/v1/status` | 队列摘要 + 最近 50 个任务 + 产物数量 |
-| POST | `/api/v1/generate` | 一句话/剧本生成视频；`wait:false` 返回 202 |
-| POST | `/api/v1/render` | 与 generate 相同（语义上用于现成剧本） |
-| POST | `/api/v1/script/generate` | 只用 AI 写剧本并返回 JSON（不配音、不渲染） |
+| `GET` | `/api/v1/health` | 服务、站点、ffmpeg、浏览器、LLM/TTS、队列；无需鉴权（开启 `apiKey` 且未鉴权时自动脱敏 `site.dir`、`tts.baseUrl` 与 `ffmpeg`/`browser` 路径） |
+| `GET` | `/api/v1/status` | 队列摘要 + 最近 50 个任务 + 产物数量 |
+| `POST` | `/api/v1/generate` | 一句话/剧本生成视频；`wait:false` 返回 202（受滑动窗口限流保护，超限返回 429 + `Retry-After`） |
+| `POST` | `/api/v1/render` | 与 generate 相同（语义上用于现成剧本；同受限流保护） |
+| `POST` | `/api/v1/script/generate` | 只用 AI 写剧本并返回 JSON（不配音、不渲染；同受限流保护） |
 | POST | `/api/v1/script/check` | 校验/修复 `ournotes.story-script/1` |
 | GET | `/api/v1/tasks` | 最近任务列表 |
 | GET | `/api/v1/tasks/:id` | 任务状态、阶段、进度、排队位置、结果 |
@@ -348,11 +348,12 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
 | `tts.irodori` | Irodori 推理默认值（model / numSteps / cfg / chunking / seed / 默认 LoRA / caption / emotionLabels） |
 | `tts.required` | `true` = 任一句合成失败就让任务失败；`false`（默认）= 该句静音并写入 warnings |
 | `tts.emotion` | 情绪的标签、全局语速/温度预设；角色的情绪参考音频写在 `voices[].emotions` |
-| `video.*` | 分辨率、30fps、JPEG 中间质量、CRF、编码器、音频码率、最大时长 |
+| `video.*` | 分辨率、30fps、`captureMode`（`auto`/`webcodecs`/`pipe`）、JPEG 中间质量、CRF、编码器、音频码率、最大时长 |
 | `render.*` | Chrome 路径、GPU/软件渲染、Cubism Core、超时 |
 | `queue.*` | 并发、队列容量、任务超时、产物保留 |
-| `security.apiKeyEnv` | 非空时 API 需要 `Authorization: Bearer <env 值>` |
+| `security.apiKeyEnv` | 非空时 API 需要 `Authorization: Bearer <env 值>`，未携带令牌访问 `/api/v1/health` 时省略内部路径与 `tts.baseUrl` |
 | `server.cors` / `server.corsOrigins` | 打开 CORS 并给出精确来源白名单；不使用 `*` |
+| `server.rateLimitWindowMs` / `server.rateLimitMax` | 单 IP 滑动窗口限流（默认 `60000` ms 内最多 `60` 次，env: `OURNOTES_RATE_LIMIT_WINDOW_MS` / `OURNOTES_RATE_LIMIT_MAX`；`0` 关闭），作用于 `/generate`、`/render`、`/script/generate`，超限返回 HTTP 429 `rate_limited` + `Retry-After` 头 |
 
 ### 密钥
 
@@ -397,22 +398,18 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
    既播放该句 TTS 语音，又按游戏自带的 timed pseudo lip sync 让嘴型在打字/整句期间运动；语音结束时嘴闭合。站点格式与云端
    路径写入 `VoiceIDs`/`voiceCues`，由页面解码波形给 MotionSync。API 结果的 `tts` 会报告实际使用的音色、回落到默认
    音色的句子、静音句子和失败句子对应的角色。
-4. **云端资产物化与编译**：
-   - 在云端模式或本地 `paths.siteFormat` 模式下，先执行 `materializeSiteStoryAssets()`，按剧本需求从 `storage.bdon.moe/moenotes`
-     与 `assets.bdon.moe` 自动补齐缺失的模型、舞台（donor 或直接 `.webp` 合成）、BGM/SE（donor 或直接 `.m4a`）、遮罩、后期滤镜、
-     粒子特效、CG 与转场，再由 `buildSiteStory()` 编译成站点 manifest 与 `episode.json`（切换为 browser-font 模式）。
+4. **并行预热、云端资产物化与编译**：
+   - 在 AI 写本或脚本校验同时，`Pipeline` 即并发启动 `renderer.warm()`：复用按 `(siteDir, core, motionsync, outputDir)` 池化的 `pageServer`（`/warm/<id>/{config.json,job}` 长轮询），预先启动无头 Chrome 并加载 `/site-engine/*` 模块、字体、WebGL2 上下文并执行无竞争 `probeWebCodecs()`；取消或失败时联动 `AbortController` 回收未认领的预热浏览器。
+   - 在云端模式或本地 `paths.siteFormat` 模式下，`synthesizeStory()` 与 `materializeSiteStoryAssets()`（`mapLimit(4)` 并发下载 + 缓存 donor 清单查询）并行执行，按剧本需求从 `storage.bdon.moe/moenotes` 与 `assets.bdon.moe` 自动补齐缺失的模型、舞台、BGM/SE、遮罩、后期滤镜、粒子特效、CG 与转场，再由 `buildSiteStory()` 编译成站点 manifest 与 `episode.json`（切换为 browser-font 模式）。
    - 在产品站点（`paths.site`）模式下，由 `Site.compose` 把剧本编译成底本的 `episode.json`/`story.json`，只替换故事、字体与 TTS 音轨；
      舞台、UI、着色器、BGM 仍来自底本站点。
    - 两种路径均将 `focus` 编译成 `Focus`（角色/站位/构图点），`track` 编译成 `Track`，`at: 0` 的 `actions` 编译成 Talk 前的
      `Motion`/`Expression`/`LookTarget`（按 `SIDE = { 1: "L", 3: "L", 5: "C", 7: "R", 9: "R" }` 解析方向后缀），台词中的
      `actions` 编译成 Talk 行的 `HostActions`，`fade`/`pause` 编译成 `FadeOut`/`FadeIn`/`Delay`。
-5. **逐帧渲染**：无头 Chrome 通过 CDP 打开页面，`StorySession` 以固定 1/30 秒步进，`auto: true` 自动推进；
-   每帧 `render()` 后把 canvas 编码成 JPEG POST 给宿主。**不按墙钟播放音频**，因此渲染速度不影响成片时间轴。
-   `Talk` 在虚拟时钟上按正文比例调度 `HostActions`，动作/表情不会因为渲染快慢而漂移。
+5. **逐帧渲染与音画管线重叠**：无头 Chrome 打开（或直接接管已预热的）页面，`StorySession` 以固定 1/30 秒步进，`auto: true` 自动推进；`scheduleSiteActions` 在按字数估算回退时长前剥离 `<[^>]*>` 富文本标签，`SiteRecordingAudio.decodeVoices` 以 6 并发预解码语音。页面上传 cue 优先按剧情命令引用顺序并在 `mapLimit(8)` 下与 `decodePool`（4 并发）重叠预解码；`captureMode: auto` 仅在验证硬件 WebCodecs 快速可用时直编 H.264（`StreamingMp4Muxer` 显式读取 `VideoColorSpace` 原型 getter 并在 MP4 `colr(nclx)` 保留 `fullRange`），否则通过 `image2pipe` 流式传 JPEG 帧给宿主 ffmpeg。**不按墙钟播放音频**，因此渲染速度不影响成片时间轴。
 6. **音频重建**：页面用自定义 `SilentAudio` 记录每次 `play/stop` 的游戏时间、cue、循环点、淡入淡出；
-   宿主用 ffmpeg 把 cue 解码成 PCM，在 48 kHz 立体声时间轴上混合 BGM/SE/配音，写入 WAV。
-7. **编码**：ffmpeg 以 `fps` 读取 JPEG 序列，加 AAC 音轨，按 `encoder` 尝试 NVENC / AMF / QSV，失败回退
-   `libx264`，输出 `+faststart` 的 MP4。
+   宿主复用 `decodePool` 已解码的 PCM 并用 ffmpeg 补齐剩余 cue，在 48 kHz 立体声时间轴上混合 BGM/SE/配音，写入 WAV。
+7. **编码**：`webcodecs` 路径若无音频则直接 `faststart` remux，有音频则流复制视频与 AAC 混流；`pipe` 路径由 ffmpeg `image2pipe` 按 `encoder`（NVENC / AMF / QSV / `libx264`）实时编码并合入 AAC 音轨，输出 `+faststart` MP4。
 
 ### 为什么是 30 fps
 
@@ -427,7 +424,8 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
 ## 部署与安全
 
 - API 默认只监听 `127.0.0.1:9881`，且**默认没有鉴权**。需要对外提供服务时，设置 `security.apiKeyEnv` 指向一个
-  令牌环境变量，或只让反向代理访问；`npm run check` 会在监听非回环地址且没有令牌时给出警告。
+  令牌环境变量，或只让反向代理访问；`npm run check` 会在监听非回环地址且没有令牌时给出警告。开启 `apiKey` 后，未携带 Bearer 令牌访问 `/api/v1/health` 会自动省略 `site.dir`、`tts.baseUrl` 及 `ffmpeg`/`browser` 的本机可执行路径；服务端 500 错误统一返回 `"internal server error"` 并对日志/错误中的 URL 凭据、Bearer 令牌与敏感参数做脱敏。
+- `/api/v1/generate`、`/api/v1/render` 与 `/api/v1/script/generate` 受单 IP 滑动窗口限流（`server.rateLimitWindowMs` / `server.rateLimitMax`，内存桶上限 4096）保护；触发限流返回 HTTP 429 `code: "rate_limited"` 并附带 `Retry-After` 响应头（与队列满 HTTP 429 `code: "queue_full"` 区分）。`TaskQueue` 会在任务终态释放闭包引用并按 `max(200, queue.maxSize * 10)` 上限裁剪历史记录。
 - 无头 Chrome 在 Linux/NVIDIA 上默认可能落到 SwiftShader（表现为渲染只有 1~2 fps）。`render.gpu: true` 时把
   `render.chromeArgs` 设为 `["--use-angle=vulkan"]`，让 ANGLE 走 Vulkan；可用
   `chrome --headless=new --use-angle=vulkan --dump-dom` 的 WebGL renderer 字符串确认是否命中显卡。
