@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildQuickCastMessages, buildStoryMessages } from "../ai/prompt.js";
+import { buildQuickCastMessages, buildStoryMessages, EXPRESSION_NOTES, expressionListFor } from "../ai/prompt.js";
 import { parseScript } from "../../scripts/lib/story-author/script.js";
 import { generateScript, prepareScript } from "../ai/storyWriter.js";
 import { LLMError } from "../ai/llm.js";
 import { directionBudgetFor } from "../ai/official-targets.js";
-import { buildDialogueMessages, balanceLineBreaks, buildStoryboardMessages, enforceGroupShots, mergeStagedScript, normalizeDialogue, onStageProblems, spreadPositions, countDialogueChars } from "../ai/staged.js";
+import { buildDialogueMessages, balanceLineBreaks, buildStoryboardMessages, enforceGroupShots, mergeStagedScript, normalizeDialogue, onStageProblems, sanitizeOminousExpressions, spreadPositions, countDialogueChars } from "../ai/staged.js";
 import { quietLogger } from "./helpers.mjs";
 
 const CATALOG = {
@@ -1373,4 +1373,108 @@ test("focusBudget preserves distinct paired dramatic close-ups at budget + 1 whi
   const closeBeat = merged.doc.beats.find((b) => b.camera === "close");
   assert.ok(closeBeat, "paired dramatic close-up is not dropped when total is merely budget + 1");
   assert.ok(!merged.warnings.some((w) => w.code === "focusBudget"));
+});
+
+test("EXPRESSION_NOTES accurately flags exp_grinning01 and shadow expressions, and expressionListFor surfaces core benign expressions first", () => {
+  const tomoriExpressions = [
+    "exp_grinning01", "exp_shadow01", "exp_smile04", "exp_sad01", "exp_surprised03", "exp_angry01",
+    "exp_cry02", "exp_sad03", "exp_idle04", "exp_salk01", "exp_idle02", "exp_cry03",
+    "exp_idle03", "exp_surprised02", "exp_bsmile01", "exp_smile03", "exp_smile01", "exp_idle01",
+  ];
+  const formatted = expressionListFor(tomoriExpressions);
+  assert.match(formatted, /exp_idle01（平静）/, "core exp_idle01 must not be truncated past MAX_EXPRESSIONS");
+  assert.match(formatted, /exp_smile01（微笑）/, "core exp_smile01 must not be truncated past MAX_EXPRESSIONS");
+  assert.match(formatted, /exp_grinning01（[^）]*阴影[^）]*严禁用于温暖/, "exp_grinning01 note warns of dark shadow");
+  assert.doesNotMatch(formatted, /exp_grinning01（咧嘴笑）/);
+  const grinningEntry = EXPRESSION_NOTES.find(([re]) => re.test("exp_grinning01"));
+  assert.ok(grinningEntry && /阴影|黑化/.test(grinningEntry[1]));
+  const shadowEntry = EXPRESSION_NOTES.find(([re]) => re.test("exp_shadow01"));
+  assert.ok(shadowEntry && /阴影|阴郁/.test(shadowEntry[1]));
+});
+
+test("mergeStagedScript and single-pass sanitizeOminousExpressions replace exp_grinning01 and shadow expressions on warm farewells unless dark intent is present", async () => {
+  const catalogWithGrinning = {
+    ...CATALOG,
+    models: [
+      {
+        ...CATALOG.models[0],
+        expressions: ["exp_grinning01", "exp_shadow01", "exp_sad01", "exp_smile01", "exp_idle01"],
+      },
+      {
+        ...CATALOG.models[1],
+        expressions: ["exp_shadow01", "exp_smile01", "exp_idle01"],
+      },
+    ],
+  };
+  const dialogue = {
+    title: "放学后",
+    lines: [
+      { id: "l1", say: "a", text: "副歌后面……一直写不下去。" },
+      { id: "l2", say: "a", text: "……嗯，明天见。" },
+      { id: "l3", say: "b", text: "谢谢你，明天见！" },
+    ],
+  };
+  const storyboard = {
+    beats: [
+      { scene: "stage_a", camera: "middle", focus: 5, positions: { a: "left", b: "right" } },
+      { line: "l1", motion: "mtn_idle01", expression: "exp_shadow01" },
+      {
+        line: "l2",
+        motion: "mtn_nod01",
+        expression: "exp_grinning01",
+        actions: [{ at: 0, cast: "b", expression: "exp_shadow01" }],
+      },
+      { line: "l3", motion: "mtn_smile01", expression: "exp_shadow01" },
+    ],
+  };
+  const merged = mergeStagedScript({
+    plan: { ...PLAN2, tone: "认真谈心", event: "鼓励彼此继续练习" },
+    dialogue,
+    storyboard,
+    catalog: catalogWithGrinning,
+    request: { prompt: "写一段练习后的温暖对话" },
+    config: STAGED_CONFIG,
+  });
+  const says = merged.doc.beats.filter((b) => "say" in b);
+  assert.equal(says[0].expression, "exp_shadow01", "gloomy line keeps exp_shadow01");
+  assert.equal(says[1].expression, "exp_smile01", "warm farewell replaces exp_grinning01 with exp_smile01");
+  assert.equal(says[1].actions[0].expression, "exp_smile01", "listener shadow on warm farewell replaced with exp_smile01");
+  assert.equal(says[2].expression, "exp_smile01", "warm gratitude farewell replaces exp_shadow01 with exp_smile01");
+  assert.ok(merged.warnings.some((w) => w.code === "ominousExpression"));
+
+  // Dark / sinister intent preserves exp_grinning01
+  const darkBeats = [
+    { scene: "stage_a", positions: { a: "left" } },
+    { say: "a", text: "呵呵……别怪我，明天见的时候就知道了。", motion: "mtn_nod01", expression: "exp_grinning01" },
+  ];
+  const darkReplaced = sanitizeOminousExpressions(darkBeats, {
+    cast: PLAN2.cast,
+    catalog: catalogWithGrinning,
+    request: { prompt: "万圣节鬼屋吓唬大家" },
+  });
+  assert.equal(darkReplaced, 0);
+  assert.equal(darkBeats[1].expression, "exp_grinning01");
+
+  // Single-pipeline generation also sanitizes exp_grinning01 on warm farewells
+  const singleDoc = {
+    format: "ournotes.story-script/1",
+    base: "stories/1.json",
+    language: "zh-Hans",
+    title: "测试",
+    cast: { a: { model: "m_a", name: "灯" }, b: { model: "m_b", name: "爽世" } },
+    beats: [
+      { scene: "stage_a", location: "教室", camera: "middle", positions: { a: "left", b: "right" } },
+      { say: "b", text: "那今天先练到这里吧。", motion: "mtn_smile01", expression: "exp_smile01" },
+      { say: "a", text: "……嗯，明天见。", motion: "mtn_nod01", expression: "exp_grinning01" },
+    ],
+  };
+  const llm = { available: true, async json() { return { content: JSON.stringify(singleDoc) }; } };
+  const singleOut = await generateScript({
+    llm,
+    catalog: catalogWithGrinning,
+    request: { prompt: "练习结束道别", language: "zh-Hans" },
+    config: CONFIG,
+    logger: quietLogger(),
+  });
+  assert.equal(singleOut.doc.beats[2].expression, "exp_smile01");
 });

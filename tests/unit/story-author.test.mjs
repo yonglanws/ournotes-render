@@ -1414,3 +1414,62 @@ test("close-up framing nudges nearby neighbors safely outside zoomed edges and r
     "3-person center close-up nudges both side neighbors outward symmetrically",
   );
 });
+
+test("adjacent fade out/in around a scene beat emit a single FadeOut -> Stage -> FadeIn -> Location without duplicates", () => {
+  const c = compiled(script([
+    { scene: "garden", location: "Garden", positions: { a: "left" } },
+    { say: "a", text: "Scene one." },
+    { fade: "out", fadeRule: "0001" },
+    { scene: "st/hall", location: "Hall", positions: { b: "right" } },
+    { fade: "in", fadeRule: "0001" },
+    { say: "b", text: "Scene two." },
+  ]));
+  const rows = strip(c.episode.commands);
+  const fadeOuts = rows.filter((r) => r.cmd === "FadeOut");
+  const fadeIns = rows.filter((r) => r.cmd === "FadeIn");
+  assert.equal(fadeOuts.length, 1, `expected 1 FadeOut, got ${JSON.stringify(fadeOuts)}`);
+  assert.equal(fadeIns.length, 1, `expected 1 FadeIn, got ${JSON.stringify(fadeIns)}`);
+  assert.deepEqual(fadeOuts[0], { cmd: "FadeOut", Duration: 1, TargetAssetName: "adv_transition_0001/adv_transition_0001" });
+  assert.deepEqual(fadeIns[0], { cmd: "FadeIn", Duration: 1, TargetAssetName: "adv_transition_0001/adv_transition_0001" });
+
+  const stage2Idx = rows.findIndex((r) => r.cmd === "Stage" && r.TargetAssetName === "st/hall");
+  const outIdx = rows.findIndex((r) => r.cmd === "FadeOut");
+  const inIdx = rows.findIndex((r) => r.cmd === "FadeIn");
+  const loc2Idx = rows.findIndex((r) => r.cmd === "Location" && r.AdvTextID === "custom_location_3");
+  assert.ok(outIdx >= 0 && outIdx < stage2Idx, "single FadeOut precedes Stage");
+  assert.ok(stage2Idx < inIdx, "Stage precedes single FadeIn");
+  assert.ok(inIdx < loc2Idx, "deferred Location appears after FadeIn reveals the scene");
+
+  // One-sided adjacent fade: leading fade: "out" only -> inherits rule/color/duration for FadeIn
+  const leadOnly = compiled(script([
+    { scene: "garden", positions: { a: "left" } },
+    { say: "a", text: "One." },
+    { fade: "out", duration: 0.7, fadeRule: "0002", fadeColor: "#ffffff" },
+    { scene: "st/hall", location: "Hall", positions: { b: "right" } },
+    { say: "b", text: "Two." },
+  ]));
+  const leadRows = strip(leadOnly.episode.commands);
+  assert.equal(leadRows.filter((r) => r.cmd === "FadeOut").length, 1);
+  assert.equal(leadRows.filter((r) => r.cmd === "FadeIn").length, 1);
+  assert.deepEqual(leadRows.find((r) => r.cmd === "FadeIn"), {
+    cmd: "FadeIn",
+    Duration: 0.7,
+    TargetAssetName: "adv_transition_0002/adv_transition_0002",
+    Parameter1: "#FFFFFF",
+  });
+
+  // One-sided adjacent fade: trailing fade: "in" only -> single FadeOut before Stage, single FadeIn before Location
+  const trailOnly = compiled(script([
+    { scene: "garden", positions: { a: "left" } },
+    { say: "a", text: "One." },
+    { scene: "st/hall", location: "Hall", positions: { b: "right" } },
+    { fade: "in", duration: 0.6, fadeRule: "0003" },
+    { say: "b", text: "Two." },
+  ]));
+  const trailRows = strip(trailOnly.episode.commands);
+  assert.equal(trailRows.filter((r) => r.cmd === "FadeOut").length, 1);
+  assert.equal(trailRows.filter((r) => r.cmd === "FadeIn").length, 1);
+  const trailFadeInIdx = trailRows.findIndex((r) => r.cmd === "FadeIn");
+  const trailLocIdx = trailRows.findIndex((r) => r.cmd === "Location");
+  assert.ok(trailFadeInIdx >= 0 && trailFadeInIdx < trailLocIdx);
+});

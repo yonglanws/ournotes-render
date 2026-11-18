@@ -14,7 +14,7 @@ import {
   balanceLineBreaks, buildCastMessages, buildDialogueLengthPrompt, buildDialogueMessages,
   buildDialogueRepairMessages, buildStoryboardMessages, buildStoryboardRepairMessages, fallbackCastPlan,
   mergeStagedScript, modelIndex, normalizeCastPlan, normalizeDialogue, onStageProblems, resolveModel,
-  spreadPositions, enforceGroupShots, countDialogueChars,
+  sanitizeOminousExpressions, spreadPositions, enforceGroupShots, countDialogueChars,
 } from "./staged.js";
 
 export class StoryWriterError extends Error {
@@ -453,6 +453,7 @@ const generateSingle = async ({ llm, catalog, request, config, logger, signal, o
     }
     doc = trimLines(doc, maxLines, logger);
     spreadPositions(doc.beats, maxOnStage);
+    sanitizeOminousExpressions(doc.beats, { cast: doc.cast, catalog: narrowed, request });
 
     let problems = [];
     let warnings = [];

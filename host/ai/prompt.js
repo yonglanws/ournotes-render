@@ -60,34 +60,64 @@ const MOTION_NOTES = [
   [/idle01/i, "待机"],
 ];
 
-const EXPRESSION_NOTES = [
-  [/^exp_bsmile0[1-4]$/i, "坏笑/自信笑"],
+export const EXPRESSION_NOTES = [
+  [/^exp_grinning01$/i, "黑化阴笑（带脸部阴影、遮眼，严禁用于温暖/友好/开心对话）"],
+  [/^exp_shadow0[12]$/i, "阴郁/脸部阴影（带遮眼暗影，只用于低落/阴沉/黑化）"],
+  [/^exp_sdeprecate01$/i, "自嘲/苦笑（带脸部阴影）"],
+  [/^exp_dispair01$/i, "绝望/失神（可带脸部阴影/发青，不用于温暖/开心对话）"],
+  [/^exp_hatred01$/i, "怨恨（带遮眼阴影，只用于敌意/黑化）"],
+  [/^exp_mad02$/i, "狂乱（带脸部阴影，只用于失控/敌意）"],
+  [/^exp_mad01$/i, "狂怒"],
+  [/^exp_envy01$/i, "嫉妒/阴沉（可带脸部阴影）"],
+  [/^exp_nohighlight01$/i, "失去高光/失神（不用于温暖/开心对话）"],
+  [/^exp_bsmile0[1-6]$/i, "坏笑/得意挑衅笑（不用于温柔/真诚/温暖场景）"],
+  [/^exp_smirk01$/i, "坏笑/冷笑（不用于温柔/真诚/温暖场景）"],
+  [/^exp_sneer01$/i, "嘲笑/冷笑（不用于温暖/友好场景）"],
+  [/^exp_smile0[78]$/i, "笑容变体"],
   [/^exp_smile06$/i, "大笑"],
   [/^exp_smile0[45]$/i, "笑容变体"],
   [/^exp_smile03$/i, "笑得更开"],
   [/^exp_smile02$/i, "开心"],
   [/^exp_smile01$/i, "微笑"],
-  [/^exp_idle0[1-4]$/i, "平静"],
+  [/^exp_idle0[1-5]$/i, "平静"],
   [/^exp_serious0[1-3]$/i, "认真"],
-  [/^exp_angry0[1-3]$/i, "生气"],
-  [/^exp_sad0[1-4]$/i, "难过"],
-  [/^exp_cry0[1-4]$/i, "哭"],
+  [/^exp_angry0[1-6]$/i, "生气"],
+  [/^exp_sad0[1-7]$/i, "难过"],
+  [/^exp_cry0[1-7]$/i, "哭"],
   [/^exp_shy0[1-4]$/i, "害羞"],
   [/^exp_surprised0[1-5]$/i, "惊讶"],
-  [/^exp_pale0[12]$/i, "脸色发白/震惊"],
-  [/^exp_shadow01$/i, "阴郁"],
-  [/^exp_upset01$/i, "不悦"],
-  [/^exp_thinking0[12]$/i, "思考"],
+  [/^exp_pale0[1-3]$/i, "脸色发白/发青（惊恐/受打击，exp_pale02 可带遮眼）"],
+  [/^exp_upset0[12]$/i, "不悦/烦躁（部分角色带脸部阴影）"],
+  [/^exp_thinking0[1-3]$/i, "思考"],
   [/^exp_heart01$/i, "心动"],
-  [/^exp_kime0[12]$/i, "得意"],
-  [/^exp_smirk01$/i, "坏笑"],
-  [/^exp_sdeprecate01$/i, "自嘲"],
+  [/^exp_kime0[1-3]$/i, "得意"],
   [/^exp_amazed0[12]$/i, "无语/错愕"],
-  [/^exp_grinning01$/i, "咧嘴笑"],
   [/^exp_salk01$/i, "闹别扭"],
   [/^exp_pain01$/i, "痛苦"],
-  [/^exp_spin01$/i, "晕"],
+  [/^exp_spin0[12]$/i, "晕"],
   [/^exp_nervous01$/i, "紧张"],
+  [/^exp_absent01$/i, "走神/呆住"],
+  [/^exp_anxiety01$/i, "不安/焦虑"],
+  [/^exp_cheer01$/i, "打气/欢呼"],
+  [/^exp_dislike01$/i, "厌恶/嫌弃"],
+  [/^exp_gaze01$/i, "凝视"],
+  [/^exp_jitome01$/i, "半月眼/无语盯"],
+  [/^exp_kirakira01$/i, "期待/亮眼"],
+  [/^exp_kusogaki01$/i, "狡黠坏笑"],
+  [/^exp_motivation0[12]$/i, "有干劲"],
+  [/^exp_panic0[12]$/i, "慌张"],
+  [/^exp_puzzled0[12]$/i, "困惑"],
+  [/^exp_question0[12]$/i, "疑问"],
+  [/^exp_shock01$/i, "震惊"],
+  [/^exp_sing01$/i, "唱歌"],
+  [/^exp_tired0[12]$/i, "疲惫"],
+  [/^exp_trance01$/i, "陶醉/入迷"],
+];
+
+const CORE_EXPRESSION_PRIORITY = [
+  "exp_idle01", "exp_smile01", "exp_smile02", "exp_smile03",
+  "exp_shy01", "exp_serious01", "exp_sad01", "exp_surprised01",
+  "exp_angry01", "exp_thinking01", "exp_cry01", "exp_nervous01",
 ];
 
 // Measured line styles of the MyGO members in the official friendship episodes (Chinese text): characters must not all
@@ -122,7 +152,14 @@ const fmtList = (items, limit, notes = null) => {
 
 // The staged pipeline builds its own prompts from the same tables, so the notes a model reads stay identical.
 export const motionListFor = (motions) => fmtList(motionStems(motions), MAX_MOTIONS, MOTION_NOTES);
-export const expressionListFor = (expressions) => fmtList(expressions, MAX_EXPRESSIONS, EXPRESSION_NOTES);
+export const expressionListFor = (expressions) => {
+  const unique = [...new Set(expressions || [])];
+  const prioritized = [
+    ...CORE_EXPRESSION_PRIORITY.filter((name) => unique.includes(name)),
+    ...unique.filter((name) => !CORE_EXPRESSION_PRIORITY.includes(name)),
+  ];
+  return fmtList(prioritized, MAX_EXPRESSIONS, EXPRESSION_NOTES);
+};
 
 // A sheet matches by name, by a romanized alias, or by the character key inside a site model id
 // (`adv_live2d_nagi_018_...` + alias "nagi"). The first match wins, so a directory sheet can be overridden by an
@@ -249,7 +286,7 @@ export const stagingRules = (maxOnStage = 3, budget = null) => {
       "- 走位与蹲起：已出场角色换位直接用 positions 或 move（{cast, to/dir/dx/dy/dz, duration}），不要 Out+In 闪人；弯腰/蹲下找东西用 move {dir: \"down\", distance: 0.25} 配合 pedestal -0.25 与 focusTargetHead: true，起身用 dir: \"up\" 恢复。\n" +
       "- 倾斜、冲击与视线：angle {z: -12~12} 做歪头/迟疑；爆发/吐槽用 shake {target: \"ui\", power: 3~5} 震动对话框；低头回避用 look: 0.4, lookY: -0.5~-0.8，抬头用 look: \"stop\"（或 lookAt: \"stop\"）收回。\n" +
       "- 回忆与独白：用 postEffect（如 reminiscence1/2）、frame（如 letterbox_black/fog）、brightness {target: \"bg\", value: 0.5}、fadeColor \"#FFFFFF\" / transition \"dissolve\"，结束时用 postEffectStop: true / frameStop: true / brightness 1 复位。",
-    `表演：一句台词最多一个说话者动作，听者反应最多一个；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的台词没有 Motion；表情和动作一起写，默认 idle，不要每句都笑。动作写 stem（如 mtn_smile01），编译器会按左 _L / 中 _C / 右 _R 自动面向对话伙伴；只有刻意转头避开或正对镜头时才写完整 _L/_C/_R 后缀。close/very-close 单人近景自动对齐角色头部高度（TargetName），middle/far 蹲起或身高差时也可显式设 focusTargetHead: true。`,
+    `表演：一句台词最多一个说话者动作，听者反应最多一个；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的台词没有 Motion；表情和动作一起写，默认 idle，不要每句都笑。exp_grinning01、exp_shadow01/02、exp_hatred01、exp_dispair01、exp_mad02、exp_sdeprecate01、exp_nohighlight01 等带脸部阴影/遮眼/失神效果的表情只用于阴沉、黑化、绝望或敌意台词；温暖、开心、鼓励、和解或友好道别（如「明天见」「谢谢」）严禁使用这类阴影表情，也不要用 exp_bsmile*/exp_smirk01 坏笑代替温和微笑（请用 exp_smile01/02/03、exp_shy01 或 exp_idle01）。动作写 stem（如 mtn_smile01），编译器会按左 _L / 中 _C / 右 _R 自动面向对话伙伴；只有刻意转头避开或正对镜头时才写完整 _L/_C/_R 后缀。close/very-close 单人近景自动对齐角色头部高度（TargetName），middle/far 蹲起或身高差时也可显式设 focusTargetHead: true。`,
     limit === 2
       ? `视线：双人戏每 3~4 句写一个 lookAt，不要每 1~2 句都写；角色把视线移开时用独立 look/lookY（最多 ${gaze?.independentMax ?? 2} 次，计入总视线预算），结束后用 look: "stop" 收回。`
       : `视线：双人戏每 3~4 句写一个 lookAt，三人以上只在被点名或明显反应时用；角色把视线移开时用独立 look/lookY（最多 ${gaze?.independentMax ?? 2} 次，计入总视线预算），结束后用 look: "stop" 收回。`,
@@ -491,7 +528,7 @@ ${JSON.stringify(example, null, 2)}
 - 常用 nod / smile / check / question / thinking / denial / serious；surprised 一场最多 1~2 次，angry / kime 各最多 1 次；不要连续三句用强烈动作。
 - 同一个温和动作可以重复（官方一场会重复 smile / nod / check 5~8 次），不要为了不重复而选怪动作。
 - 听者优先用 lookAt 和表情承担反应，不必每句都给动作。
-- 表情要与台词一致；默认 idle，不要每句都笑。
+- 表情要与台词一致；默认 idle，不要每句都笑。exp_grinning01 带脸部阴影与遮眼黑化效果，严禁用于温暖、开心、友好对话或道别；exp_shadow* 仅用于低落阴郁，不可用于欢快或温暖收尾。
 
 ## 演出质量
 - 先选一个具体的小事件，整场围绕它；结构是“小事件开场 → 2~3 句闲聊/跑题 → 一个很小的发现或请求 → 情绪转一次 → 收尾”，不要写成起承转合齐全的短篇小说。

@@ -785,7 +785,7 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
 - **换机位上限**：整场只有 ${Math.max(0, budget.focusChanges - 2)} 句 line beat 可以写 focus/camera/track（scene/positions 的 Focus 另计）；请把镜头字段集中到真正的剪辑句，其余 line beat 一个镜头字段都不要写；多写的会在合并时删除。
 - **慢推镜**：全场约 ${budget.zoomMin}~${budget.zoomMax} 次 zoom，写在情绪句/近景或结尾：推近 1.03~1.10，拉远 0.92~0.98，zoomDuration 3~5 秒、ease "OutSine"。一个机位最多 1 次；不写就静止，不要每个镜头都推。
 - **视线预算**：全场总视线（lookAt + 独立 look）约 ${gaze.total} 次；双人戏每 3~4 句最多 1 个 lookAt，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名、1~9 构图点或 "stop"；不要每句都看着对方。独立 look 最多 ${gaze.independentMax} 个（计入上面的总视线，不额外增加），如低头回避 "look": 0.4, "lookY": -0.6, "lookDuration": 0.4，结束后用 "look": "stop" 收回。
-- **表演预算**：全场至少 ${budget.motionMin} 个、目标 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；低于 ${budget.motionMin} 个视为不合格。约 ${noMotionTarget} 句可以完全没有 Motion（参考上限 ${budget.maxStatic} 句；超出预算时优先保留短反应句，修剪长段中的重复动作）；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。motion 优先写 stem（如 mtn_smile01），编译器会按左 _L / 中 _C / 右 _R 自动对齐面向。
+- **表演预算**：全场至少 ${budget.motionMin} 个、目标 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；低于 ${budget.motionMin} 个视为不合格。约 ${noMotionTarget} 句可以完全没有 Motion（参考上限 ${budget.maxStatic} 句；超出预算时优先保留短反应句，修剪长段中的重复动作）；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。exp_grinning01、exp_shadow01/02、exp_hatred01、exp_dispair01、exp_mad02、exp_sdeprecate01、exp_nohighlight01 等带脸部阴影/遮眼/失神效果的表情只用于阴沉、黑化、绝望或敌意台词，**严禁**用于温暖、开心、和解或友好道别（如「明天见」「谢谢」），也不要用 exp_bsmile*/exp_smirk01 坏笑代替温和微笑（改用 exp_smile01/02/03、exp_shy01 或 exp_idle01）。motion 优先写 stem（如 mtn_smile01），编译器会按左 _L / 中 _C / 右 _R 自动对齐面向。
 - **扩展运镜、演出特效与声音（按剧情动机使用，静坐对话可为 0，所有开关效果用完必收回）**：
   - 建议写 ${budgetCount(0, budget.pedestal)} 个 pedestal（蹲下找东西用 -0.25，静坐对话可为 0）、${budgetCount(0, budget.panV2)} 个 pan（多句倾诉/换组横移用 -12~12，ease "OutSine" 或 "Linear"，静坐对话可为 0）、${budgetCount(0, budget.dof)} 个 dof（背景虚化用 "dof": 0.5, "dofLayers": 0；**绝不虚化聚焦说话者**，角色 dofLayers 2 必须写 dofTarget 指向非说话者）、独立 look 最多 ${gaze.independentMax} 个（计入总视线）；Se 约 ${budget.se} 条（只能写上方清单 cue；(none) 时不写），Track 约 ${budget.track} 次（close 自动限幅 ±0.25）。
   - 动机触发：情绪转折用 ease "OutSine" + zoom + 背景 dof + bgm: "stop"；沉默停顿用 hideTalk: true + pause（>= 0.6s 自动隐藏对话窗）；省略号/心声设 thought: true / ignoreLipSync: true；蹲起/走位用 move {dir: "down"|"up", distance, duration} + focusTargetHead: true；歪头用 angle {z}；惊呼爆发用 shake {target: "ui", power: 3~5}；回忆独白用 postEffect / frame / brightness {target: "bg", value: 0.5} / fadeColor "#FFFFFF" / transition "dissolve"，结束时必须成对写 postEffectStop: true / frameStop: true / brightness 1 / look: "stop" / role: 0 / tilt: 0。
@@ -1213,6 +1213,110 @@ export const onStageProblems = (beats, maxOnStage = 3) => {
   return out;
 };
 
+// Model prefabs (e.g. Tomori's exp_grinning01, plus exp_shadow01/02, exp_hatred01, exp_mad02, exp_sdeprecate01, etc.)
+// activate dark upper-face shadow / hidden eyes / no-highlight overlays. Replace them when used on warm, friendly,
+// or non-sinister beats so a warm farewell never renders with an ominous shadowed grin.
+const SINISTER_GRIN_RE = /^exp_grinning\d*$/i;
+const SHADOW_OMINOUS_RE = /^exp_(?:shadow\d*|hatred\d*|mad02|dispair\d*|nohighlight\d*|sdeprecate\d*|envy\d*)$/i;
+const DARK_SINISTER_INTENT_RE = /黑化|阴笑|冷笑|狞笑|诡异|恐怖|可怕|吓人|吓唬|鬼屋|幽灵|万圣节|算计|报复|复仇|威胁|暗算|背叛|仇恨|怨恨|诅咒|恶魔|噩梦|阴谋|别怪我|走着瞧|真可怜|笑死|蠢货|呵呵|哼哼|崩坏|黑暗|阴影|杀|死|毁掉|疯了|阴森|惊悚|悬疑|反派|敌意|dark|sinister|creepy|evil|ominous|horror|threat|revenge|villain|nightmare/i;
+const GLOOMY_SAD_INTENT_RE = /对不起|抱歉|害怕|恐惧|担心|不安|焦虑|难过|伤心|哭|泪|痛|苦|低落|消沉|阴郁|委屈|自卑|配不上|做不到|写不出|唱不出|弹不出|不行|失败|搞砸|逃避|孤单|寂寞|迷茫|乱了|沉重|压抑|叹气|讨厌|烦|算了|没用|糟糕|崩溃|失落|伤感|嫉妒|羡慕|冷漠|疏远|内省|紧张|sad|gloom|depress|anxious|sorry|afraid|scared|tired|exhausted|hurt|pain|lonely/i;
+const WARM_FRIENDLY_FAREWELL_RE = /明天见|回头见|下次见|待会见|再见|拜拜|晚安|早安|一路顺风|路上小心|欢迎|谢谢|多谢|感谢|不客气|辛苦了|加油|太好了|开心|高兴|快乐|幸福|喜欢|温柔|安心|放心|说定了|约好了|一起|顺利|没问题|期待|恭喜|祝贺|请多关照|保重|没关系|别担心|挺好的|很棒|真好|see you|good\s*bye|bye|good\s*night|thank/i;
+const WARM_MOTION_RE = /^mtn_(?:smile|bye|nod|cheer|wink)/i;
+const WARM_TONE_RE = /温暖日常|轻松搞笑|明亮庆祝/;
+
+const isUnsafeShadowExpression = (name) => SINISTER_GRIN_RE.test(name) || SHADOW_OMINOUS_RE.test(name);
+
+const safeReplacementExpression = (model, { preferWarm = false } = {}) => {
+  const available = Array.isArray(model?.expressions) ? model.expressions : [];
+  if (!available.length) return "";
+  const candidates = preferWarm
+    ? ["exp_smile01", "exp_smile02", "exp_smile03", "exp_idle01", "exp_idle02", "exp_idle03", model?.defaultExpression]
+    : [model?.defaultExpression, "exp_idle01", "exp_idle02", "exp_idle03", "exp_smile01", "exp_smile02"];
+  for (const cand of candidates) {
+    if (cand && available.includes(cand) && !isUnsafeShadowExpression(cand)) return cand;
+  }
+  return available.find((exp) => !isUnsafeShadowExpression(exp)) || "";
+};
+
+export const sanitizeOminousExpressions = (beats, { cast, catalog, plan = null, request = {}, warnings = [] } = {}) => {
+  if (!Array.isArray(beats)) return 0;
+  const modelsById = new Map((catalog?.models || []).map((model) => [model.id, model]));
+  const castModelId = new Map();
+  if (Array.isArray(cast)) {
+    for (const member of cast) if (member?.id && member?.model) castModelId.set(member.id, member.model);
+  } else if (isObj(cast)) {
+    for (const [id, member] of Object.entries(cast)) {
+      const mId = typeof member === "string" ? member : member?.model;
+      if (mId) castModelId.set(id, mId);
+    }
+  }
+  const sceneContextText = [plan?.tone, plan?.event, plan?.logline, request?.prompt].filter(Boolean).join(" ");
+  const sceneHasDarkIntent = DARK_SINISTER_INTENT_RE.test(sceneContextText);
+  const warmTone = WARM_TONE_RE.test(String(plan?.tone || ""));
+  let replaced = 0;
+
+  const sanitizeTarget = (target, castId, path, { lineText = "", motion = "" } = {}) => {
+    if (!isObj(target) || !target.expression) return;
+    const exp = String(target.expression);
+    const isSinisterGrin = SINISTER_GRIN_RE.test(exp);
+    const isShadowOminous = SHADOW_OMINOUS_RE.test(exp);
+    if (!isSinisterGrin && !isShadowOminous) return;
+
+    const hasDarkIntent = sceneHasDarkIntent || DARK_SINISTER_INTENT_RE.test(lineText);
+    if (hasDarkIntent) return;
+
+    const hasGloomyIntent = GLOOMY_SAD_INTENT_RE.test(lineText);
+    const isWarmLine = WARM_FRIENDLY_FAREWELL_RE.test(lineText) ||
+      (WARM_MOTION_RE.test(String(motion || "")) && !hasGloomyIntent) ||
+      (warmTone && !hasGloomyIntent);
+
+    // exp_grinning01 always renders a dark horror upper-face shadow; replace whenever sinister intent is absent.
+    // Other shadow expressions stay on gloomy/anxious lines, but are replaced on warm/friendly/farewell lines.
+    const shouldReplace = isSinisterGrin || (isWarmLine && !hasGloomyIntent);
+    if (!shouldReplace) return;
+
+    const model = modelsById.get(castModelId.get(castId) || castId);
+    const nextExp = safeReplacementExpression(model, { preferWarm: isWarmLine || isSinisterGrin });
+    if (nextExp) {
+      target.expression = nextExp;
+      warnings.push({
+        code: "ominousExpression",
+        message: `${path} 在非黑化/温暖语境下使用了带脸部阴影的表情 ${exp}，已替换为 ${nextExp}`,
+      });
+    } else {
+      delete target.expression;
+      warnings.push({
+        code: "ominousExpression",
+        message: `${path} 在非黑化/温暖语境下使用了带脸部阴影的表情 ${exp}，已省略`,
+      });
+    }
+    replaced++;
+  };
+
+  beats.forEach((beat, index) => {
+    if (!isObj(beat)) return;
+    const path = `/beats/${index}`;
+    const lineText = String(beat.text || beat.narrate || "");
+    sanitizeTarget(beat, beat.say || beat.action, path, { lineText, motion: beat.motion || "" });
+    if (Array.isArray(beat.actions)) {
+      beat.actions.forEach((action, actionIndex) => {
+        sanitizeTarget(action, action?.cast || beat.say, `${path}/actions/${actionIndex}`, {
+          lineText,
+          motion: action?.motion || "",
+        });
+      });
+    }
+    if (isObj(beat.positions)) {
+      for (const [castId, pos] of Object.entries(beat.positions)) {
+        if (isObj(pos)) {
+          sanitizeTarget(pos, castId, `${path}/positions/${castId}`, { lineText, motion: pos.motion || "" });
+        }
+      }
+    }
+  });
+  return replaced;
+};
+
 const defaultScene = ({ plan, catalog, maxOnStage = 3 }) => {
   const limit = Math.max(2, Math.min(3, Math.round(Number(maxOnStage) || 3)));
   const positions = {};
@@ -1399,6 +1503,7 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
       if (FADE_RULES.includes(rule)) beat.fadeRule = rule;
     }
   });
+  sanitizeOminousExpressions(merged, { cast: plan.cast, catalog, plan, request, warnings });
   // Shot-pair-aware storyboard pruning: pair (close/very-close/macro push-in -> middle/far recovery) as atomic units
   // so pruning never strands a 2.8x close-up on an off-screen speaker, and cascade-clean shot-attached FX fields.
   const CASCADE_CAMERA_KEYS = [

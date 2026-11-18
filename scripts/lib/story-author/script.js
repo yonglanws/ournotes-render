@@ -2215,7 +2215,9 @@ export const compileScript = (script, site, language) => {
     }
   };
 
-  for (const b of script.beats) {
+  let pendingLocation = null;
+  for (let bi = 0; bi < script.beats.length; bi++) {
+    const b = script.beats[bi];
     const shotChange = b.kind === "positions" || b.kind === "camera" ||
       ((b.kind === "say" || b.kind === "narrate") &&
         (b.camera !== undefined || b.focus !== undefined || b.track !== undefined));
@@ -2230,6 +2232,10 @@ export const compileScript = (script, site, language) => {
     }
 
     if (b.kind === "scene") {
+      const prevBeat = bi > 0 ? script.beats[bi - 1] : null;
+      const nextBeat = bi + 1 < script.beats.length ? script.beats[bi + 1] : null;
+      const hasAdjacentFadeOut = Boolean(prevBeat && prevBeat.kind === "fade" && prevBeat.fade === "out");
+      const hasAdjacentFadeIn = Boolean(nextBeat && nextBeat.kind === "fade" && nextBeat.fade === "in");
       const dissolve = b.transition === "dissolve";
       const fadeDur = b.duration ?? b.transitionDuration ?? SCENE_FADE;
       const ruleName = transitionAssetName(b.fadeRule);
@@ -2248,7 +2254,7 @@ export const compileScript = (script, site, language) => {
             if (!p || p.slot !== m.slot) exitCharacter(m, 0);
           }
         } else {
-          row("FadeOut", { Duration: fadeDur, ...fadeExtras });
+          if (!hasAdjacentFadeOut) row("FadeOut", { Duration: fadeDur, ...fadeExtras });
           closeSceneEffects({ dur: 0, gazeDur: 0 });
           for (const m of on.values()) exitCharacter(m, 0);
         }
@@ -2277,8 +2283,22 @@ export const compileScript = (script, site, language) => {
       officialRows(b, "", dofTargetOf(b, next));
       syncCloseSafeFraming(next, lastShot, 0);
       emitEffects(b);
-      if (scenes && !dissolve) row("FadeIn", { Duration: fadeDur, ...fadeExtras });
-      if (b.location.trim()) row("Location", { AdvTextID: textId(`custom_location_${b.index}`, plainText(b.location)) });
+      const deferFadeIn = Boolean(scenes && !dissolve && hasAdjacentFadeIn);
+      if (scenes && !dissolve && !hasAdjacentFadeIn) {
+        const inRule = b.fadeRule || (hasAdjacentFadeOut ? prevBeat.fadeRule : undefined);
+        const inColor = b.fadeColor || (hasAdjacentFadeOut ? prevBeat.fadeColor : undefined);
+        const inDur = b.duration ?? b.transitionDuration ?? (hasAdjacentFadeOut ? prevBeat.duration : undefined) ?? SCENE_FADE;
+        const inRuleName = transitionAssetName(inRule);
+        row("FadeIn", {
+          Duration: inDur,
+          ...(inRuleName ? { TargetAssetName: inRuleName } : {}),
+          ...(inColor ? { Parameter1: inColor } : {}),
+        });
+      }
+      if (b.location.trim()) {
+        if (deferFadeIn) pendingLocation = { index: b.index, text: b.location };
+        else row("Location", { AdvTextID: textId(`custom_location_${b.index}`, plainText(b.location)) });
+      }
       on = next;
       scenes++;
     } else if (b.kind === "positions") {
@@ -2417,6 +2437,10 @@ export const compileScript = (script, site, language) => {
         ...(ruleName ? { TargetAssetName: ruleName } : {}),
         ...(b.fadeColor ? { Parameter1: b.fadeColor } : {}),
       });
+      if (b.fade === "in" && pendingLocation) {
+        row("Location", { AdvTextID: textId(`custom_location_${pendingLocation.index}`, plainText(pendingLocation.text)) });
+        pendingLocation = null;
+      }
     } else if (b.kind === "pause") {
       if (b.pause >= HIDE_TALK_PAUSE_THRESHOLD) closeTalk();
       row("Delay", { Duration: b.pause });
