@@ -87,6 +87,18 @@ const hasValidFocusEntries = (entries) => Array.isArray(entries)
   && entries.length > 0
   && entries.every((e) => Array.isArray(e?._focusPointPositions) && e._focusPointPositions.length >= 9);
 
+export const hasValidStageFocusPoints = (prefab) => {
+  if (!prefab || typeof prefab !== "object" || !Array.isArray(prefab.nodes)) return true;
+  for (const node of prefab.nodes) {
+    for (const comp of Array.isArray(node?.components) ? node.components : []) {
+      if (comp?.class === "AdvStage" && !hasValidFocusEntries(comp._focusPointsCollection?._entries)) {
+        return false;
+      }
+    }
+  }
+  return true;
+};
+
 // Repairs any AdvStage component whose `_focusPointsCollection._entries` is missing or empty.
 export const ensureStageFocusPoints = (prefab) => {
   if (!prefab || typeof prefab !== "object" || !Array.isArray(prefab.nodes)) return false;

@@ -59,6 +59,7 @@ test("stage profiles resolve by object identity even when their names coincide",
   assert.deepEqual(noFocusStage.focusPoints, []);
   assert.deepEqual(noFocusStage.lightGroups, []);
   assert.deepEqual(noFocusStage.volumeProfiles, []);
+  assert.equal(noFocusStage.hasParticleEffects, false);
 });
 
 test("parented UI instances keep font component identities and local reference targets", () => {

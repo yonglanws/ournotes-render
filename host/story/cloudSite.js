@@ -319,6 +319,16 @@ const extractRequestedAssets = (script) => {
   return { models, stages, music, sounds, frames, postEffects, effects, stills, transitions };
 };
 
+const entryBlobsPresent = (site, filesMap) => {
+  if (!filesMap || typeof filesMap !== "object") return false;
+  for (const entry of Object.values(filesMap)) {
+    for (const rel of collectEntryAssetRels(entry)) {
+      if (!fs.existsSync(path.join(site, ...rel.split("/")))) return false;
+    }
+  }
+  return true;
+};
+
 const scanLocalAssets = (site) => {
   const stageIds = new Set();
   const cueFiles = new Map();
@@ -363,11 +373,14 @@ const scanLocalAssets = (site) => {
         };
       }
       for (const [id, st] of Object.entries(cloudPool.stages)) {
-        if (st?.prefab && ensureStageFocusPoints(st.prefab)) repairedStages = true;
+        if (!st?.prefab || !entryBlobsPresent(site, st.files || {})) continue;
+        if (ensureStageFocusPoints(st.prefab)) repairedStages = true;
         stageIds.add(id);
       }
       for (const [cue, au] of Object.entries(cloudPool.audio)) {
-        if (au?.files && Object.keys(au.files).length) cueFiles.set(cue, au.sheet);
+        if (au?.files && Object.keys(au.files).length && entryBlobsPresent(site, au.files)) {
+          cueFiles.set(cue, au.sheet);
+        }
       }
     } catch { /* rebuild clean pool */ }
   }
@@ -656,6 +669,13 @@ export const materializeSiteStoryAssets = async ({
                 filesObj[aRel] = aEntry;
               });
               let cueEntry = cuesDoc[cue] || null;
+              if (cueEntry?.file) {
+                const fileRel = `audio/${donorSheet}/${cueEntry.file}`;
+                if (dm.files[fileRel] && !filesObj[fileRel]) {
+                  await mirrorManifestEntry(fileRel, dm.files[fileRel]);
+                  filesObj[fileRel] = dm.files[fileRel];
+                }
+              }
               if (!cueEntry) {
                 const [firstRel, firstEntry] = matchingAudio[0];
                 const audioBytes = readEntry(site, firstEntry, "bytes");
@@ -670,11 +690,11 @@ export const materializeSiteStoryAssets = async ({
                 const depEp = readEntry(site, dm.files["episode.json"]);
                 const sEntry = Object.values(depEp.sounds || {}).find((r) => r?._cueName === cue);
                 if (sEntry) {
-                  row = sEntry;
                   const depSheet = depEp.cuesheets?.[sEntry._soundCueSheetID] || null;
-                  cuesheet = depSheet
-                    ? (depSheet._cueSheetName === donorSheet ? depSheet : { ...depSheet, _cueSheetName: donorSheet })
-                    : null;
+                  if (depSheet && depSheet._cueSheetName === donorSheet) {
+                    row = sEntry;
+                    cuesheet = depSheet;
+                  }
                 }
               }
               return {
@@ -720,7 +740,7 @@ export const materializeSiteStoryAssets = async ({
     });
     if (audioEntry) {
       pendingAudio[cue] = audioEntry;
-      localCues.set(cue, sheet);
+      localCues.set(cue, audioEntry.sheet);
       materialized.push(cue);
       poolDirty = true;
     }

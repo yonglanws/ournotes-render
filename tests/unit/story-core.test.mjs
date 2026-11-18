@@ -510,6 +510,9 @@ test("AdvCharacterField: focus stage positions, field position and scale", () =>
     assert.deepEqual(f.anchors[0].localPosition, { x: 0, y: 0, z: 0 });
     assert.deepEqual(f.stages[0].localPosition, { x: 0, y: 0, z: 0 });
   }
+  f.setStageInfo({ name: "minimal", focusPoints: [] }, 0);
+  assert.deepEqual(f.field.localPosition, { x: 0, y: 0, z: 0 });
+  assert.deepEqual(f.stages[0].localScale, { x: 1, y: 1, z: 1 });
 });
 
 test("AdvStageData: light groups by GameObject activity; ChangeLights keeps the index", () => {

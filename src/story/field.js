@@ -204,11 +204,11 @@ export class AdvCharacterField {
   }
 
   applyFieldPosition(stage) {               // ApplyFieldPosition
-    this.field.localPosition = stage ? { ...stage.characterFieldPosition } : { x: 0, y: 0, z: 0 };
+    this.field.localPosition = stage?.characterFieldPosition ? { ...stage.characterFieldPosition } : { x: 0, y: 0, z: 0 };
   }
 
   applyFieldScale(stage) {                  // ApplyFieldScale: Vector3.one x the stage's scale
-    const k = stage ? stage.characterFieldScale : 1;
+    const k = stage?.characterFieldScale ?? 1;
     for (const s of this.stages) s.localScale = { x: k, y: k, z: k };
   }
 

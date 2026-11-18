@@ -85,7 +85,9 @@ export class AdvStageData {
     return out;
   }
 
-  get hasParticleEffects() { return this.particleEffectGroupCollection._groups.some((g) => g._particleEffects.length > 0); }
+  get hasParticleEffects() {
+    return (this.particleEffectGroupCollection?._groups || []).some((g) => (g?._particleEffects?.length || 0) > 0);
+  }
 
   // AdvStage.Init -> AdvParticleEffectGroupCollection.Init: each group's effects built over the stage prefab and
   // initialized (stopped, cleared, hidden), with the shared ObjectResources.

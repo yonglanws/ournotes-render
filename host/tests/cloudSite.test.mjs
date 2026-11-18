@@ -757,3 +757,144 @@ test("donor-backed SE cues resolve under audio/<cue>/ in donor manifests (sound_
     await new Promise((resolve) => srv.close(resolve));
   }
 });
+
+test("partial focusPoints rows in baseSceneStages/cloud-pool and shared donor cuesheet IDs do not break buildSiteStory, and missing pool blobs re-materialize", async () => {
+  const synth = synthesizeStagePrefab("adv_bkg_stage_000152", 2048, 1119, "textures/adv_bkg_stage_000152-adv_bkg_stage_000152.webp");
+  const partialBaseStage = structuredClone(synth);
+  // Non-empty _entries array whose row has empty _focusPointPositions (would crash field.js if unrepaired).
+  partialBaseStage.nodes[0].components[0]._focusPointsCollection._entries = [{ _focusPointPositions: [] }];
+
+  const blobMap = new Map();
+  const addBlob = (b) => { blobMap.set(b.rel, b.raw); return b.entry; };
+  // Single donor episode that assigns the same _soundCueSheetID (700) to two split SE cues.
+  const pulseM4a = addBlob(gzAsset(Buffer.from("PULSE"), "m4a"));
+  const pulseCues = addBlob(gzAsset({ sound_se_adv_pulsation: { file: "sound_se_adv_pulsation.m4a", sampleRate: 48000, samples: 24000, channels: 2, categories: ["Se"] } }));
+  const clapM4a = addBlob(gzAsset(Buffer.from("CLAP"), "m4a"));
+  const clapCues = addBlob(gzAsset({ sound_se_adv_clap_solo: { file: "sound_se_adv_clap_solo.m4a", sampleRate: 48000, samples: 24000, channels: 2, categories: ["Se"] } }));
+  const sharedDonorEp = addBlob(gzAsset({
+    advId: 10980,
+    commands: [],
+    text: {},
+    sounds: {
+      701: { _id: 701, _category: 1, _soundCueSheetID: 700, _cueName: "sound_se_adv_pulsation" },
+      702: { _id: 702, _category: 1, _soundCueSheetID: 700, _cueName: "sound_se_adv_clap_solo" },
+    },
+    cuesheets: { 700: { _id: 700, _cueSheetName: "sound_se_adv" } },
+  }));
+  const donorManifest = {
+    format: "ournotes.story-manifest/2",
+    advId: 10980,
+    language: "zh-Hans",
+    files: {
+      "episode.json": sharedDonorEp,
+      "audio/sound_se_adv_pulsation/sound_se_adv_pulsation.m4a": pulseM4a,
+      "audio/sound_se_adv_pulsation/cues.json": pulseCues,
+      "audio/sound_se_adv_clap_solo/sound_se_adv_clap_solo.m4a": clapM4a,
+      "audio/sound_se_adv_clap_solo/cues.json": clapCues,
+    },
+  };
+  // Serve 10524 with the same split layout if requested, or 10980 for pulsation.
+  const donor10524 = { ...donorManifest, advId: 10524 };
+
+  const srv = http.createServer((req, res) => {
+    const clean = req.url.split("?")[0];
+    if (clean === "/storage/stories/10980.json") { res.writeHead(200); res.end(JSON.stringify(donorManifest)); return; }
+    if (clean === "/storage/stories/10524.json") { res.writeHead(200); res.end(JSON.stringify(donor10524)); return; }
+    if (clean.startsWith("/storage/assets/")) {
+      const rel = clean.slice("/storage/".length);
+      if (blobMap.has(rel)) { res.writeHead(200); res.end(blobMap.get(rel)); return; }
+    }
+    res.writeHead(404);
+    res.end("not found");
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const { port } = srv.address();
+  const storageBaseUrl = `http://127.0.0.1:${port}/storage`;
+  const assetBaseUrl = `http://127.0.0.1:${port}/assets`;
+
+  const site = tmpDir("ournotes-edge-repair-");
+  fs.mkdirSync(path.join(site, "stories"), { recursive: true });
+  fs.mkdirSync(path.join(site, "assets"), { recursive: true });
+  fs.mkdirSync(path.join(site, "models"), { recursive: true });
+  const putBlob = (data, ext = "json") => {
+    const b = gzAsset(data, ext);
+    fs.writeFileSync(path.join(site, b.rel), b.raw);
+    return b.entry;
+  };
+  const baseScene = putBlob({ stages: { "Adv/Stage/adv_bkg_stage_000152/adv_bkg_stage_000152": partialBaseStage } });
+  const baseStory = putBlob({ models: { anon: "adv_live2d_anon_002_live_01" } });
+  const baseEp = putBlob({ advId: 10610, commands: [{ cmd: "Stage", TargetAssetName: "Adv/Stage/adv_bkg_stage_000152/adv_bkg_stage_000152" }], text: {}, sounds: {}, cuesheets: {} });
+  const uiTrans = putBlob({});
+  const uiTex = putBlob({});
+  const fonts = putBlob({ texts: {}, textures: {}, materials: {}, materialKeywords: {} });
+  const anonPrefab = putBlob({
+    nodes: [{ components: [{ class: "Live2DCharacter", _motionList: ["idle01_C"], _expressionList: ["idle01"], DefaultMotionName: "idle01_C", DefaultExpressionName: "idle01" }] }],
+  });
+  fs.writeFileSync(path.join(site, "models", "adv_live2d_anon_002_live_01.json"), JSON.stringify({ key: "anon", files: { "anon.prefab.json": anonPrefab } }));
+  fs.writeFileSync(path.join(site, "stories", "10610.json"), JSON.stringify({
+    format: "ournotes.story-manifest/2",
+    advId: 10610,
+    language: "zh-Hans",
+    models: { adv_live2d_anon_002_live_01: "models/adv_live2d_anon_002_live_01.json" },
+    files: { "scene.json": baseScene, "story.json": baseStory, "episode.json": baseEp },
+    languages: { "zh-Hans": { files: { "ui/ui.json": { parts: [["transitions", uiTrans.asset, uiTrans.size, uiTrans.stored], ["textures", uiTex.asset, uiTex.size, uiTex.stored]], size: 100 }, "ui/fonts.json": fonts } } },
+  }));
+
+  // Seed cloud-pool.json with a stale audio entry whose blob on disk is missing: must re-materialize.
+  fs.writeFileSync(path.join(site, "cloud-pool.json"), JSON.stringify({
+    format: "ournotes.cloud-pool/1",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    stages: {},
+    audio: {
+      sound_se_adv_pulsation: {
+        sheet: "sound_se_adv_pulsation",
+        cue: "sound_se_adv_pulsation",
+        kind: "se",
+        files: { "audio/sound_se_adv_pulsation/sound_se_adv_pulsation.m4a": { asset: "assets/missing.m4a.gz", size: 5, stored: 5 } },
+      },
+    },
+  }, null, 2));
+
+  try {
+    const script = {
+      format: "ournotes.story-script/1",
+      base: "stories/10610.json",
+      language: "zh-Hans",
+      title: "边界修复测试",
+      cast: { anon: { model: "adv_live2d_anon_002_live_01", name: "千早爱音" } },
+      beats: [
+        { scene: "adv_bkg_stage_000152", positions: { anon: "center" } },
+        { say: "anon", text: "一", se: "sound_se_adv_pulsation" },
+        { say: "anon", text: "二", se: "sound_se_adv_clap_solo" },
+      ],
+    };
+    const mat = await materializeSiteStoryAssets({
+      site,
+      script,
+      language: "zh-Hans",
+      storageBaseUrl,
+      assetBaseUrl,
+      allowPrivateUrl: true,
+      logger: quietLogger(),
+    });
+    assert.ok(mat.materialized.includes("sound_se_adv_pulsation"), "stale missing blob in cloud-pool must re-materialize");
+    assert.ok(mat.materialized.includes("sound_se_adv_clap_solo"));
+
+    const built = buildSiteStory({ site, baseRel: "stories/10610.json", script, advId: 900200, language: "zh-Hans" });
+    assert.equal(built.errors, undefined, JSON.stringify(built.errors));
+    const sceneEntry = built.manifest.files["scene.json"];
+    const bundledStages = Array.isArray(sceneEntry.parts)
+      ? JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(site, sceneEntry.parts.find(([k]) => k === "stages")[1]))).toString("utf8"))
+      : JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(site, sceneEntry.asset))).toString("utf8")).stages;
+    const repairedAdv = bundledStages["Adv/Stage/adv_bkg_stage_000152/adv_bkg_stage_000152"].nodes[0].components[0];
+    assert.equal(repairedAdv._focusPointsCollection._entries.length, 5);
+    assert.equal(repairedAdv._focusPointsCollection._entries[0]._focusPointPositions.length, 9);
+
+    const epDoc = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(site, built.manifest.files["episode.json"].asset))).toString("utf8"));
+    const sheetNames = Object.values(epDoc.cuesheets).map((c) => c._cueSheetName);
+    assert.ok(sheetNames.includes("sound_se_adv_pulsation"));
+    assert.ok(sheetNames.includes("sound_se_adv_clap_solo"));
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+});

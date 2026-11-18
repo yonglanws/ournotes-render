@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { compileScript, checkScript, cueLabel, fontFamily, parseScript, withBrowserFonts } from "../../scripts/lib/story-author/script.js";
 import { STORY_LANGUAGES } from "../../src/story/params.js";
 import { assertPublicHttpUrl, isPrivateAddress, resolvePublicUrl } from "../net/urlGuard.js";
-import { ensureStageFocusPoints, loadCloudCatalog } from "../story/cloudCatalogData.js";
+import { ensureStageFocusPoints, hasValidStageFocusPoints, loadCloudCatalog } from "../story/cloudCatalogData.js";
 import { applyMusicGuide, applySoundGuide, applyStageGuide, loadResourceGuide } from "../story/resourceGuide.js";
 
 export const OFFICIAL_ASSET_BASE_URL = "https://assets.bdon.moe";
@@ -461,14 +461,16 @@ export const collectStageVolumeProfiles = (prefab, volumeProfiles) => {
   }
 };
 
+const stageNeedsProfileHydration = (prefab, volumeProfiles) => {
+  const profs = stageAdvComp(prefab)?._allVolumeProfileCollection?._profiles;
+  return !!(volumeProfiles?.size && Array.isArray(profs)
+    && profs.some((p) => p && p.name && !Array.isArray(p.components) && volumeProfiles.has(p.name)));
+};
+
 const hydrateStagePrefab = (prefab, volumeProfiles) => {
   if (!prefab) return prefab;
-  const adv = stageAdvComp(prefab);
-  const profs = adv?._allVolumeProfileCollection?._profiles;
-  const needsProfiles = !!(volumeProfiles?.size && Array.isArray(profs)
-    && profs.some((p) => p && p.name && !Array.isArray(p.components) && volumeProfiles.has(p.name)));
-  const needsFocus = !!(adv && (!Array.isArray(adv._focusPointsCollection?._entries)
-    || adv._focusPointsCollection._entries.length === 0));
+  const needsProfiles = stageNeedsProfileHydration(prefab, volumeProfiles);
+  const needsFocus = !hasValidStageFocusPoints(prefab);
   if (!needsProfiles && !needsFocus) return prefab;
   const cloned = structuredClone(prefab);
   ensureStageFocusPoints(cloned);
@@ -679,14 +681,36 @@ const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = t
             stageCasts.set(st.key, new Set());
           }
         }
+        const usedSoundIds = new Set([
+          ...Object.keys(baseEpisode?.sounds || {}).map(Number),
+          ...music.map((m) => Number(m.sound)),
+          ...sounds.map((s) => Number(s.sound)),
+        ].filter(Number.isFinite));
+        const usedSheetIds = new Set([
+          ...Object.keys(baseEpisode?.cuesheets || {}).map(Number),
+          ...music.map((m) => Number(m.row?._soundCueSheetID)),
+          ...sounds.map((s) => Number(s.row?._soundCueSheetID)),
+        ].filter(Number.isFinite));
         let nextPoolSoundId = 820000;
         let nextPoolSheetId = 820000;
+        const allocSoundId = () => {
+          while (usedSoundIds.has(nextPoolSoundId)) nextPoolSoundId++;
+          usedSoundIds.add(nextPoolSoundId);
+          return nextPoolSoundId++;
+        };
+        const allocSheetId = () => {
+          while (usedSheetIds.has(nextPoolSheetId)) nextPoolSheetId++;
+          usedSheetIds.add(nextPoolSheetId);
+          return nextPoolSheetId++;
+        };
         for (const [cue, au] of Object.entries(cp?.audio || {})) {
           if (!au?.sheet) continue;
           absorbSoundAudio(au.sheet, au.files || {}, au.cueEntry ? { [cue]: au.cueEntry } : null);
           const isBgm = au.kind === "bgm" || /^sound_bgm/i.test(au.sheet);
-          const soundId = Number(au.soundId) || nextPoolSoundId++;
-          const sheetId = Number(au.sheetId) || nextPoolSheetId++;
+          const soundId = Number(au.soundId) || allocSoundId();
+          const sheetId = Number(au.sheetId) || allocSheetId();
+          usedSoundIds.add(soundId);
+          usedSheetIds.add(sheetId);
           if (isBgm && !musicCues.has(cue)) {
             musicCues.add(cue);
             music.push({
@@ -933,12 +957,15 @@ export const bundleSiteEpisodeAssets = ({
   }
 
   const baseSceneStages = catalog.pool.baseSceneStages || {};
-  const addedStages = [...usedStages].filter((key) => !(key in baseSceneStages));
+  const stagesToHydrate = [...usedStages].filter((key) => !(key in baseSceneStages)
+    || !hasValidStageFocusPoints(baseSceneStages[key])
+    || stageNeedsProfileHydration(baseSceneStages[key], catalog.pool.volumeProfiles));
   let sceneEntry = baseManifest.files["scene.json"];
-  if (addedStages.length && sceneEntry) {
+  if (stagesToHydrate.length && sceneEntry) {
     const merged = { ...baseSceneStages };
-    for (const key of addedStages) {
-      const prefab = hydrateStagePrefab(catalog.pool.stagePrefabs.get(key), catalog.pool.volumeProfiles);
+    for (const key of stagesToHydrate) {
+      const sourcePrefab = (key in baseSceneStages ? baseSceneStages[key] : null) || catalog.pool.stagePrefabs.get(key);
+      const prefab = hydrateStagePrefab(sourcePrefab, catalog.pool.volumeProfiles);
       if (prefab) merged[key] = prefab;
     }
     sceneEntry = writeSplitParts(site, sceneEntry, { stages: merged });
