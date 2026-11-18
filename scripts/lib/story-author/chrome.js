@@ -388,33 +388,69 @@ export class BrowserPool {
   }
 
   async acquire({ executable = findBrowser(), gpu = false, width = 1300, height = 600, extraArgs = [],
-                  onConsole = null, onNetworkError = null, onExit = null } = {}) {
+                  onConsole = null, onNetworkError = null, onExit = null, signal = null } = {}) {
     if (this._closed) throw new Error("BrowserPool is closed");
-    let entry = await this._getEntry({ executable, gpu, width, height, extraArgs });
+    const checkAborted = () => {
+      if (signal?.aborted) throw (signal.reason || new Error("aborted"));
+    };
+    const raceAbort = (promise) => {
+      if (!signal) return promise;
+      checkAborted();
+      return new Promise((resolve, reject) => {
+        const onAbort = () => reject(signal.reason || new Error("aborted"));
+        signal.addEventListener("abort", onAbort, { once: true });
+        promise.then(
+          (v) => { signal.removeEventListener("abort", onAbort); resolve(v); },
+          (e) => { signal.removeEventListener("abort", onAbort); reject(e); }
+        );
+      });
+    };
+
+    checkAborted();
+    let entry = await raceAbort(this._getEntry({ executable, gpu, width, height, extraArgs }));
+    checkAborted();
     let ctrl;
     try {
-      ctrl = await openCdpWs(entry.browserUrl);
-    } catch {
+      ctrl = await raceAbort(openCdpWs(entry.browserUrl));
+    } catch (e) {
+      if (signal?.aborted) throw e;
       // Pooled browser disconnected while idle: recycle and relaunch once cleanly.
       await this._closeEntry(entry);
-      entry = await this._getEntry({ executable, gpu, width, height, extraArgs });
-      ctrl = await openCdpWs(entry.browserUrl);
+      entry = await raceAbort(this._getEntry({ executable, gpu, width, height, extraArgs }));
+      ctrl = await raceAbort(openCdpWs(entry.browserUrl));
     }
 
     let browserContextId = null;
     let targetId = null;
+    const disposeTarget = async () => {
+      try {
+        const c = await openCdpWs(entry.browserUrl);
+        if (targetId) await c.send("Target.closeTarget", { targetId }).catch(() => {});
+        if (browserContextId) await c.send("Target.disposeBrowserContext", { browserContextId }).catch(() => {});
+        c.close();
+      } catch { /* ignore */ }
+    };
     try {
-      const ctx = await ctrl.send("Target.createBrowserContext", { disposeOnDetach: false });
+      const ctx = await raceAbort(ctrl.send("Target.createBrowserContext", { disposeOnDetach: false }));
       browserContextId = ctx.browserContextId;
-      const tgt = await ctrl.send("Target.createTarget", {
+      const tgt = await raceAbort(ctrl.send("Target.createTarget", {
         url: "about:blank", browserContextId, width, height,
-      });
+      }));
       targetId = tgt.targetId;
-    } finally {
+    } catch (e) {
       ctrl.close();
+      await disposeTarget();
+      throw e;
     }
+    ctrl.close();
 
-    const targets = await (await fetch(`http://127.0.0.1:${entry.port}/json/list`)).json();
+    let targets;
+    try {
+      targets = await raceAbort((await fetch(`http://127.0.0.1:${entry.port}/json/list`, signal ? { signal } : undefined)).json());
+    } catch (e) {
+      await disposeTarget();
+      throw e;
+    }
     const pageTarget = targets.find((t) => t.id === targetId);
     const pageWsUrl = pageTarget?.webSocketDebuggerUrl || `ws://127.0.0.1:${entry.port}/devtools/page/${targetId}`;
 
@@ -428,21 +464,17 @@ export class BrowserPool {
     void onEntryExit;
 
     try {
-      await page._connect(pageWsUrl, onConsole, onNetworkError);
-      await page.send("Emulation.setDeviceMetricsOverride", {
+      await raceAbort(page._connect(pageWsUrl, onConsole, onNetworkError));
+      await raceAbort(page.send("Emulation.setDeviceMetricsOverride", {
         width, height, deviceScaleFactor: 1, mobile: false,
-      }).catch(() => {});
+      }).catch(() => {}));
+      checkAborted();
     } catch (e) {
-      entry.activeCount--;
+      entry.activeCount = Math.max(0, entry.activeCount - 1);
       if (onExit) entry.activeExits.delete(onExit);
       page._closing = true;
       try { page.ws?.close(); } catch { /* ignore */ }
-      try {
-        const c = await openCdpWs(entry.browserUrl);
-        if (targetId) await c.send("Target.closeTarget", { targetId }).catch(() => {});
-        if (browserContextId) await c.send("Target.disposeBrowserContext", { browserContextId }).catch(() => {});
-        c.close();
-      } catch { /* ignore */ }
+      await disposeTarget();
       throw e;
     }
 

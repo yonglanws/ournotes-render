@@ -174,18 +174,37 @@ export class TaskQueue {
     // All terminal transitions go through here: a queued cancel and a timeout-aborted run must count too.
     if (status === "completed" || status === "failed" || status === "cancelled") this.stats[status]++;
     if (this.running.get(task.id) === task) this.running.delete(task.id);
-    if (status === "completed") task.resolve?.(result);
-    else task.reject?.(error || new Error(status));
+    const resolve = task.resolve;
+    const reject = task.reject;
+    task.run = null;
+    task.controller = null;
+    task.resolve = null;
+    task.reject = null;
+    if (status === "completed") resolve?.(result);
+    else reject?.(error || new Error(status));
     this.logger[status === "failed" ? "error" : "info"]?.(
       `${tag(task)} ${status}${error ? `: ${error.message}` : ""}`);
+    if (this.tasks.size > Math.max(200, this.maxSize * 10)) this._prune();
     queueMicrotask(() => this._pump());
   }
 
   _prune() {
     const cutoff = now() - this.retentionMs;
+    const maxHistory = Math.max(200, this.maxSize * 10);
+    const terminal = [];
     for (const [taskId, t] of this.tasks) {
-      if ((t.status === "completed" || t.status === "failed" || t.status === "cancelled") &&
-          t.completedAt && t.completedAt < cutoff) this.tasks.delete(taskId);
+      if (t.status === "completed" || t.status === "failed" || t.status === "cancelled") {
+        if (t.completedAt && t.completedAt < cutoff) {
+          this.tasks.delete(taskId);
+        } else {
+          terminal.push(t);
+        }
+      }
+    }
+    if (terminal.length > maxHistory) {
+      terminal.sort((a, b) => (a.completedAt || 0) - (b.completedAt || 0));
+      const dropCount = terminal.length - maxHistory;
+      for (let i = 0; i < dropCount; i++) this.tasks.delete(terminal[i].id);
     }
     if (this._closed) clearInterval(this._cleanup);
   }

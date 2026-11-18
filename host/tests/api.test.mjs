@@ -248,3 +248,74 @@ test("cleanup removes outputs older than the retention window", async () => {
     await stop(s);
   }
 });
+
+test("API enforces bounded sliding-window rateLimit on expensive POST routes", async () => {
+  const s = await makeServer({}, {
+    generateScriptOnly: async () => ({ success: true, script: SCRIPT }),
+  });
+  s.config.server.rateLimitMax = 2;
+  s.config.server.rateLimitWindowMs = 60000;
+  try {
+    const r1 = await json(await fetch(`${s.base}/api/v1/script/generate`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "one" }),
+    }));
+    const r2 = await json(await fetch(`${s.base}/api/v1/script/generate`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "two" }),
+    }));
+    const raw3 = await fetch(`${s.base}/api/v1/script/generate`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "three" }),
+    });
+    const r3 = await json(raw3);
+    assert.equal(r1.status, 200);
+    assert.equal(r2.status, 200);
+    assert.equal(r3.status, 429);
+    assert.equal(r3.body.code, "rate_limited");
+    assert.ok(Number(raw3.headers.get("retry-after")) >= 1);
+    // Health & GET endpoints remain unblocked
+    assert.equal((await fetch(`${s.base}/api/v1/health`)).status, 200);
+  } finally {
+    await stop(s);
+  }
+});
+
+test("API redacts internal 500 error details, credentials, and unauthenticated tts.baseUrl", async () => {
+  const output = tmpDir();
+  const cfg = configFor(output);
+  cfg.secrets.apiKey = "secret-token";
+  cfg.tts = { enabled: true, provider: "irodori", baseUrl: "http://user:pass@192.168.1.50:8088", voices: [] };
+  const queue = new TaskQueue({ ...cfg.queue, logger: quietLogger() });
+  const pipeline = {
+    async generateScriptOnly() { throw new Error("ENOENT C:\\private\\secret\\key.txt Bearer topsecret123"); },
+    async run() { throw new Error("boom"); },
+  };
+  const api = new ApiServer({ config: cfg, queue, pipeline, catalog: null, llm: null, logger: quietLogger() });
+  const a = await api.listen();
+  const base = `http://${a.address}:${a.port}`;
+  try {
+    const unauth = await json(await fetch(`${base}/api/v1/health`));
+    assert.equal(unauth.status, 200);
+    assert.equal(unauth.body.tts.baseUrl, undefined);
+
+    const auth = await json(await fetch(`${base}/api/v1/health`, {
+      headers: { authorization: "Bearer secret-token" },
+    }));
+    assert.equal(auth.status, 200);
+    assert.equal(auth.body.tts.baseUrl, "http://192.168.1.50:8088");
+
+    const errRes = await json(await fetch(`${base}/api/v1/script/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer secret-token" },
+      body: JSON.stringify({ prompt: "hi" }),
+    }));
+    assert.equal(errRes.status, 500);
+    assert.equal(errRes.body.code, "internal_error");
+    assert.equal(errRes.body.message, "internal server error");
+    assert.doesNotMatch(JSON.stringify(errRes.body), /private|secret|topsecret123/);
+  } finally {
+    await queue.close();
+    await api.close();
+  }
+});

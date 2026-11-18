@@ -380,6 +380,20 @@ const modelAssetsPresent = (site, modelId) => {
   }
 };
 
+const mapLimit = async (items, limit, fn) => {
+  if (!items.length) return [];
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const idx = next++;
+      results[idx] = await fn(items[idx], idx);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+};
+
 // Materializes any Live2D model, stage, BGM, SE, frame, post-effect, effect, still or rule transition
 // referenced by `script` that is missing from `site` (whether `cache/cloud-site` or a partial `resources/site`).
 export const materializeSiteStoryAssets = async ({
@@ -391,14 +405,16 @@ export const materializeSiteStoryAssets = async ({
   allowPrivateUrl = false,
   proxyUrl = "",
   timeoutMs = 20000,
+  signal = null,
   logger = console,
 } = {}) => {
   if (!site) throw new Error("materializeSiteStoryAssets: site directory is required");
   if (!script) return { ok: true, materialized: [] };
+  signal?.throwIfAborted?.();
 
   const cleanStorage = cleanBaseUrl(storageBaseUrl);
   const cleanAssets = cleanBaseUrl(assetBaseUrl);
-  const fetchOpts = { timeoutMs, allowPrivateUrl, proxyUrl };
+  const fetchOpts = { timeoutMs, allowPrivateUrl, proxyUrl, signal };
   const lang = language || script.language || "zh-Hans";
   const cc = loadCloudCatalog();
   const req = extractRequestedAssets(script);
@@ -407,33 +423,38 @@ export const materializeSiteStoryAssets = async ({
   const materialized = [];
   let poolDirty = false;
 
-  const getDonorManifest = async (advId) => {
+  const getDonorManifest = (advId) => {
     const key = String(advId);
     if (donorManifests.has(key)) return donorManifests.get(key);
-    try {
-      const bytes = await fetchRemoteBytes(`${cleanStorage}/stories/${key}.json`, fetchOpts);
-      const doc = JSON.parse(bytes.toString("utf8"));
-      donorManifests.set(key, doc);
-      return doc;
-    } catch {
-      donorManifests.set(key, null);
-      return null;
-    }
+    const p = (async () => {
+      try {
+        const bytes = await fetchRemoteBytes(`${cleanStorage}/stories/${key}.json`, fetchOpts);
+        return JSON.parse(bytes.toString("utf8"));
+      } catch (e) {
+        if (signal?.aborted) throw signal.reason || e;
+        return null;
+      }
+    })();
+    donorManifests.set(key, p);
+    return p;
   };
 
-  const mirrorManifestEntry = async (rel, entry, remoteStorage = cleanStorage) => {
+  const mirrorManifestEntry = async (_rel, entry, remoteStorage = cleanStorage) => {
     if (!entry) return;
-    for (const assetRel of collectEntryAssetRels(entry)) {
-      await ensureRemoteBlob(site, remoteStorage, assetRel, fetchOpts, cleanStorage);
-    }
+    const assetRels = collectEntryAssetRels(entry);
+    await mapLimit(assetRels, 4, (assetRel) => {
+      signal?.throwIfAborted?.();
+      return ensureRemoteBlob(site, remoteStorage, assetRel, fetchOpts, cleanStorage);
+    });
   };
 
   const pendingStages = {};
   const pendingAudio = {};
 
   // 1. Live2D Models
-  for (const modelId of req.models) {
-    if (modelAssetsPresent(site, modelId)) continue;
+  const missingModels = [...req.models].filter((modelId) => !modelAssetsPresent(site, modelId));
+  await mapLimit(missingModels, 4, async (modelId) => {
+    signal?.throwIfAborted?.();
     const didMaterialize = await withAssetLock(`model:${path.resolve(site)}:${modelId}`, async () => {
       if (modelAssetsPresent(site, modelId)) return false;
       const meta = cc.modelMap.get(modelId);
@@ -444,20 +465,22 @@ export const materializeSiteStoryAssets = async ({
       let mm = null;
       let usedRemote = cleanStorage;
       for (const c of candidates) {
+        signal?.throwIfAborted?.();
         try {
           const bytes = await fetchRemoteBytes(`${cleanStorage}/${c.manifest}`, fetchOpts);
           mm = JSON.parse(bytes.toString("utf8"));
           usedRemote = c.remoteBase;
           break;
-        } catch { /* try fallback region */ }
+        } catch (e) {
+          if (signal?.aborted) throw signal.reason || e;
+          /* try fallback region */
+        }
       }
       if (!mm?.files) {
         logger.warn?.(`cloud-site: could not fetch model manifest for ${modelId}`);
         return false;
       }
-      for (const entry of Object.values(mm.files)) {
-        await mirrorManifestEntry(modelId, entry, usedRemote);
-      }
+      await mapLimit(Object.values(mm.files), 4, (entry) => mirrorManifestEntry(modelId, entry, usedRemote));
       writeSafeRelFile(site, `models/${modelId}.json`, Buffer.from(JSON.stringify(mm, null, 2)));
       await withSiteIndexLock(site, () => {
         const modelsIndexPath = path.join(site, "models.json");
@@ -480,20 +503,20 @@ export const materializeSiteStoryAssets = async ({
       return true;
     });
     if (didMaterialize) materialized.push(modelId);
-  }
+  });
 
   // 2. Stages
-  for (const stageId of req.stages) {
-    if (localStages.has(stageId)) continue;
+  const missingStages = [...req.stages].filter((stageId) => !localStages.has(stageId));
+  await mapLimit(missingStages, 4, async (stageId) => {
+    signal?.throwIfAborted?.();
     const stageEntry = await withAssetLock(`stage:${path.resolve(site)}:${stageId}`, async () => {
       const stageMeta = cc.stageMap.get(stageId);
       if (stageMeta?.donorAdvId != null) {
         const dm = await getDonorManifest(stageMeta.donorAdvId);
         if (dm?.files?.["scene.json"]) {
           try {
-            for (const assetRel of collectEntryAssetRels(dm.files["scene.json"])) {
-              await ensureRemoteBlob(site, cleanStorage, assetRel, fetchOpts);
-            }
+            await mapLimit(collectEntryAssetRels(dm.files["scene.json"]), 4,
+              (assetRel) => ensureRemoteBlob(site, cleanStorage, assetRel, fetchOpts));
             const sc = readSceneStages(site, dm);
             const stageKey = Object.keys(sc.stages || {}).find((k) => k === stageId || k.endsWith(`/${stageId}`));
             if (stageKey && sc.stages[stageKey]) {
@@ -511,24 +534,17 @@ export const materializeSiteStoryAssets = async ({
                 }
               }
               const texFiles = textureEntries(dm, stageId);
-              for (const [tRel, tEntry] of Object.entries(texFiles)) {
-                await mirrorManifestEntry(tRel, tEntry);
-              }
+              await mapLimit(Object.entries(texFiles), 4, ([tRel, tEntry]) => mirrorManifestEntry(tRel, tEntry));
               if (dm.files["shaders/shaders.json"]) {
-                for (const ar of collectEntryAssetRels(dm.files["shaders/shaders.json"])) {
-                  await ensureRemoteBlob(site, cleanStorage, ar, fetchOpts);
-                }
+                await mapLimit(collectEntryAssetRels(dm.files["shaders/shaders.json"]), 4,
+                  (ar) => ensureRemoteBlob(site, cleanStorage, ar, fetchOpts));
               }
               const donorShaders = readShadersMap(site, dm);
               const deps = collectDeps(prefab, dm.files || {}, donorShaders);
-              for (const [dRel, dEntry] of Object.entries(deps.files || {})) {
-                await mirrorManifestEntry(dRel, dEntry);
-              }
+              await mapLimit(Object.entries(deps.files || {}), 4, ([dRel, dEntry]) => mirrorManifestEntry(dRel, dEntry));
               const stageShaderEntries = [];
               for (const [sName, sInfo] of deps.shaders || []) {
-                for (const [sfRel, sfEntry] of Object.entries(sInfo.files || {})) {
-                  await mirrorManifestEntry(sfRel, sfEntry);
-                }
+                await mapLimit(Object.entries(sInfo.files || {}), 4, ([sfRel, sfEntry]) => mirrorManifestEntry(sfRel, sfEntry));
                 stageShaderEntries.push([sName, sInfo]);
               }
               return {
@@ -539,6 +555,7 @@ export const materializeSiteStoryAssets = async ({
               };
             }
           } catch (e) {
+            if (signal?.aborted) throw signal.reason || e;
             logger.warn?.(`cloud-site: donor stage ${stageId} fallback (${e.message})`);
           }
         }
@@ -557,6 +574,7 @@ export const materializeSiteStoryAssets = async ({
           files: { [texRel]: texEntry },
         };
       } catch (e) {
+        if (signal?.aborted) throw signal.reason || e;
         logger.warn?.(`cloud-site: could not materialize stage ${stageId}: ${e.message}`);
         return null;
       }
@@ -567,15 +585,15 @@ export const materializeSiteStoryAssets = async ({
       materialized.push(stageId);
       poolDirty = true;
     }
-  }
+  });
 
   // 3. BGM & SE Cues
   const audioTargets = [
     ...[...req.music].map((cue) => ({ cue, isBgm: true, meta: cc.musicMap.get(cue), sheet: cc.musicMap.get(cue)?.sheet || cue })),
     ...[...req.sounds].map((cue) => ({ cue, isBgm: false, meta: cc.soundMap.get(cue), sheet: cc.soundMap.get(cue)?.sheet || "sound_se_adv" })),
-  ];
-  for (const { cue, isBgm, meta, sheet } of audioTargets) {
-    if (localCues.has(cue)) continue;
+  ].filter(({ cue }) => !localCues.has(cue));
+  await mapLimit(audioTargets, 4, async ({ cue, isBgm, meta, sheet }) => {
+    signal?.throwIfAborted?.();
     const audioEntry = await withAssetLock(`audio:${path.resolve(site)}:${cue}`, async () => {
       if (meta?.donorAdvId != null) {
         const dm = await getDonorManifest(meta.donorAdvId);
@@ -588,10 +606,10 @@ export const materializeSiteStoryAssets = async ({
               await mirrorManifestEntry(cuesRel, dm.files[cuesRel]);
               const cuesDoc = readEntry(site, dm.files[cuesRel]);
               const filesObj = {};
-              for (const [aRel, aEntry] of matchingAudio) {
+              await mapLimit(matchingAudio, 4, async ([aRel, aEntry]) => {
                 await mirrorManifestEntry(aRel, aEntry);
                 filesObj[aRel] = aEntry;
-              }
+              });
               let row = null, cuesheet = null;
               if (dm.files["episode.json"]) {
                 await mirrorManifestEntry("episode.json", dm.files["episode.json"]);
@@ -615,6 +633,7 @@ export const materializeSiteStoryAssets = async ({
               };
             }
           } catch (e) {
+            if (signal?.aborted) throw signal.reason || e;
             logger.warn?.(`cloud-site: donor audio ${cue} fallback (${e.message})`);
           }
         }
@@ -632,6 +651,7 @@ export const materializeSiteStoryAssets = async ({
           files: { [`audio/${sheet}/${cue}.m4a`]: m4aEntry },
         };
       } catch (e) {
+        if (signal?.aborted) throw signal.reason || e;
         logger.warn?.(`cloud-site: could not materialize audio ${cue}: ${e.message}`);
         return null;
       }
@@ -642,7 +662,7 @@ export const materializeSiteStoryAssets = async ({
       materialized.push(cue);
       poolDirty = true;
     }
-  }
+  });
 
   if (poolDirty) {
     await withSiteIndexLock(site, () => {
@@ -699,6 +719,7 @@ export const materializeSiteStoryAssets = async ({
       timeoutMs,
       allowPrivateUrl,
       proxyUrl,
+      signal,
     }));
     if (fxRes?.cached?.length) materialized.push(...fxRes.cached);
   }

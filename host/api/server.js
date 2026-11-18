@@ -23,6 +23,28 @@ const human = (n) => {
   return `${(n / 1024 ** 3).toFixed(1)} GB`;
 };
 
+const MAX_RATE_LIMIT_BUCKETS = 4096;
+
+const redactUrl = (raw) => {
+  const s = String(raw || "");
+  if (!s) return "";
+  try {
+    const u = new URL(s);
+    if (u.username || u.password) {
+      u.username = "";
+      u.password = "";
+    }
+    return u.toString().replace(/\/$/, "");
+  } catch {
+    return s.replace(/(https?:\/\/)[^/@\s]+@/gi, "$1");
+  }
+};
+
+const redactSensitive = (text) => String(text || "")
+  .replace(/(https?:\/\/)[^/@\s]+@/gi, "$1[redacted]@")
+  .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[redacted]")
+  .replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+/gi, "$1[redacted]");
+
 const withTimeout = (promise, ms, onTimeout) => new Promise((resolve, reject) => {
   const timer = setTimeout(() => {
     try { onTimeout?.(); } catch { /* best effort */ }
@@ -41,6 +63,7 @@ export class ApiServer {
     this.logger = logger;
     this.startedAt = Date.now();
     this.cleanupStats = { lastRun: null, removed: 0, freedBytes: 0, totalRuns: 0 };
+    this._rateLimitBuckets = new Map();
     this.server = http.createServer((req, res) => this._handle(req, res).catch((e) => this._fail(res, e)));
     this.cleanupTimer = setInterval(() => this.cleanup().catch((e) => this.logger.warn?.(`cleanup: ${e.message}`)),
       config.queue.cleanupIntervalMs);
@@ -61,6 +84,7 @@ export class ApiServer {
 
   close() {
     clearInterval(this.cleanupTimer);
+    this._rateLimitBuckets.clear();
     return new Promise((resolve) => { this.server.closeAllConnections?.(); this.server.close(() => resolve()); });
   }
 
@@ -86,6 +110,45 @@ export class ApiServer {
     return crypto.timingSafeEqual(a, b);
   }
 
+  _checkRateLimit(req, res) {
+    const rawMax = this.config.server?.rateLimitMax;
+    const max = Number.isFinite(Number(rawMax)) ? Math.max(0, Math.round(Number(rawMax))) : 60;
+    if (max <= 0) return true;
+    const windowMs = Math.max(1000, Number(this.config.server?.rateLimitWindowMs) || 60000);
+    const now = Date.now();
+    const cutoff = now - windowMs;
+    const key = String(req.socket?.remoteAddress || "unknown");
+
+    let hits = this._rateLimitBuckets.get(key);
+    if (hits) {
+      while (hits.length && hits[0] < cutoff) hits.shift();
+      // Refresh LRU insertion order.
+      this._rateLimitBuckets.delete(key);
+    } else {
+      hits = [];
+    }
+    if (hits.length >= max) {
+      this._rateLimitBuckets.set(key, hits);
+      const retryAfterSec = Math.max(1, Math.ceil((hits[0] + windowMs - now) / 1000));
+      sendJson(res, 429, { success: false, code: "rate_limited", message: "too many requests" },
+        { "retry-after": String(retryAfterSec) });
+      return false;
+    }
+    hits.push(now);
+    this._rateLimitBuckets.set(key, hits);
+    if (this._rateLimitBuckets.size > MAX_RATE_LIMIT_BUCKETS) {
+      for (const [k, arr] of this._rateLimitBuckets) {
+        if (!arr.length || arr[arr.length - 1] < cutoff) this._rateLimitBuckets.delete(k);
+        if (this._rateLimitBuckets.size <= MAX_RATE_LIMIT_BUCKETS) break;
+      }
+      while (this._rateLimitBuckets.size > MAX_RATE_LIMIT_BUCKETS) {
+        const oldestKey = this._rateLimitBuckets.keys().next().value;
+        this._rateLimitBuckets.delete(oldestKey);
+      }
+    }
+    return true;
+  }
+
   async _handle(req, res) {
     this._cors(req, res);
     if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
@@ -99,8 +162,14 @@ export class ApiServer {
     if (req.method === "GET" && p === "/api/v1/cleanup/stats") return this._cleanupStats(res);
     if (req.method === "POST" && p === "/api/v1/cleanup") return this._cleanup(res);
     if (req.method === "GET" && p.startsWith("/api/v1/download/")) return this._download(res, p.slice("/api/v1/download/".length));
-    if (req.method === "POST" && (p === "/api/v1/generate" || p === "/api/v1/render")) return this._generate(req, res);
-    if (req.method === "POST" && p === "/api/v1/script/generate") return this._generateScript(req, res);
+    if (req.method === "POST" && (p === "/api/v1/generate" || p === "/api/v1/render")) {
+      if (!this._checkRateLimit(req, res)) return;
+      return this._generate(req, res);
+    }
+    if (req.method === "POST" && p === "/api/v1/script/generate") {
+      if (!this._checkRateLimit(req, res)) return;
+      return this._generateScript(req, res);
+    }
     if (req.method === "POST" && p === "/api/v1/script/check") return this._check(req, res);
     const taskMatch = p.match(/^\/api\/v1\/tasks\/([A-Za-z0-9._-]+)(\/status)?$/);
     if (req.method === "GET" && taskMatch) {
@@ -147,7 +216,8 @@ export class ApiServer {
              concurrency: this.llm?.concurrency ?? this.config.llm.concurrency ?? 1,
              active: this.llm?.activeRequests ?? 0, waiting: this.llm?.waitingRequests ?? 0 },
       tts: {
-        enabled: this.config.tts.enabled, provider: this.config.tts.provider, baseUrl: this.config.tts.baseUrl,
+        enabled: this.config.tts.enabled, provider: this.config.tts.provider,
+        ...(authed || !this.config.secrets.apiKey ? { baseUrl: redactUrl(this.config.tts.baseUrl) } : {}),
         voices: this.config.voiceSummary?.count || 0,
         defaultVoice: !!this.config.voiceSummary?.defaultVoice,
         required: !!this.config.tts.required, emotion: !!this.config.tts.emotion?.enabled,
@@ -189,7 +259,8 @@ export class ApiServer {
     // httpx request on timeout) goes away, stop waiting and free the slot instead of generating for a dead socket.
     const controller = new AbortController();
     const onClose = () => { if (!res.writableEnded) controller.abort(new Error("client disconnected")); };
-    res.on("close", onClose);
+    req.once("aborted", onClose);
+    res.once("close", onClose);
     try {
       const result = await this.pipeline.generateScriptOnly(body, { signal: controller.signal });
       sendJson(res, 200, result);
@@ -198,6 +269,7 @@ export class ApiServer {
       if (e instanceof PipelineError) throw new HttpError(e.status, e.message, { code: e.code, details: e.details });
       throw e;
     } finally {
+      req.off("aborted", onClose);
       res.off("close", onClose);
     }
   }
@@ -224,7 +296,8 @@ export class ApiServer {
     }
     // a client that disconnects before the answer cancels its render instead of leaving it running
     const onClose = () => { if (!res.writableEnded) this.queue.cancel(task.id, "client disconnected"); };
-    res.on("close", onClose);
+    req.once("aborted", onClose);
+    res.once("close", onClose);
     try {
       const result = await withTimeout(task.promise, timeoutMs, () => this.queue.cancel(task.id, "request timed out"));
       return sendJson(res, 200, { success: true, message: "Video exported successfully", ...result });
@@ -235,7 +308,8 @@ export class ApiServer {
       if (e instanceof PipelineError) throw new HttpError(e.status, e.message, { code: e.code, details: e.details });
       throw e;
     } finally {
-      res.removeListener("close", onClose);
+      req.off("aborted", onClose);
+      res.off("close", onClose);
     }
   }
 
@@ -328,7 +402,18 @@ export class ApiServer {
         "cache-control": "no-cache",
         "x-content-type-options": "nosniff",
       });
-      fs.createReadStream(realTarget).pipe(res);
+      const stream = fs.createReadStream(realTarget);
+      const cleanup = () => {
+        res.off("close", cleanup);
+        if (!stream.destroyed) stream.destroy();
+      };
+      res.once("close", cleanup);
+      stream.once("error", () => {
+        res.off("close", cleanup);
+        if (!res.headersSent) sendJson(res, 500, { error: "internal server error" });
+        else res.destroy();
+      });
+      stream.pipe(res);
     } catch {
       return sendJson(res, 404, { error: "File not found" });
     }
@@ -362,10 +447,18 @@ export class ApiServer {
 
   _fail(res, e) {
     const status = e instanceof HttpError ? e.status : e instanceof QueueFullError ? 429 : 500;
+    const publicMessage = status >= 500 && !(e instanceof HttpError)
+      ? "internal server error"
+      : redactSensitive(e.message || String(e));
+    const code = e.code || (status >= 500 ? "internal_error" : undefined);
     if (!res.headersSent) {
-      sendJson(res, status, { success: false, message: e.message || String(e), ...(e.details ? { details: e.details } : {}),
-        ...(e.code ? { code: e.code } : {}) });
+      sendJson(res, status, {
+        success: false,
+        message: publicMessage,
+        ...(e.details ? { details: e.details } : {}),
+        ...(code ? { code } : {}),
+      });
     } else res.destroy();
-    if (status >= 500) this.logger.error?.(e.stack || e.message);
+    if (status >= 500) this.logger.error?.(redactSensitive(e.stack || e.message));
   }
 }

@@ -1266,7 +1266,11 @@ const readStreamBuffer = (res) => new Promise((resolve, reject) => {
   res.on("error", reject);
 });
 
-const requestViaHttpProxy = (targetUrl, proxyUrl, timeoutMs) => new Promise((resolve, reject) => {
+const requestViaHttpProxy = (targetUrl, proxyUrl, timeoutMs, signal = null) => new Promise((resolve, reject) => {
+  if (signal?.aborted) {
+    reject(signal.reason || new Error("aborted"));
+    return;
+  }
   const target = new URL(targetUrl);
   const proxy = new URL(proxyUrl);
   const targetPort = Number(target.port) || (target.protocol === "https:" ? 443 : 80);
@@ -1275,12 +1279,30 @@ const requestViaHttpProxy = (targetUrl, proxyUrl, timeoutMs) => new Promise((res
     ? `Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString("base64")}`
     : "";
   let settled = false;
+  let activeReq = null;
+  let activeInner = null;
+  let activeSocket = null;
+  const cleanup = () => {
+    clearTimeout(timer);
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+  };
   const fail = (err) => {
     if (settled) return;
     settled = true;
-    clearTimeout(timer);
+    cleanup();
+    try { activeReq?.destroy(); } catch { /* ignore */ }
+    try { activeInner?.destroy(); } catch { /* ignore */ }
+    try { activeSocket?.destroy(); } catch { /* ignore */ }
     reject(err);
   };
+  const finish = (val) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    resolve(val);
+  };
+  const onAbort = () => fail(signal.reason || new Error("aborted"));
+  signal?.addEventListener("abort", onAbort, { once: true });
   const timer = setTimeout(() => fail(new Error(`proxy request timed out (${timeoutMs}ms)`)), timeoutMs);
 
   if (target.protocol === "http:" && proxy.protocol === "http:") {
@@ -1296,11 +1318,10 @@ const requestViaHttpProxy = (targetUrl, proxyUrl, timeoutMs) => new Promise((res
     }, async (res) => {
       try {
         const body = await readStreamBuffer(res);
-        settled = true;
-        clearTimeout(timer);
-        resolve({ status: res.statusCode || 0, location: res.headers.location || "", body });
+        finish({ status: res.statusCode || 0, location: res.headers.location || "", body });
       } catch (e) { fail(e); }
     });
+    activeReq = req;
     req.on("error", fail);
     req.end();
     return;
@@ -1315,7 +1336,13 @@ const requestViaHttpProxy = (targetUrl, proxyUrl, timeoutMs) => new Promise((res
     path: `${target.hostname}:${targetPort}`,
     headers: connectHeaders,
   });
+  activeReq = connectReq;
   connectReq.on("connect", (res, socket) => {
+    activeSocket = socket;
+    if (settled) {
+      socket.destroy();
+      return;
+    }
     if (res.statusCode !== 200) {
       socket.destroy();
       fail(new Error(`proxy CONNECT failed (${res.statusCode})`));
@@ -1324,6 +1351,7 @@ const requestViaHttpProxy = (targetUrl, proxyUrl, timeoutMs) => new Promise((res
     const tlsSocket = target.protocol === "https:"
       ? tls.connect({ socket, servername: target.hostname })
       : socket;
+    activeSocket = tlsSocket;
     const reqOpts = {
       createConnection: () => tlsSocket,
       host: target.hostname,
@@ -1335,11 +1363,10 @@ const requestViaHttpProxy = (targetUrl, proxyUrl, timeoutMs) => new Promise((res
     const inner = (target.protocol === "https:" ? https : http).request(reqOpts, async (innerRes) => {
       try {
         const body = await readStreamBuffer(innerRes);
-        settled = true;
-        clearTimeout(timer);
-        resolve({ status: innerRes.statusCode || 0, location: innerRes.headers.location || "", body });
+        finish({ status: innerRes.statusCode || 0, location: innerRes.headers.location || "", body });
       } catch (e) { fail(e); }
     });
+    activeInner = inner;
     inner.on("error", fail);
     inner.end();
   });
@@ -1378,19 +1405,24 @@ export const assertOfficialRemoteUrl = async (value, { allowPrivateUrl = false, 
   return u;
 };
 
-export const fetchRemoteBytes = async (url, { timeoutMs = 15000, allowPrivateUrl = false, proxyUrl = "" } = {}) => {
+export const fetchRemoteBytes = async (url, { timeoutMs = 15000, allowPrivateUrl = false, proxyUrl = "",
+                                                 signal = null } = {}) => {
   let current = url;
   for (let hops = 0; hops < 5; hops++) {
+    signal?.throwIfAborted?.();
     const proxy = proxyUrl || selectProxyUrl(current);
     await assertOfficialRemoteUrl(current, { allowPrivateUrl, proxy });
+    signal?.throwIfAborted?.();
     let status = 0, location = "", body = null;
     if (proxy) {
-      const res = await requestViaHttpProxy(current, proxy, timeoutMs);
+      const res = await requestViaHttpProxy(current, proxy, timeoutMs, signal);
       status = res.status;
       location = res.location;
       body = res.body;
     } else {
-      const res = await fetch(current, { redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
+      const timeoutSignal = AbortSignal.timeout(timeoutMs);
+      const reqSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      const res = await fetch(current, { redirect: "manual", signal: reqSignal });
       status = res.status;
       location = res.headers.get("location") || "";
       if (status >= 200 && status < 300) body = Buffer.from(await res.arrayBuffer());
@@ -1495,6 +1527,7 @@ export const ensureOfficialAssetBundles = async ({
   timeoutMs = 15000,
   allowPrivateUrl = false,
   proxyUrl = "",
+  signal = null,
 } = {}) => {
   if (!site) throw new Error("ensureOfficialAssetBundles: site directory is required");
   const cleanBase = String(baseUrl || OFFICIAL_BUNDLE_BASE_URL).replace(/\/+$/, "");
@@ -1560,7 +1593,7 @@ export const ensureOfficialAssetBundles = async ({
   const shadersList = readBundleJson("shaders/shaders.json", []);
   const shaderMap = new Map(Array.isArray(shadersList) ? shadersList.filter((r) => r?.name).map((r) => [r.name, r]) : []);
 
-  const fetchOpts = { timeoutMs, allowPrivateUrl, proxyUrl };
+  const fetchOpts = { timeoutMs, allowPrivateUrl, proxyUrl, signal };
   const remoteRawCache = new Map();
   const cached = [];
   const errors = [];
@@ -1747,6 +1780,7 @@ export const ensureOfficialAssetBundles = async ({
   let scannedIndex = false;
 
   for (let i = 0; i < queue.length && remainingCount() > 0; i++) {
+    signal?.throwIfAborted?.();
     const rel = queue[i];
     if (!isSafeRelPath(rel) || seenManifests.has(rel)) continue;
     seenManifests.add(rel);
@@ -1754,6 +1788,7 @@ export const ensureOfficialAssetBundles = async ({
       const m = JSON.parse((await fetchRemoteBytes(`${cleanBase}/${rel}`, fetchOpts)).toString("utf8"));
       await processManifest(m);
     } catch (e) {
+      if (signal?.aborted) throw signal.reason || e;
       errors.push(`${rel}: ${e.message}`);
     }
     if (i === queue.length - 1 && remainingCount() > 0 && scanIndex && !scannedIndex) {
@@ -1766,6 +1801,7 @@ export const ensureOfficialAssetBundles = async ({
           if (!seenManifests.has(item.manifest)) queue.push(item.manifest);
         }
       } catch (e) {
+        if (signal?.aborted) throw signal.reason || e;
         errors.push(`stories.json: ${e.message}`);
       }
     }

@@ -213,3 +213,15 @@ test("video.captureMode defaults to auto, accepts webcodecs/pipe, and warns on u
   assert.equal(badCfg.video.captureMode, "auto");
   assert.ok(badCfg.issues.warnings.some((w) => w.path === "video.captureMode"));
 });
+
+test("server rateLimit defaults, env overrides, and bounds are enforced", async () => {
+  const def = loadConfig({ file: path.join(tmpDir(), "missing.yaml") });
+  assert.equal(def.server.rateLimitWindowMs, 60000);
+  assert.equal(def.server.rateLimitMax, 60);
+
+  await withEnv({ OURNOTES_RATE_LIMIT_WINDOW_MS: "100", OURNOTES_RATE_LIMIT_MAX: "0" }, async () => {
+    const cfg = loadConfig({ file: path.join(tmpDir(), "missing.yaml") });
+    assert.equal(cfg.server.rateLimitWindowMs, 1000);
+    assert.equal(cfg.server.rateLimitMax, 0);
+  });
+});

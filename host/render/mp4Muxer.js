@@ -32,9 +32,24 @@ const box = (type, ...payloads) => {
 const fullBox = (type, version, flags, ...payloads) =>
   box(type, new Uint8Array([version & 0xff, (flags >>> 16) & 0xff, (flags >>> 8) & 0xff, flags & 0xff]), ...payloads);
 
-const mapColorPrimaries = (p) => (p === "bt709" ? 1 : p === "bt470bg" ? 5 : p === "smpte170m" ? 6 : 1);
-const mapColorTransfer = (t) => (t === "bt709" ? 1 : t === "iec61966-2-1" ? 13 : t === "smpte170m" ? 6 : 1);
-const mapColorMatrix = (m) => (m === "bt709" ? 1 : m === "bt470bg" ? 5 : m === "smpte170m" ? 6 : 1);
+const COLOR_PRIMARIES = Object.freeze({ bt709: 1, bt470bg: 5, smpte170m: 6, bt2020: 9, smpte432: 12 });
+const COLOR_TRANSFER = Object.freeze({ bt709: 1, smpte170m: 6, linear: 8, "iec61966-2-1": 13, pq: 16, hlg: 18 });
+const COLOR_MATRIX = Object.freeze({ rgb: 0, bt709: 1, bt470bg: 5, smpte170m: 6, bt2020: 9 });
+
+const mapColorPrimaries = (p) => COLOR_PRIMARIES[p] ?? 1;
+const mapColorTransfer = (t) => COLOR_TRANSFER[t] ?? 1;
+const mapColorMatrix = (m) => COLOR_MATRIX[m] ?? 1;
+
+const readColorSpace = (cs) => {
+  if (!cs || typeof cs !== "object") return null;
+  const out = {
+    primaries: cs.primaries ?? null,
+    transfer: cs.transfer ?? null,
+    matrix: cs.matrix ?? null,
+    fullRange: typeof cs.fullRange === "boolean" ? cs.fullRange : null,
+  };
+  return (out.primaries || out.transfer || out.matrix || out.fullRange !== null) ? out : null;
+};
 
 export class StreamingMp4Muxer {
   constructor({ width, height, fps = 30 }) {
@@ -79,8 +94,16 @@ export class StreamingMp4Muxer {
         ? new Uint8Array(desc)
         : new Uint8Array(ArrayBuffer.isView(desc) ? desc.buffer.slice(desc.byteOffset, desc.byteOffset + desc.byteLength) : desc);
     }
-    if (decoderConfig?.colorSpace && !this.colorSpace) {
-      this.colorSpace = { ...decoderConfig.colorSpace };
+    if (decoderConfig?.colorSpace) {
+      const next = readColorSpace(decoderConfig.colorSpace);
+      if (next) {
+        this.colorSpace = {
+          primaries: this.colorSpace?.primaries || next.primaries,
+          transfer: this.colorSpace?.transfer || next.transfer,
+          matrix: this.colorSpace?.matrix || next.matrix,
+          fullRange: this.colorSpace?.fullRange ?? next.fullRange,
+        };
+      }
     }
     const offset = this.dataStartOffset + this.mdatDataBytes;
     this.samples.push({ size: bytes.length, isKey: !!isKey, offset });
@@ -153,7 +176,7 @@ export class StreamingMp4Muxer {
     const primaries = mapColorPrimaries(cs.primaries);
     const transfer = mapColorTransfer(cs.transfer);
     const matrix = mapColorMatrix(cs.matrix);
-    const fullRange = cs.fullRange ? 0x80 : 0x00;
+    const fullRange = cs.fullRange === true ? 0x80 : 0x00;
     const colr = box("colr", [
       ...fourcc("nclx"),
       ...u16be(primaries),

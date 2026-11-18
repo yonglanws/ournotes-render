@@ -17,7 +17,7 @@ import {
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const DEFAULTS = {
-  server: { port: 9881, host: "127.0.0.1", cors: false, corsOrigins: [] },
+  server: { port: 9881, host: "127.0.0.1", cors: false, corsOrigins: [], rateLimitWindowMs: 60000, rateLimitMax: 60 },
   security: { apiKeyEnv: "OURNOTES_API_KEY", allowPrivateServiceEndpoints: false },
   paths: { site: "", siteFormat: "", output: "output", cache: "cache" },
   story: { base: "", language: "", font: "sans", title: "", targetMinutes: 3, maxModels: 24, maxLines: 120,
@@ -237,6 +237,10 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   const set = (obj, key, value) => { if (value !== undefined) obj[key] = value; };
   set(cfg.server, "port", num(env("OURNOTES_PORT"), undefined));
   set(cfg.server, "host", env("OURNOTES_HOST"));
+  if (env("OURNOTES_RATE_LIMIT_WINDOW_MS") !== undefined)
+    cfg.server.rateLimitWindowMs = num(env("OURNOTES_RATE_LIMIT_WINDOW_MS"), cfg.server.rateLimitWindowMs);
+  if (env("OURNOTES_RATE_LIMIT_MAX") !== undefined)
+    cfg.server.rateLimitMax = num(env("OURNOTES_RATE_LIMIT_MAX"), cfg.server.rateLimitMax);
   set(cfg.paths, "site", env("OURNOTES_SITE"));
   set(cfg.paths, "siteFormat", env("OURNOTES_SITE_FORMAT"));
   set(cfg.paths, "output", env("OURNOTES_OUTPUT"));
@@ -292,6 +296,8 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
     if (diskVideo.height === undefined || usesStandardDefaults) cfg.video.height = presetSize.height;
   }
   cfg.server.port = Math.max(1, Math.min(65535, Math.round(num(cfg.server.port, 9881))));
+  cfg.server.rateLimitWindowMs = Math.max(1000, Math.min(3600000, Math.round(num(cfg.server.rateLimitWindowMs, 60000))));
+  cfg.server.rateLimitMax = Math.max(0, Math.min(10000, Math.round(num(cfg.server.rateLimitMax, 60))));
   cfg.video.width = Math.max(320, Math.min(7680, Math.round(num(cfg.video.width, presetSize.width))));
   cfg.video.height = Math.max(180, Math.min(4320, Math.round(num(cfg.video.height, presetSize.height))));
   cfg.video.fps = Math.max(1, Math.min(30, Math.round(num(cfg.video.fps, 30))));

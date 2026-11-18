@@ -70,6 +70,24 @@ const targetMinutesOf = (request, config, mode) => {
   return Math.max(0.5, Math.min(10, value ?? 3));
 };
 
+const createLinkedAbort = (parentSignal) => {
+  const ac = new AbortController();
+  if (!parentSignal) {
+    return { signal: ac.signal, abort: (r) => ac.abort(r), cleanup: () => {} };
+  }
+  if (parentSignal.aborted) {
+    ac.abort(parentSignal.reason || new Error("aborted"));
+    return { signal: ac.signal, abort: (r) => ac.abort(r), cleanup: () => {} };
+  }
+  const onAbort = () => ac.abort(parentSignal.reason || new Error("aborted"));
+  parentSignal.addEventListener("abort", onAbort, { once: true });
+  return {
+    signal: ac.signal,
+    abort: (r) => ac.abort(r),
+    cleanup: () => parentSignal.removeEventListener("abort", onAbort),
+  };
+};
+
 export class Pipeline {
   constructor({ config, catalog, llm, tts, renderer, logger }) {
     this.config = config;
@@ -87,6 +105,43 @@ export class Pipeline {
 
   // One writer at a time for the shared site index. The chain keeps running after a failed job (its error still
   // reaches the caller); only the next writer waits for this one to settle.
+  _startWarm({ site, siteEngine, signal }) {
+    if (typeof this.renderer?.warm !== "function") return null;
+    try {
+      return this.renderer.warm({ site, siteEngine, signal });
+    } catch (e) {
+      this.logger.debug?.(`render warm skipped (${e.message})`);
+      return null;
+    }
+  }
+
+  async _synthesizeVoices({ script, catalog, req, signal, progress }) {
+    const ttsConfig = { ...this.config.tts, enabled: this.config.tts.enabled && req.tts,
+                        translateForTts: this.config.llm.translateForTts };
+    const lines = speakingLines(script, catalog);
+    progress("synthesizing", 0.25, "合成配音");
+    let voices = new Map();
+    if (ttsConfig.enabled && this.tts) {
+      voices = await synthesizeStory({
+        script, catalog, config: ttsConfig, client: this.tts.client, voiceBook: this.tts.voiceBook, llm: this.llm,
+        signal, logger: this.logger, onProgress: (p, message) => progress("synthesizing", 0.25 + p * 0.3, message),
+      });
+    } else if (ttsConfig.enabled) {
+      this.logger.warn?.("TTS is enabled but not available; rendering without voices");
+    }
+    const voiceReport = voices.report || null;
+    const ttsResult = {
+      enabled: ttsConfig.enabled, lines: lines.length, voiced: voices.size,
+      ...(voiceReport ? {
+        voices: voiceReport.voices, fallbackLines: voiceReport.fallbackLines, silentLines: voiceReport.silentLines,
+        failedLines: voiceReport.failedLines, nonJapaneseLines: voiceReport.nonJapaneseLines,
+        fallbackSpeakers: voiceReport.fallbackSpeakers, silentSpeakers: voiceReport.silentSpeakers,
+        failedSpeakers: voiceReport.failedSpeakers, nonJapaneseSpeakers: voiceReport.nonJapaneseSpeakers,
+      } : {}),
+    };
+    return { voices, ttsResult, linesCount: lines.length };
+  }
+
   _withSiteWrite(fn) {
     const run = this._siteWrite.then(fn, fn);
     this._siteWrite = run.catch(() => {});
@@ -140,125 +195,127 @@ export class Pipeline {
     if (!req.prompt && !req.script) throw new PipelineError("prompt or script is required", { status: 400, code: "bad_request" });
 
     const catalog = await this.catalog.catalog({ manifest: req.base });
+    const siteDir = this.catalog.dir || this.config.paths.siteFormat;
     progress("writing", 0.03, req.script ? "校验剧本" : "AI 编写剧本");
     let script, doc, warnings = [];
-    if (req.script) {
-      const prepared = prepareScript({ doc: req.script, catalog, request: req, config: this.config, logger: this.logger });
-      if (prepared.errors?.length)
-        throw new PipelineError("the script has errors", { status: 400, code: "invalid_script", details: prepared.errors });
-      script = prepared.script;
-      doc = prepared.doc;
-      warnings = prepared.warnings || [];
-    } else {
-      if (!this.llm?.available) throw new PipelineError("LLM is not configured (llm.enabled / llm.model / llm key)",
-        { status: 503, code: "llm_missing" });
-      const out = await generateScript({ llm: this.llm, catalog, request: req, config: this.config, logger: this.logger,
-        signal, onProgress: (phase, p, message) => progress(phase, 0.03 + p * 0.2, message) });
-      script = out.script;
-      doc = out.doc;
-      warnings = out.warnings || [];
-    }
+    let warm = null;
+    try {
+      if (req.script) {
+        const prepared = prepareScript({ doc: req.script, catalog, request: req, config: this.config, logger: this.logger });
+        if (prepared.errors?.length)
+          throw new PipelineError("the script has errors", { status: 400, code: "invalid_script", details: prepared.errors });
+        script = prepared.script;
+        doc = prepared.doc;
+        warnings = prepared.warnings || [];
+        warm = this._startWarm({ site: siteDir, siteEngine: true, signal });
+      } else {
+        if (!this.llm?.available) throw new PipelineError("LLM is not configured (llm.enabled / llm.model / llm key)",
+          { status: 503, code: "llm_missing" });
+        warm = this._startWarm({ site: siteDir, siteEngine: true, signal });
+        const out = await generateScript({ llm: this.llm, catalog, request: req, config: this.config, logger: this.logger,
+          signal, onProgress: (phase, p, message) => progress(phase, 0.03 + p * 0.2, message) });
+        script = out.script;
+        doc = out.doc;
+        warnings = out.warnings || [];
+      }
 
-    const ttsConfig = { ...this.config.tts, enabled: this.config.tts.enabled && req.tts,
-                        translateForTts: this.config.llm.translateForTts };
-    const lines = speakingLines(script, catalog);
-    progress("synthesizing", 0.25, "合成配音");
-    let voices = new Map();
-    if (ttsConfig.enabled && this.tts) {
-      voices = await synthesizeStory({
-        script, catalog, config: ttsConfig, client: this.tts.client, voiceBook: this.tts.voiceBook, llm: this.llm,
-        signal, logger: this.logger, onProgress: (p, message) => progress("synthesizing", 0.25 + p * 0.3, message),
-      });
-    } else if (ttsConfig.enabled) {
-      this.logger.warn?.("TTS is enabled but not available; rendering without voices");
-    }
-    const voiceReport = voices.report || null;
-    const ttsResult = {
-      enabled: ttsConfig.enabled, lines: lines.length, voiced: voices.size,
-      ...(voiceReport ? {
-        voices: voiceReport.voices, fallbackLines: voiceReport.fallbackLines, silentLines: voiceReport.silentLines,
-        failedLines: voiceReport.failedLines, nonJapaneseLines: voiceReport.nonJapaneseLines,
-        fallbackSpeakers: voiceReport.fallbackSpeakers, silentSpeakers: voiceReport.silentSpeakers,
-        failedSpeakers: voiceReport.failedSpeakers, nonJapaneseSpeakers: voiceReport.nonJapaneseSpeakers,
-      } : {}),
-    };
-
-    progress("compiling", 0.57, "把剧本编译到站点");
-    const siteDir = this.catalog.dir || this.config.paths.siteFormat;
-    if (this.catalog.materializeAssets) {
-      await this.catalog.materializeAssets({
-        script: doc || script,
-        language: script.language || catalog.language,
-        allowPrivateUrl: this.config.security?.allowPrivateServiceEndpoints === true,
-        logger: this.logger,
-      });
-    }
-    let advId = 0;
-    const built = await this._withSiteWrite(async () => {
-      // `catalog.bases()` is language-filtered and cached for the process lifetime, so it cannot be the only source
-      // of used ids: a story written earlier by this process (or one in another language) would be overwritten.
-      const used = new Set();
+      const prepAbort = createLinkedAbort(signal);
+      let synthOut;
       try {
-        for (const name of fs.readdirSync(path.join(siteDir, "stories"))) {
-          if (name.endsWith(".json")) used.add(name.slice(0, -5));
-        }
-      } catch { /* no stories directory yet */ }
-      try {
-        const index = JSON.parse(fs.readFileSync(path.join(siteDir, "stories.json"), "utf8"));
-        for (const entry of index.stories || []) {
-          if (entry?.id != null) used.add(String(entry.id));
-          const m = /^stories\/(.+)\.json$/.exec(String(entry?.manifest || ""));
-          if (m) used.add(m[1]);
-        }
-      } catch { /* no index or a partial one */ }
-      this._ephemeralAdvSeq = (this._ephemeralAdvSeq + 1) % 100000;
-      advId = 900000 + ((Date.now() + this._ephemeralAdvSeq) % 100000);
-      while (used.has(String(advId)) || fs.existsSync(path.join(siteDir, "stories", `${advId}.json`))) advId++;
-      return buildSiteStory({
-        site: siteDir,
-        baseRel: catalog.manifest,
-        script: doc || script,
-        advId,
-        language: script.language || catalog.language,
-        title: script.title || req.title,
-        voices,
-        writeManifest: false,
-        updateIndex: false,
-      });
-    });
-    if (built.errors?.length)
-      throw new PipelineError("the story could not be compiled onto the site", { status: 400, code: "invalid_script",
-                                                                                    details: built.errors });
-    warnings = [...warnings, ...(built.warnings || [])];
+        const ttsPromise = this._synthesizeVoices({
+          script, catalog, req, signal: prepAbort.signal, progress,
+        }).catch((e) => {
+          prepAbort.abort(e);
+          throw e;
+        });
+        const matPromise = this.catalog.materializeAssets
+          ? this.catalog.materializeAssets({
+            script: doc || script,
+            language: script.language || catalog.language,
+            allowPrivateUrl: this.config.security?.allowPrivateServiceEndpoints === true,
+            signal: prepAbort.signal,
+            logger: this.logger,
+          }).catch((e) => {
+            prepAbort.abort(e);
+            throw e;
+          })
+          : Promise.resolve(null);
+        [synthOut] = await Promise.all([ttsPromise, matPromise]);
+      } finally {
+        prepAbort.cleanup();
+      }
+      const { voices, ttsResult, linesCount } = synthOut;
 
-    const render = await this.renderer.render({
-      story: { manifest: built.manifest, manifestPath: built.manifestPath, files: new Map(),
-               language: built.language, siteEngine: true, site: siteDir },
-      jobId, signal,
-      onProgress: (phase, p, message) => progress(phase, 0.6 + p * 0.38, message),
-    });
-    if (!render.report.ended) this.logger.warn?.("the render stopped at video.maxDurationSec before the story ended");
-    progress("writing_output", 0.99, "写入剧本与结果");
-    const storyFile = path.join(this.config.paths.output, `${jobId}.story.json`);
-    fs.writeFileSync(storyFile, JSON.stringify({
-      format: script.format, script: doc, warnings, tts: ttsResult,
-      site: { dir: siteDir, manifest: built.manifestPath, advId, language: built.language },
-    }, null, 2));
-    const stat = fs.statSync(render.output);
-    return {
-      success: true,
-      videoPath: render.output,
-      storyPath: storyFile,
-      fileSize: stat.size,
-      duration: Math.round(render.duration * 1000) / 1000,
-      frameCount: render.report.frames,
-      downloadUrl: `/api/v1/download/${path.basename(render.output)}`,
-      storyDownloadUrl: `/api/v1/download/${path.basename(storyFile)}`,
-      tts: ttsResult,
-      warnings,
-      timings: { totalMs: Date.now() - t0, renderMs: Math.round((render.report.seconds || 0) * 1000) },
-      story: { title: script.title, language: built.language, lines: lines.length, cast: doc.cast },
-    };
+      progress("compiling", 0.57, "把剧本编译到站点");
+      let advId = 0;
+      const built = await this._withSiteWrite(async () => {
+        // `catalog.bases()` is language-filtered and cached for the process lifetime, so it cannot be the only source
+        // of used ids: a story written earlier by this process (or one in another language) would be overwritten.
+        const used = new Set();
+        try {
+          for (const name of fs.readdirSync(path.join(siteDir, "stories"))) {
+            if (name.endsWith(".json")) used.add(name.slice(0, -5));
+          }
+        } catch { /* no stories directory yet */ }
+        try {
+          const index = JSON.parse(fs.readFileSync(path.join(siteDir, "stories.json"), "utf8"));
+          for (const entry of index.stories || []) {
+            if (entry?.id != null) used.add(String(entry.id));
+            const m = /^stories\/(.+)\.json$/.exec(String(entry?.manifest || ""));
+            if (m) used.add(m[1]);
+          }
+        } catch { /* no index or a partial one */ }
+        this._ephemeralAdvSeq = (this._ephemeralAdvSeq + 1) % 100000;
+        advId = 900000 + ((Date.now() + this._ephemeralAdvSeq) % 100000);
+        while (used.has(String(advId)) || fs.existsSync(path.join(siteDir, "stories", `${advId}.json`))) advId++;
+        return buildSiteStory({
+          site: siteDir,
+          baseRel: catalog.manifest,
+          script: doc || script,
+          advId,
+          language: script.language || catalog.language,
+          title: script.title || req.title,
+          voices,
+          writeManifest: false,
+          updateIndex: false,
+        });
+      });
+      if (built.errors?.length)
+        throw new PipelineError("the story could not be compiled onto the site", { status: 400, code: "invalid_script",
+                                                                                      details: built.errors });
+      warnings = [...warnings, ...(built.warnings || [])];
+
+      const render = await this.renderer.render({
+        story: { manifest: built.manifest, manifestPath: built.manifestPath, files: new Map(),
+                 language: built.language, siteEngine: true, site: siteDir },
+        jobId, signal, warm,
+        onProgress: (phase, p, message) => progress(phase, 0.6 + p * 0.38, message),
+      });
+      if (!render.report.ended) this.logger.warn?.("the render stopped at video.maxDurationSec before the story ended");
+      progress("writing_output", 0.99, "写入剧本与结果");
+      const storyFile = path.join(this.config.paths.output, `${jobId}.story.json`);
+      fs.writeFileSync(storyFile, JSON.stringify({
+        format: script.format, script: doc, warnings, tts: ttsResult,
+        site: { dir: siteDir, manifest: built.manifestPath, advId, language: built.language },
+      }, null, 2));
+      const stat = fs.statSync(render.output);
+      return {
+        success: true,
+        videoPath: render.output,
+        storyPath: storyFile,
+        fileSize: stat.size,
+        duration: Math.round(render.duration * 1000) / 1000,
+        frameCount: render.report.frames,
+        downloadUrl: `/api/v1/download/${path.basename(render.output)}`,
+        storyDownloadUrl: `/api/v1/download/${path.basename(storyFile)}`,
+        tts: ttsResult,
+        warnings,
+        timings: { totalMs: Date.now() - t0, renderMs: Math.round((render.report.seconds || 0) * 1000) },
+        story: { title: script.title, language: built.language, lines: linesCount, cast: doc.cast },
+      };
+    } finally {
+      await warm?.dispose().catch(() => {});
+    }
   }
 
   async run(request, { signal, jobId, progress }) {
@@ -283,112 +340,100 @@ export class Pipeline {
     if (!req.prompt && !req.script) throw new PipelineError("prompt or script is required", { status: 400, code: "bad_request" });
 
     const siteCatalog = await this.catalog.catalog({ manifest: req.base });
+    const siteDir = this.catalog.dir || this.config.paths.site;
     progress("writing", 0.03, req.script ? "校验剧本" : "AI 编写剧本");
     let script, warnings = [], doc = null, diagnostics = null;
-    if (req.script) {
-      // a caller may cast any model of the site, not only the models preloaded for the AI prompt: load the actions of
-      // the cast models it names so the checker validates their motion/expression names too
-      let validationCatalog = siteCatalog;
-      try {
-        const cast = req.script.cast;
-        const ids = Array.isArray(cast) ? cast.map((c) => c && c.model)
-          : cast && typeof cast === "object" ? Object.values(cast).map((c) => (typeof c === "string" ? c : c && c.model))
-            : [];
-        const actions = await this.catalog.actionsFor(ids);
-        if (actions.size) {
-          validationCatalog = { ...siteCatalog, models: siteCatalog.models.map((m) => (actions.has(m.id)
-            ? { ...m, ...actions.get(m.id), actionsKnown: true } : m)) };
-        }
-      } catch { /* the checker reports an unknown model */ }
-      const prepared = prepareScript({ doc: req.script, catalog: validationCatalog, request: req, config: this.config,
-        logger: this.logger });
-      if (prepared.errors?.length)
-        throw new PipelineError("the script has errors", { status: 400, code: "invalid_script", details: prepared.errors });
-      script = prepared.script;
-      doc = prepared.doc;
-      warnings = prepared.warnings || [];
-    } else {
-      if (!this.llm?.available) throw new PipelineError("LLM is not configured (llm.enabled / llm.model / llm key)",
-        { status: 503, code: "llm_missing" });
-      const out = await generateScript({ llm: this.llm, catalog: siteCatalog, request: req, config: this.config, logger: this.logger,
-        signal, onProgress: (phase, p, message) => progress(phase, 0.03 + p * 0.2, message) });
-      script = out.script;
-      doc = out.doc;
-      warnings = out.warnings || [];
-      // Staged/single AI diagnostics for run-to-run comparison; additive only.
-      diagnostics = {
-        stages: out.stages ?? null,
-        plan: out.plan ?? null,
-        dialogue: out.dialogue ?? null,
-        usage: out.usage ?? null,
-      };
-    }
+    let warm = null;
+    try {
+      if (req.script) {
+        // a caller may cast any model of the site, not only the models preloaded for the AI prompt: load the actions of
+        // the cast models it names so the checker validates their motion/expression names too
+        let validationCatalog = siteCatalog;
+        try {
+          const cast = req.script.cast;
+          const ids = Array.isArray(cast) ? cast.map((c) => c && c.model)
+            : cast && typeof cast === "object" ? Object.values(cast).map((c) => (typeof c === "string" ? c : c && c.model))
+              : [];
+          const actions = await this.catalog.actionsFor(ids);
+          if (actions.size) {
+            validationCatalog = { ...siteCatalog, models: siteCatalog.models.map((m) => (actions.has(m.id)
+              ? { ...m, ...actions.get(m.id), actionsKnown: true } : m)) };
+          }
+        } catch { /* the checker reports an unknown model */ }
+        const prepared = prepareScript({ doc: req.script, catalog: validationCatalog, request: req, config: this.config,
+          logger: this.logger });
+        if (prepared.errors?.length)
+          throw new PipelineError("the script has errors", { status: 400, code: "invalid_script", details: prepared.errors });
+        script = prepared.script;
+        doc = prepared.doc;
+        warnings = prepared.warnings || [];
+        warm = this._startWarm({ site: siteDir, siteEngine: false, signal });
+      } else {
+        if (!this.llm?.available) throw new PipelineError("LLM is not configured (llm.enabled / llm.model / llm key)",
+          { status: 503, code: "llm_missing" });
+        warm = this._startWarm({ site: siteDir, siteEngine: false, signal });
+        const out = await generateScript({ llm: this.llm, catalog: siteCatalog, request: req, config: this.config, logger: this.logger,
+          signal, onProgress: (phase, p, message) => progress(phase, 0.03 + p * 0.2, message) });
+        script = out.script;
+        doc = out.doc;
+        warnings = out.warnings || [];
+        // Staged/single AI diagnostics for run-to-run comparison; additive only.
+        diagnostics = {
+          stages: out.stages ?? null,
+          plan: out.plan ?? null,
+          dialogue: out.dialogue ?? null,
+          usage: out.usage ?? null,
+        };
+      }
 
-    // TTS: the backend's own stage. A missing voice or a failed line leaves that line silent unless tts.required.
-    const ttsConfig = { ...this.config.tts, enabled: this.config.tts.enabled && req.tts,
-                        translateForTts: this.config.llm.translateForTts };
-    const lines = speakingLines(script, siteCatalog);
-    progress("synthesizing", 0.25, "合成配音");
-    let voices = new Map();
-    if (ttsConfig.enabled && this.tts) {
-      voices = await synthesizeStory({
-        script, catalog: siteCatalog, config: ttsConfig, client: this.tts.client, voiceBook: this.tts.voiceBook, llm: this.llm,
-        signal, logger: this.logger, onProgress: (p, message) => progress("synthesizing", 0.25 + p * 0.3, message),
+      // TTS: the backend's own stage. A missing voice or a failed line leaves that line silent unless tts.required.
+      const { voices, ttsResult, linesCount } = await this._synthesizeVoices({
+        script, catalog: siteCatalog, req, signal, progress,
       });
-    } else if (ttsConfig.enabled) {
-      this.logger.warn?.("TTS is enabled but not available; rendering without voices");
+
+      progress("compiling", 0.57, "编译 Our Notes 剧情");
+      const language = script.language || siteCatalog.language;
+      const family = fontFamily(script.font, language);
+      // compose from the raw document: the parsed view keeps cast as an array, while the format has a cast object
+      const composed = await composeWithVoices({ catalog: this.catalog, script: doc, voices, language, font: family });
+      if (composed.errors?.length)
+        throw new PipelineError("the story could not be compiled", { status: 400, code: "invalid_script", details: composed.errors });
+      warnings = [...warnings, ...(composed.warnings || [])];
+      if (!doc) doc = script;
+      const manifestPath = `stories/ournotes-${jobId.replace(/[^a-z0-9-]/gi, "").slice(0, 48)}.json`;
+
+      const render = await this.renderer.render({
+        story: { manifest: composed.manifest, manifestPath, files: composed.assets, language: composed.language, script },
+        jobId, signal, warm,
+        onProgress: (phase, p, message) => progress(phase, 0.6 + p * 0.38, message),
+      });
+      if (!render.report.ended) this.logger.warn?.("the render stopped at video.maxDurationSec before the story ended");
+      progress("writing_output", 0.99, "写入剧本与结果");
+      const storyFile = path.join(this.config.paths.output, `${jobId}.story.json`);
+      fs.writeFileSync(storyFile, JSON.stringify({
+        // the raw script document, so the file can be sent back to /api/v1/render unchanged
+        format: script.format, script: doc, warnings,
+        tts: ttsResult,
+        ...(diagnostics ? { diagnostics } : {}),
+      }, null, 2));
+      const stat = fs.statSync(render.output);
+      return {
+        success: true,
+        videoPath: render.output,
+        storyPath: storyFile,
+        fileSize: stat.size,
+        duration: Math.round(render.duration * 1000) / 1000,
+        frameCount: render.report.frames,
+        downloadUrl: `/api/v1/download/${path.basename(render.output)}`,
+        storyDownloadUrl: `/api/v1/download/${path.basename(storyFile)}`,
+        tts: ttsResult,
+        warnings,
+        timings: { totalMs: Date.now() - t0, renderMs: Math.round((render.report.seconds || 0) * 1000) },
+        story: { title: script.title, language: composed.language, lines: linesCount, cast: doc.cast },
+        ...(diagnostics ? { diagnostics } : {}),
+      };
+    } finally {
+      await warm?.dispose().catch(() => {});
     }
-    const voiceReport = voices.report || null;
-    const ttsResult = {
-      enabled: ttsConfig.enabled, lines: lines.length, voiced: voices.size,
-      ...(voiceReport ? {
-        voices: voiceReport.voices, fallbackLines: voiceReport.fallbackLines, silentLines: voiceReport.silentLines,
-        failedLines: voiceReport.failedLines, nonJapaneseLines: voiceReport.nonJapaneseLines,
-        fallbackSpeakers: voiceReport.fallbackSpeakers, silentSpeakers: voiceReport.silentSpeakers,
-        failedSpeakers: voiceReport.failedSpeakers, nonJapaneseSpeakers: voiceReport.nonJapaneseSpeakers,
-      } : {}),
-    };
-
-    progress("compiling", 0.57, "编译 Our Notes 剧情");
-    const language = script.language || siteCatalog.language;
-    const family = fontFamily(script.font, language);
-    // compose from the raw document: the parsed view keeps cast as an array, while the format has a cast object
-    const composed = await composeWithVoices({ catalog: this.catalog, script: doc, voices, language, font: family });
-    if (composed.errors?.length)
-      throw new PipelineError("the story could not be compiled", { status: 400, code: "invalid_script", details: composed.errors });
-    warnings = [...warnings, ...(composed.warnings || [])];
-    if (!doc) doc = script;
-    const manifestPath = `stories/ournotes-${jobId.replace(/[^a-z0-9-]/gi, "").slice(0, 48)}.json`;
-
-    const render = await this.renderer.render({
-      story: { manifest: composed.manifest, manifestPath, files: composed.assets, language: composed.language, script },
-      jobId, signal,
-      onProgress: (phase, p, message) => progress(phase, 0.6 + p * 0.38, message),
-    });
-    if (!render.report.ended) this.logger.warn?.("the render stopped at video.maxDurationSec before the story ended");
-    progress("writing_output", 0.99, "写入剧本与结果");
-    const storyFile = path.join(this.config.paths.output, `${jobId}.story.json`);
-    fs.writeFileSync(storyFile, JSON.stringify({
-      // the raw script document, so the file can be sent back to /api/v1/render unchanged
-      format: script.format, script: doc, warnings,
-      tts: ttsResult,
-      ...(diagnostics ? { diagnostics } : {}),
-    }, null, 2));
-    const stat = fs.statSync(render.output);
-    return {
-      success: true,
-      videoPath: render.output,
-      storyPath: storyFile,
-      fileSize: stat.size,
-      duration: Math.round(render.duration * 1000) / 1000,
-      frameCount: render.report.frames,
-      downloadUrl: `/api/v1/download/${path.basename(render.output)}`,
-      storyDownloadUrl: `/api/v1/download/${path.basename(storyFile)}`,
-      tts: ttsResult,
-      warnings,
-      timings: { totalMs: Date.now() - t0, renderMs: Math.round((render.report.seconds || 0) * 1000) },
-      story: { title: script.title, language: composed.language, lines: lines.length, cast: doc.cast },
-      ...(diagnostics ? { diagnostics } : {}),
-    };
   }
 }

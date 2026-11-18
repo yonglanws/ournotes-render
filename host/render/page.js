@@ -81,11 +81,60 @@ const cueExtension = (file) => {
   return ["wav", "m4a", "mp3", "flac", "ogg", "aac", "opus"].includes(ext) ? ext : "bin";
 };
 
+const collectCommandSoundRanks = (episode) => {
+  const idRank = new Map();
+  const cueRank = new Map();
+  const commands = Array.isArray(episode?.commands) ? episode.commands : [];
+  let seq = 0;
+  const noteId = (v) => {
+    if (v === null || v === undefined || v === "") return;
+    const key = String(v);
+    if (!idRank.has(key)) idRank.set(key, seq++);
+  };
+  const noteCue = (v) => {
+    if (typeof v !== "string" || !v) return;
+    if (!cueRank.has(v)) cueRank.set(v, seq++);
+  };
+  for (const row of commands) {
+    if (!row || typeof row !== "object") continue;
+    if (Array.isArray(row.VoiceIDs)) {
+      for (const id of row.VoiceIDs) noteId(id);
+    }
+    if (row.SoundID !== undefined && row.SoundID !== null && row.SoundID !== 0 && row.SoundID !== "0") {
+      noteId(row.SoundID);
+    }
+    if (row.cmd === "Bgm" || row.cmd === "Se" || row.cmd === "Voice") {
+      noteCue(row.CueName);
+      noteCue(row.Parameter1);
+      noteCue(row.TargetAssetName);
+      if (/^\d+$/.test(String(row.Parameter1 || ""))) noteId(row.Parameter1);
+    }
+  }
+  return { idRank, cueRank };
+};
+
+const orderCueDescriptors = (episode, descriptors) => {
+  if (!descriptors.length) return descriptors;
+  const { idRank, cueRank } = collectCommandSoundRanks(episode);
+  if (!idRank.size && !cueRank.size) {
+    return descriptors.map((d) => ({ ...d, used: true }));
+  }
+  return descriptors
+    .map((d, idx) => {
+      const rank = idRank.get(d.soundId) ?? cueRank.get(d.cueName);
+      const used = rank !== undefined;
+      return { ...d, used, _order: used ? rank : 1_000_000 + idx };
+    })
+    .sort((a, b) => a._order - b._order);
+};
+
 const prepareHostCues = async (jobId, descriptors) => {
   if (!descriptors.length) return new Set();
   try {
     const response = await postWithRetry(fetch, `/job/${encodeURIComponent(jobId)}/cues-prepare`,
-      JSON.stringify({ cues: descriptors.map(({ soundId, ext, sourcePath }) => ({ soundId, ext, sourcePath })) }),
+      JSON.stringify({
+        cues: descriptors.map(({ soundId, ext, sourcePath, used }) => ({ soundId, ext, sourcePath, used: used !== false })),
+      }),
       { "content-type": "application/json" }, { label: "cues-prepare", attempts: 2 });
     const data = await response.json();
     return new Set((data?.missing || []).map(String));
@@ -94,7 +143,27 @@ const prepareHostCues = async (jobId, descriptors) => {
   }
 };
 
-const uploadCues = async (jobId, store, data, { hostCueResolve = false } = {}) => {
+const uploadMissingCues = async (jobId, store, cues, descriptors, { hostCueResolve = false } = {}) => {
+  const needUpload = hostCueResolve
+    ? await prepareHostCues(jobId, descriptors)
+    : new Set(descriptors.map((d) => d.soundId));
+  const toUpload = descriptors.filter((d) => needUpload.has(d.soundId));
+  await mapLimit(toUpload, 4, async ({ soundId, ext, sourcePath, label, meta, cueName, sheetName }) => {
+    let bytes;
+    try { bytes = store.bytes(sourcePath); } catch { delete cues[soundId]; return; }
+    await post(`/job/${jobId}/cue`, bytes, {
+      "x-sound-id": soundId, "x-ext": ext, "x-cue-name": cueName,
+      "x-sheet": sheetName, "x-sample-rate": String(meta.sampleRate || 48000),
+      "x-samples": String(meta.samples || 0), "x-channels": String(meta.channels || 1),
+      "x-categories": JSON.stringify(meta.categories || []),
+      "x-loop-start": meta.loopStart == null ? "" : String(meta.loopStart),
+      "x-loop-end": meta.loopEnd == null ? "" : String(meta.loopEnd),
+    }, { label });
+  });
+  return cues;
+};
+
+const uploadCues = async (jobId, store, data, opts = {}) => {
   const cues = {};
   const descriptors = [];
   for (const [soundId, row] of Object.entries(data.episode.sounds || {})) {
@@ -110,25 +179,13 @@ const uploadCues = async (jobId, store, data, { hostCueResolve = false } = {}) =
       sampleRate: meta.sampleRate || 48000, samples: meta.samples || 0, channels: meta.channels || 1,
       categories: meta.categories || [], loopStart: meta.loopStart ?? null, loopEnd: meta.loopEnd ?? null,
     };
-    descriptors.push({ soundId: String(soundId), ext, sourcePath: meta.file, meta, row, sheet });
+    descriptors.push({
+      soundId: String(soundId), ext, sourcePath: meta.file, meta,
+      cueName: row._cueName, sheetName: sheet._cueSheetName,
+      label: `cue ${soundId} ${meta.file}`,
+    });
   }
-  const needUpload = hostCueResolve
-    ? await prepareHostCues(jobId, descriptors)
-    : new Set(descriptors.map((d) => d.soundId));
-  const toUpload = descriptors.filter((d) => needUpload.has(d.soundId));
-  await mapLimit(toUpload, 4, async ({ soundId, ext, sourcePath, meta, row, sheet }) => {
-    let bytes;
-    try { bytes = store.bytes(sourcePath); } catch { delete cues[soundId]; return; }
-    await post(`/job/${jobId}/cue`, bytes, {
-      "x-sound-id": soundId, "x-ext": ext, "x-cue-name": row._cueName,
-      "x-sheet": sheet._cueSheetName, "x-sample-rate": String(meta.sampleRate || 48000),
-      "x-samples": String(meta.samples || 0), "x-channels": String(meta.channels || 1),
-      "x-categories": JSON.stringify(meta.categories || []),
-      "x-loop-start": meta.loopStart == null ? "" : String(meta.loopStart),
-      "x-loop-end": meta.loopEnd == null ? "" : String(meta.loopEnd),
-    }, { label: `cue ${soundId} ${sourcePath}` });
-  });
-  return cues;
+  return uploadMissingCues(jobId, store, cues, orderCueDescriptors(data.episode, descriptors), opts);
 };
 
 // Story sites (ournotes.story-manifest/2) keep each cue sheet beside its waveform. The engine's SoundManager resolves
@@ -187,7 +244,7 @@ class SiteRecordingAudio extends RecordingAudio {
         if (!c.meta || !c.meta.file || c.category !== 2) continue;     // SOUND_CATEGORY.Voice
         items.push({ id: String(id), path: `audio/${c.sheet}/${c.meta.file}` });
       }
-      await mapLimit(items, 4, async ({ id, path }) => {
+      await mapLimit(items, 6, async ({ id, path }) => {
         let bytes;
         try { bytes = this.assets.bytes(path); } catch { return; }
         try {
@@ -243,14 +300,15 @@ class SiteRecordingAudio extends RecordingAudio {
   }
 }
 
-const uploadCuesSite = async (jobId, store, audio, { hostCueResolve = false } = {}) => {
+const uploadCuesSite = async (jobId, store, cueOfOrAudio, opts = {}) => {
+  const cueOf = typeof cueOfOrAudio === "function" ? cueOfOrAudio : (id) => cueOfOrAudio.cueOf(id);
   const story = store.json("story.json");
   const episode = store.json(story.episode);
   const cues = {};
   const descriptors = [];
   for (const soundId of Object.keys(episode.sounds || {})) {
     let c;
-    try { c = audio.cueOf(soundId); } catch { continue; }
+    try { c = cueOf(soundId); } catch { continue; }
     const meta = c?.meta;
     const name = meta && safeCueFile(meta.file);
     if (!name) continue;
@@ -261,25 +319,13 @@ const uploadCuesSite = async (jobId, store, audio, { hostCueResolve = false } = 
       sampleRate: meta.sampleRate || 48000, samples: meta.samples || 0, channels: meta.channels || 1,
       categories: meta.categories || [], loopStart: meta.loopStart ?? null, loopEnd: meta.loopEnd ?? null,
     };
-    descriptors.push({ soundId: String(soundId), ext, sourcePath, name, c, meta });
+    descriptors.push({
+      soundId: String(soundId), ext, sourcePath, meta,
+      cueName: c.cue, sheetName: c.sheet,
+      label: `cue ${soundId} ${name}`,
+    });
   }
-  const needUpload = hostCueResolve
-    ? await prepareHostCues(jobId, descriptors)
-    : new Set(descriptors.map((d) => d.soundId));
-  const toUpload = descriptors.filter((d) => needUpload.has(d.soundId));
-  await mapLimit(toUpload, 4, async ({ soundId, ext, sourcePath, name, c, meta }) => {
-    let bytes;
-    try { bytes = store.bytes(sourcePath); } catch { delete cues[soundId]; return; }
-    await post(`/job/${jobId}/cue`, bytes, {
-      "x-sound-id": soundId, "x-ext": ext, "x-cue-name": c.cue,
-      "x-sheet": c.sheet, "x-sample-rate": String(meta.sampleRate || 48000),
-      "x-samples": String(meta.samples || 0), "x-channels": String(meta.channels || 1),
-      "x-categories": JSON.stringify(meta.categories || []),
-      "x-loop-start": meta.loopStart == null ? "" : String(meta.loopStart),
-      "x-loop-end": meta.loopEnd == null ? "" : String(meta.loopEnd),
-    }, { label: `cue ${soundId} ${name}` });
-  });
-  return cues;
+  return uploadMissingCues(jobId, store, cues, orderCueDescriptors(episode, descriptors), opts);
 };
 
 const blobOf = (canvas, quality) => new Promise((resolve, reject) =>
@@ -343,7 +389,7 @@ const probeWebCodecs = async ({ width, height, fps, captureMode, gpu, gl, waterm
       const elapsed = performance.now() - t0;
       enc.close();
       if (err || chunks < 5) continue;
-      if (mode === "auto" && elapsed > 150) {
+      if (mode === "auto" && elapsed > 250) {
         console.log(`WebCodecs probe too slow (${elapsed.toFixed(1)} ms for 5 frames); keeping image2pipe`);
         return { useWebCodecs: false };
       }
@@ -462,8 +508,9 @@ const createWebCodecsCapture = async ({ jobId, canvas, width, height, fps, codec
   };
 };
 
-const createCapturePipeline = async ({ jobId, canvas, width, height, fps, quality, captureMode, gpu, gl, watermark }) => {
-  const probe = await probeWebCodecs({ width, height, fps, captureMode, gpu, gl, watermark });
+const createCapturePipeline = async ({ jobId, canvas, width, height, fps, quality, captureMode, gpu, gl, watermark,
+                                        probeOverride = null }) => {
+  const probe = probeOverride || await probeWebCodecs({ width, height, fps, captureMode, gpu, gl, watermark });
   if (probe.useWebCodecs) {
     try {
       return await createWebCodecsCapture({ jobId, canvas, width, height, fps, codec: probe.codec, bitrate: probe.bitrate });
@@ -505,22 +552,45 @@ const runSmoke = async (job) => {
            captureMode: capture.mode, seconds: Math.round((performance.now() - t0) / 100) / 10 };
 };
 
-const preloadBrowserFonts = async (store) => {
+const preloadBrowserFonts = async (store, warmedFonts = null) => {
   const fontsApi = globalThis.document?.fonts;
   if (!fontsApi) return;
   const families = new Set(['"Noto Sans SC"', '"Noto Serif SC"', '"Noto Sans JP"', '"Noto Serif JP"']);
   try {
-    const doc = store.has?.("ui/fonts.json") ? store.json("ui/fonts.json") : null;
+    const doc = store?.has?.("ui/fonts.json") ? store.json("ui/fonts.json") : null;
     for (const f of Object.values(doc?.fonts || {})) {
       if (f?.browser?.family) families.add(String(f.browser.family));
     }
   } catch { /* no ui/fonts.json */ }
+  const missing = warmedFonts ? [...families].filter((fam) => !warmedFonts.has(fam)) : [...families];
+  if (!missing.length && warmedFonts?.size) return;
   if (typeof fontsApi.load === "function") {
-    await Promise.all([...families].map((fam) =>
+    await Promise.all(missing.map((fam) =>
       Promise.resolve(fontsApi.load(`normal 64px ${fam}`, "あア漢한Aa0")).catch(() => {})
     ));
   }
   await fontsApi.ready;
+  if (warmedFonts) for (const fam of missing) warmedFonts.add(fam);
+};
+
+const createGlContext = (width, height, warmState = null) => {
+  let canvas = warmState?.canvas || null;
+  let gl = warmState?.gl || null;
+  if (canvas && gl && !gl.isContextLost?.()) {
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    return { canvas, gl };
+  }
+  canvas = Object.assign(document.createElement("canvas"), { width, height });
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  document.body.append(canvas);
+  gl = canvas.getContext("webgl2", { alpha: false, antialias: false, depth: false, stencil: false,
+                                     premultipliedAlpha: false, preserveDrawingBuffer: true });
+  if (!gl) throw new Error("WebGL2 is not available in the browser");
+  return { canvas, gl };
 };
 
 const makePcmRmsAnalyzer = (src) => ({
@@ -536,7 +606,7 @@ const makePcmRmsAnalyzer = (src) => ({
   },
 });
 
-export const run = async (job) => {
+export const run = async (job, warmState = null) => {
   if (job.kind === "smoke") return runSmoke(job);
   const t0 = performance.now();
   const preset = String(job.preset || job.renderPreset || "standard").toLowerCase();
@@ -555,24 +625,24 @@ export const run = async (job) => {
   // player serves (ournotes.story-manifest/2). The latter is rendered by the player version that reads it, which is
   // also the version the reference player uses, so both paths use the real StorySession, UI, scene and Live2D code.
   const siteEngine = !!job.siteEngine;
-  const engine = siteEngine ? {
-    assets: await import("/site-engine/src/story/assets.js"),
-    session: await import("/site-engine/src/story/session.js"),
-  } : null;
+  const engine = siteEngine
+    ? (warmState?.engine || {
+      assets: await import("/site-engine/src/story/assets.js"),
+      session: await import("/site-engine/src/story/session.js"),
+    })
+    : null;
   const store = engine
     ? await engine.assets.loadStoryStore(job.manifest, { lang: job.lang || undefined })
     : await loadStoryStore(job.manifest, { lang: job.lang || undefined });
-  await preloadBrowserFonts(store);
   const hostCueResolve = job.hostCueResolve !== false;
-  let cues = {};
-  if (!siteEngine) cues = await uploadCues(job.jobId, store, new StoryData(store), { hostCueResolve });
-  const canvas = Object.assign(document.createElement("canvas"), { width, height });
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
-  document.body.append(canvas);
-  const gl = canvas.getContext("webgl2", { alpha: false, antialias: false, depth: false, stencil: false,
-                                           premultipliedAlpha: false, preserveDrawingBuffer: true });
-  if (!gl) throw new Error("WebGL2 is not available in the browser");
+  const siteResolve = siteEngine ? siteCueResolver(store) : null;
+  // Overlap host cue resolution & FFmpeg decode warmup with browser font loading + Live2D/WebGL Session setup.
+  const cuesPromise = siteEngine
+    ? uploadCuesSite(job.jobId, store, siteResolve, { hostCueResolve })
+    : uploadCues(job.jobId, store, new StoryData(store), { hostCueResolve });
+  cuesPromise.catch(() => {});
+  await preloadBrowserFonts(store, warmState?.warmedFonts);
+  const { canvas, gl } = createGlContext(width, height, warmState);
 
   const events = [], lines = [], timeline = [];
   let uiFactory = null;
@@ -581,7 +651,6 @@ export const run = async (job) => {
     fixture.patchFixtureRendering();
     uiFactory = (gl, loop) => fixture.makeFixtureUI(gl, loop);
   }
-  const siteResolve = siteEngine ? siteCueResolver(store) : null;
   const audioFactory = siteEngine
     ? (resolve, loop, { assets }) => new SiteRecordingAudio(siteResolve, loop, { assets, sounds: true })
     : (resolve, loop, { assets }) => new RecordingAudio(resolve, loop, { assets, sounds: true });
@@ -601,7 +670,8 @@ export const run = async (job) => {
       try { const m = session.audio.cueOf(id).meta; if (m && m.sampleRate) voice = Math.max(voice, m.samples / m.sampleRate); }
       catch { /* no cue */ }
     }
-    const typed = [...text].length * 0.04;
+    const plainText = String(text).replace(/<[^>]*>/g, "");
+    const typed = [...plainText].length * 0.04;
     const body = Math.max(1.6, voice ? voice + 0.6 : typed);
     const list = [...c.HostActions].filter((a) => a && Number.isFinite(a.at)).sort((a, b) => a.at - b.at);
     let stopped = false;
@@ -728,11 +798,22 @@ export const run = async (job) => {
     }
   }
   const audio = s.audio;
-  if (siteEngine) cues = await uploadCuesSite(job.jobId, store, audio, { hostCueResolve });
+  let cues;
+  try {
+    cues = await cuesPromise;
+  } catch (e) {
+    try { await s.dispose(); } catch { /* ignore */ }
+    if (audio && typeof audio.close === "function") { try { await audio.close(); } catch { /* already closed */ } }
+    throw e;
+  }
   const quality = Math.max(0.3, Math.min(1, (job.jpegQuality || 98) / 100));
+  const captureMode = job.captureMode || "auto";
+  const watermark = job.watermark || "";
+  const probeKey = `${width}x${height}@${outFps}:${captureMode}:${!!job.gpu}`;
+  const probeOverride = (!watermark && warmState?.probeKey === probeKey) ? warmState.probe : null;
   const capture = await createCapturePipeline({
     jobId: job.jobId, canvas, width, height, fps: outFps, quality,
-    captureMode: job.captureMode || "auto", gpu: !!job.gpu, gl, watermark: job.watermark || "",
+    captureMode, gpu: !!job.gpu, gl, watermark, probeOverride,
   });
   let frames = 0, steps = 0, ended = false, storySeconds = 0, videoStart = null;
   try {
@@ -786,4 +867,53 @@ export const run = async (job) => {
   return { frames, fps: outFps, width, height, ended, storySeconds: Math.round(storySeconds * 1000) / 1000,
            videoStart: Math.round(start * 1000) / 1000, events, cues, lines, timeline,
            captureMode: capture.mode, seconds };
+};
+
+export const runWarm = async (warmId) => {
+  const res = await fetch(`/warm/${encodeURIComponent(warmId)}/config.json`);
+  if (res.status === 410 || !res.ok) return null;
+  const cfg = await res.json();
+  const width = Math.max(64, Math.round(cfg.width || 1300));
+  const height = Math.max(64, Math.round(cfg.height || 600));
+  const fps = Math.max(1, Math.min(30, Math.round(cfg.fps || 30)));
+  const outFps = 30 % fps === 0 ? fps : 30;
+  const captureMode = cfg.captureMode || "auto";
+  const gpu = !!cfg.gpu;
+  const warmedFonts = new Set();
+  const enginePromise = cfg.siteEngine
+    ? Promise.all([
+        import("/site-engine/src/story/assets.js"),
+        import("/site-engine/src/story/session.js"),
+      ]).then(([assets, session]) => ({ assets, session }))
+    : Promise.resolve(null);
+  const fontsPromise = preloadBrowserFonts(null, warmedFonts).catch(() => {});
+  const { canvas, gl } = createGlContext(width, height);
+  const probeKey = `${width}x${height}@${outFps}:${captureMode}:${gpu}`;
+  // Load modules and webfonts before probing WebCodecs so main-thread parse/decode work does not skew probe timing.
+  const [engine] = await Promise.all([enginePromise, fontsPromise]);
+  const probeResult = await probeWebCodecs({
+    width, height, fps: outFps, captureMode, gpu, gl, watermark: "",
+  }).catch(() => null);
+  const warmState = { engine, canvas, gl, warmedFonts, probeKey, probe: probeResult };
+
+  let jobRes;
+  try {
+    jobRes = await fetch(`/warm/${encodeURIComponent(warmId)}/job`);
+  } catch {
+    return null;
+  }
+  if (jobRes.status === 410 || !jobRes.ok) return null;
+  const payload = await jobRes.json();
+  if (!payload?.jobId) return null;
+  const jobId = payload.jobId;
+  try {
+    const jr = await fetch(`/job/${encodeURIComponent(jobId)}.json`);
+    if (!jr.ok) throw new Error(`job: HTTP ${jr.status}`);
+    const job = await jr.json();
+    const result = await run(job, warmState);
+    return { jobId, result };
+  } catch (e) {
+    if (e && typeof e === "object") e.jobId = jobId;
+    throw e;
+  }
 };

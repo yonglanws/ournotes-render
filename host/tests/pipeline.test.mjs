@@ -344,3 +344,186 @@ test("site-format pipeline validates maxLines >= 2, runs materializeAssets outsi
   assert.equal(fs.readFileSync(path.join(siteDir, "stories.json"), "utf8"), initialIndex, "stories.json must remain unpolluted");
   assert.deepEqual(fs.readdirSync(path.join(siteDir, "stories")), ["100.json"], "ephemeral manifest not left in stories/");
 });
+
+const makeMiniSiteFixture = async (prefix) => {
+  const siteDir = tmpDir(prefix);
+  fs.mkdirSync(path.join(siteDir, "stories"), { recursive: true });
+  fs.mkdirSync(path.join(siteDir, "models"), { recursive: true });
+  fs.mkdirSync(path.join(siteDir, "assets"), { recursive: true });
+  const zlib = await import("node:zlib");
+  const crypto = await import("node:crypto");
+  const putGz = (data) => {
+    const bytes = Buffer.from(JSON.stringify(data));
+    const sha = crypto.createHash("sha256").update(bytes).digest("hex");
+    const gz = zlib.gzipSync(bytes);
+    const rel = `assets/${sha}.json.gz`;
+    fs.writeFileSync(path.join(siteDir, rel), gz);
+    return { asset: rel, size: bytes.length, stored: gz.length };
+  };
+  const sceneE = putGz({ stages: { adv_bkg_stage_000010: { nodes: [] } } });
+  const storyE = putGz({ models: { tomori: "adv_live2d_tomori_001_live_01" } });
+  const epE = putGz({ advId: 100, commands: [{ cmd: "Stage", TargetAssetName: "adv_bkg_stage_000010" }], text: {}, sounds: {}, cuesheets: {} });
+  const fontsE = putGz({ texts: {}, textures: {}, materials: {}, materialKeywords: {} });
+  const uiE = putGz({ transitions: {}, textures: {} });
+  fs.writeFileSync(path.join(siteDir, "stories", "100.json"), JSON.stringify({
+    format: "ournotes.story-manifest/2", advId: 100, language: "ja",
+    files: { "scene.json": sceneE, "story.json": storyE, "episode.json": epE },
+    languages: { ja: { files: { "ui/fonts.json": fontsE, "ui/ui.json": uiE } } },
+  }));
+  const modelPrefab = putGz({
+    nodes: [{ components: [{ class: "Live2DCharacter", _motionList: ["idle01_C"], _expressionList: ["idle01"],
+      DefaultMotionName: "idle01_C", DefaultExpressionName: "idle01" }] }],
+  });
+  fs.writeFileSync(path.join(siteDir, "models", "adv_live2d_tomori_001_live_01.json"), JSON.stringify({
+    key: "tomori", files: { "tomori.prefab.json": modelPrefab },
+  }));
+  return siteDir;
+};
+
+test("site-format pipeline overlaps TTS, materializeAssets and renderer.warm", async () => {
+  const output = tmpDir();
+  const siteDir = await makeMiniSiteFixture("ournotes-site-overlap-");
+  const wav = path.join(output, "voice.wav");
+  sineWav(wav, { seconds: 1 });
+  const order = [];
+  let releaseTts;
+  const ttsGate = new Promise((r) => { releaseTts = r; });
+  let warmCount = 0;
+  let warmDisposed = 0;
+  let warmSeenInRender = null;
+  let matSeenSignal = null;
+
+  const pipeline = new Pipeline({
+    config: { ...configFor(output), tts: { ...configFor(output).tts, enabled: true } },
+    catalog: {
+      kind: "site-format",
+      dir: siteDir,
+      async catalog() {
+        return {
+          manifest: "stories/100.json", language: "ja", languages: ["ja"],
+          stages: [{ id: "adv_bkg_stage_000010", caption: "" }], music: [], sounds: [],
+          models: [{ id: "adv_live2d_tomori_001_live_01", name: "高松灯", character: "高松灯", key: "tomori",
+                     motions: ["idle01_C"], expressions: ["idle01"], defaultMotion: "idle01_C", defaultExpression: "idle01", actionsKnown: true }],
+        };
+      },
+      async materializeAssets({ signal }) {
+        matSeenSignal = signal;
+        order.push("materialize:start");
+        await new Promise((r) => setTimeout(r, 15));
+        order.push("materialize:end");
+      },
+    },
+    llm: null,
+    tts: {
+      voiceBook: new VoiceBook({ voices: [{ name: "高松灯", refAudioPath: wav }], promptLang: "ja" }),
+      client: {
+        async synthesize() {
+          order.push("tts:start");
+          await ttsGate;
+          order.push("tts:end");
+          return { file: wav, sampleRate: 48000, samples: 48000, channels: 1 };
+        },
+      },
+    },
+    renderer: {
+      warm({ site, siteEngine }) {
+        warmCount++;
+        order.push(`warm:${siteEngine}:${site === siteDir}`);
+        return {
+          key: "mock-warm",
+          async dispose() { warmDisposed++; },
+        };
+      },
+      async render({ warm }) {
+        warmSeenInRender = warm;
+        const file = path.join(output, "overlap.mp4");
+        fs.writeFileSync(file, "video");
+        return { output: file, duration: 1, report: { frames: 30, ended: true, captureMode: "webcodecs", seconds: 0.2 }, pageErrors: [] };
+      },
+    },
+    logger: quietLogger(),
+  });
+
+  const script = {
+    format: "ournotes.story-script/1", base: "stories/100.json", language: "ja", title: "Overlap",
+    cast: { a: { model: "adv_live2d_tomori_001_live_01", name: "高松灯" } },
+    beats: [{ scene: "adv_bkg_stage_000010", positions: { a: "center" } }, { say: "a", text: "こんにちは。" }],
+  };
+  const jobPromise = pipeline.run({ script, tts: true }, { signal: null, jobId: "overlap-job", progress: () => {} });
+  while (!order.includes("materialize:end") || !order.includes("tts:start")) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  assert.ok(order.includes("warm:true:true"), "warm started alongside TTS and materialize");
+  assert.equal(order.includes("tts:end"), false, "materializeAssets finished while TTS was still running");
+  releaseTts();
+  const res = await jobPromise;
+  assert.equal(res.success, true);
+  assert.equal(warmCount, 1);
+  assert.equal(warmDisposed, 1, "warm handle is disposed in finally");
+  assert.equal(warmSeenInRender?.key, "mock-warm");
+  assert.ok(matSeenSignal instanceof AbortSignal);
+});
+
+test("site-format pipeline aborts sibling materializeAssets and disposes warm when TTS fails or signal aborts", async () => {
+  const output = tmpDir();
+  const siteDir = await makeMiniSiteFixture("ournotes-site-abort-");
+  const wav = path.join(output, "voice.wav");
+  sineWav(wav, { seconds: 1 });
+  let matAborted = false;
+  let warmDisposed = 0;
+  let renderCalled = false;
+
+  const pipeline = new Pipeline({
+    config: { ...configFor(output), tts: { ...configFor(output).tts, enabled: true, required: true } },
+    catalog: {
+      kind: "site-format",
+      dir: siteDir,
+      async catalog() {
+        return {
+          manifest: "stories/100.json", language: "ja", languages: ["ja"],
+          stages: [{ id: "adv_bkg_stage_000010", caption: "" }], music: [], sounds: [],
+          models: [{ id: "adv_live2d_tomori_001_live_01", name: "高松灯", character: "高松灯", key: "tomori",
+                     motions: ["idle01_C"], expressions: ["idle01"], defaultMotion: "idle01_C", defaultExpression: "idle01", actionsKnown: true }],
+        };
+      },
+      materializeAssets({ signal }) {
+        return new Promise((_resolve, reject) => {
+          if (signal?.aborted) { matAborted = true; return reject(new Error("aborted")); }
+          signal?.addEventListener("abort", () => { matAborted = true; reject(new Error("aborted")); }, { once: true });
+        });
+      },
+    },
+    llm: null,
+    tts: {
+      voiceBook: new VoiceBook({ voices: [{ name: "高松灯", refAudioPath: wav }], promptLang: "ja" }),
+      client: {
+        async synthesize() {
+          await new Promise((r) => setTimeout(r, 15));
+          throw new Error("tts service down");
+        },
+      },
+    },
+    renderer: {
+      warm() {
+        return { key: "mock", async dispose() { warmDisposed++; } };
+      },
+      async render() {
+        renderCalled = true;
+        return {};
+      },
+    },
+    logger: quietLogger(),
+  });
+
+  const script = {
+    format: "ournotes.story-script/1", base: "stories/100.json", language: "ja", title: "Abort",
+    cast: { a: { model: "adv_live2d_tomori_001_live_01", name: "高松灯" } },
+    beats: [{ scene: "adv_bkg_stage_000010", positions: { a: "center" } }, { say: "a", text: "こんにちは。" }],
+  };
+  await assert.rejects(() => pipeline.run({ script, tts: true }, { signal: null, jobId: "abort-job", progress: () => {} }),
+    /tts service down/);
+  assert.equal(matAborted, true, "sibling materializeAssets receives abort when TTS fails");
+  assert.equal(warmDisposed, 1, "warm handle is disposed on failure");
+  assert.equal(renderCalled, false);
+});
+

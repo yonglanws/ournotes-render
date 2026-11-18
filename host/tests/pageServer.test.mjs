@@ -173,3 +173,63 @@ test("pageServer caches font routes, sets immutable cache headers on static asse
     await server.close();
   }
 });
+
+test("per-job site overlay isolates job.files and warm endpoint delivers jobId or 410 on dispose", async () => {
+  const dir = tmpDir();
+  const siteA = path.join(dir, "siteA");
+  const siteB = path.join(dir, "siteB");
+  fs.mkdirSync(path.join(siteA, "assets"), { recursive: true });
+  fs.mkdirSync(path.join(siteB, "stories"), { recursive: true });
+  fs.mkdirSync(path.join(siteB, "assets"), { recursive: true });
+  fs.writeFileSync(path.join(siteA, "assets", "shared.txt"), "disk-a");
+  fs.writeFileSync(path.join(siteB, "assets", "shared.txt"), "disk-b");
+  fs.writeFileSync(path.join(siteB, "stories", "base.json"), '{"from":"siteB"}');
+
+  const server = await createPageServer({ site: siteA, core: "", outputDir: dir, logger: quietLogger() });
+  try {
+    const job1 = server.createJob({ jobId: "job-overlay-1" }, {
+      site: siteB,
+      files: new Map([["stories/base.json", Buffer.from('{"from":"job1"}')]]),
+    });
+    const rOverlay = await fetch(`${server.url}/job/${job1.id}/site/stories/base.json`);
+    assert.equal(rOverlay.status, 200);
+    assert.equal(await rOverlay.text(), '{"from":"job1"}');
+    assert.equal(rOverlay.headers.get("cache-control"), "no-store");
+
+    const rFallback = await fetch(`${server.url}/job/${job1.id}/site/assets/shared.txt`);
+    assert.equal(rFallback.status, 200);
+    assert.equal(await rFallback.text(), "disk-b");
+    assert.match(rFallback.headers.get("cache-control"), /immutable/);
+
+    // Warm delivery when /warm/<id>/job waits before deliverJob is called
+    const w1 = server.registerWarm({ siteEngine: true, gpu: false, width: 1300, height: 600 });
+    const cfgRes = await fetch(`${server.url}/warm/${w1.id}/config.json`);
+    assert.equal(cfgRes.status, 200);
+    assert.equal((await cfgRes.json()).siteEngine, true);
+
+    const pollPromise = fetch(`${server.url}/warm/${w1.id}/job`);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(w1.deliverJob("job-overlay-1"), true);
+    const pollRes = await pollPromise;
+    assert.equal(pollRes.status, 200);
+    assert.deepEqual(await pollRes.json(), { ok: true, jobId: "job-overlay-1" });
+
+    // Warm delivery when deliverJob runs before /warm/<id>/job connects, plus 410 after dispose
+    const w2 = server.registerWarm({ siteEngine: false });
+    assert.equal(w2.deliverJob("job-overlay-2"), true);
+    const earlyRes = await fetch(`${server.url}/warm/${w2.id}/job`);
+    assert.equal(earlyRes.status, 200);
+    assert.deepEqual(await earlyRes.json(), { ok: true, jobId: "job-overlay-2" });
+
+    const w3 = server.registerWarm({});
+    const w3Poll = fetch(`${server.url}/warm/${w3.id}/job`);
+    await new Promise((r) => setTimeout(r, 15));
+    w3.dispose();
+    const w3Res = await w3Poll;
+    assert.equal(w3Res.status, 410);
+    assert.equal(w3.deliverJob("late-job"), false);
+  } finally {
+    clearFontRoutesCache();
+    await server.close();
+  }
+});

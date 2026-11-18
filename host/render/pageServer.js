@@ -189,6 +189,7 @@ const sendFile = (res, file, type = null, cacheControl = "no-store") => {
 export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_CORE_URL, motionsync = "",
                                    outputDir, fontsDir = "", logger = console }) => new Promise((resolve, reject) => {
   const jobs = new Map();
+  const warms = new Map();
   const coreFile = core && !/^https?:\/\//i.test(core) ? path.resolve(core) : null;
   const motionFile = motionsync && !/^https?:\/\//i.test(motionsync) ? path.resolve(motionsync) : null;
   // an empty core string means "load none" (the smoke page needs no Live2D runtime)
@@ -204,17 +205,80 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
     `<style>html,body{margin:0;background:#000}canvas{display:block}</style></head>` +
     `<body>` + (coreUrl ? `<script src="${escapeAttr(coreUrl)}"></script>` : "") +
     (motionUrl ? `<script src="${escapeAttr(motionUrl)}"></script>` : "") +
-    `<script type="module">import { run, reportResult } from "/host/render/page.js";` +
-    `const id = new URLSearchParams(location.search).get("job") || "";` +
-    `fetch("/job/"+encodeURIComponent(id)+".json").then(r=>{if(!r.ok)throw new Error("job: HTTP "+r.status);return r.json()})` +
-    `.then(job=>run(job)).then(r=>reportResult(id,{ok:true,...r}))` +
-    `.catch(e=>{console.error(e&&e.stack||String(e));return reportResult(id,{ok:false,error:String(e&&e.message||e),stack:String(e&&e.stack||"")}).catch(()=>{})})` +
-    `;</script></body></html>`;
+    `<script type="module">import { run, runWarm, reportResult } from "/host/render/page.js";` +
+    `const sp = new URLSearchParams(location.search);` +
+    `const warmId = sp.get("warm") || "";` +
+    `const id = sp.get("job") || "";` +
+    `if (warmId) {` +
+    `  runWarm(warmId)` +
+    `    .then((out) => out && reportResult(out.jobId, { ok: true, ...out.result }))` +
+    `    .catch((e) => {` +
+    `      console.error(e && e.stack || String(e));` +
+    `      if (e && e.jobId) return reportResult(e.jobId, { ok: false, error: String(e && e.message || e), stack: String(e && e.stack || "") }).catch(() => {});` +
+    `    });` +
+    `} else {` +
+    `  fetch("/job/"+encodeURIComponent(id)+".json").then(r=>{if(!r.ok)throw new Error("job: HTTP "+r.status);return r.json()})` +
+    `  .then(job=>run(job)).then(r=>reportResult(id,{ok:true,...r}))` +
+    `  .catch(e=>{console.error(e&&e.stack||String(e));return reportResult(id,{ok:false,error:String(e&&e.message||e),stack:String(e&&e.stack||"")}).catch(()=>{})});` +
+    `}</script></body></html>`;
+
+  const serveSiteRel = (rel, jobFiles, jobSite, res) => {
+    if (jobFiles?.has(rel)) {
+      return send(res, 200, jobFiles.get(rel), typeOf(rel), {}, "no-store");
+    }
+    if (files.has(rel)) {
+      return send(res, 200, files.get(rel), typeOf(rel), {}, "no-store");
+    }
+    const baseDir = jobSite || site;
+    const f = baseDir ? below(baseDir, rel) : null;
+    const siteCache = rel.startsWith("assets/") ? IMMUTABLE_CACHE : "no-store";
+    return f ? sendFile(res, f, null, siteCache) : send(res, 404, "not found");
+  };
 
   const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, "http://127.0.0.1");
     const p = u.pathname;
     try {
+      // ---- warm endpoints -----------------------------------------------------------------------------------
+      const warmMatch = p.match(/^\/warm\/([a-z0-9-]+)\/(config\.json|job)$/);
+      if (warmMatch) {
+        const [, warmId, what] = warmMatch;
+        const warm = warms.get(warmId);
+        if (!warm || warm.disposed) return send(res, 410, JSON.stringify({ cancelled: true }), "application/json");
+        if (req.method !== "GET") return send(res, 405, "method not allowed");
+        if (what === "config.json") return send(res, 200, JSON.stringify(warm.config), "application/json");
+        if (warm.jobId) {
+          const delivered = warm.jobId;
+          warms.delete(warmId);
+          return send(res, 200, JSON.stringify({ ok: true, jobId: delivered }), "application/json");
+        }
+        if (warm.waiterRes) {
+          try { warm.waiterRes.end(); } catch { /* ignore */ }
+          warm.cleanupWaiter?.();
+        }
+        warm.waiterRes = res;
+        const onClose = () => {
+          if (warm.waiterRes === res) {
+            warm.waiterRes = null;
+            warm.cleanupWaiter = null;
+          }
+        };
+        warm.cleanupWaiter = () => req.removeListener("close", onClose);
+        req.once("close", onClose);
+        return;
+      }
+
+      // ---- per-job site overlay -----------------------------------------------------------------------------
+      const jobSiteMatch = p.match(/^\/job\/([a-z0-9-]+)\/site\/(.+)$/);
+      if (jobSiteMatch) {
+        if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, "method not allowed");
+        const [, jobId, rawRel] = jobSiteMatch;
+        const job = jobs.get(jobId);
+        if (!job) return send(res, 404, "unknown job", "text/plain");
+        const rel = decodeURIComponent(rawRel);
+        return serveSiteRel(rel, job.files, job.site, res);
+      }
+
       // ---- job endpoints -----------------------------------------------------------------------------------
       const jobMatch = p.match(/^\/job\/([a-z0-9-]+)(\/[a-z0-9-]+)?(?:\.json)?$/);
       if (jobMatch) {
@@ -344,13 +408,7 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
       // ---- the site: overlay first, then the base site -------------------------------------------------------
       if (p.startsWith("/site/")) {
         const rel = decodeURIComponent(p.slice(6));
-        if (files.has(rel)) {
-          const body = files.get(rel);
-          return send(res, 200, body, typeOf(rel), {}, "no-store");
-        }
-        const f = site ? below(site, rel) : null;
-        const siteCache = rel.startsWith("assets/") ? IMMUTABLE_CACHE : "no-store";
-        return f ? sendFile(res, f, null, siteCache) : send(res, 404, "not found");
+        return serveSiteRel(rel, null, site, res);
       }
 
       // ---- the published site-format engine, wherever the package manager put it -----------------------------
@@ -401,6 +459,8 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
         const job = {
           id, dir, framesDir, cuesDir, mp4File,
           config: { ...config, jobId: id }, frames: 0, progress: null,
+          files: hooks.files || null,
+          site: hooks.site || "",
           onFrame: hooks.onFrame || null,
           keepFrames: !!hooks.keepFrames,
           onPrepareCues: hooks.onPrepareCues || null,
@@ -410,6 +470,39 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
         jobs.set(id, job);
         return job;
       },
+      registerWarm(warmConfig = {}) {
+        const id = `warm-${Date.now().toString(36)}-${crypto.randomBytes(4).toString("hex")}`;
+        const rec = { id, config: { ...warmConfig }, jobId: "", waiterRes: null, cleanupWaiter: null, disposed: false };
+        warms.set(id, rec);
+        return {
+          id,
+          deliverJob(jobId) {
+            if (rec.disposed) return false;
+            rec.jobId = jobId;
+            if (rec.waiterRes) {
+              const r = rec.waiterRes;
+              rec.waiterRes = null;
+              rec.cleanupWaiter?.();
+              rec.cleanupWaiter = null;
+              warms.delete(id);
+              if (!r.writableEnded) send(r, 200, JSON.stringify({ ok: true, jobId }), "application/json");
+            }
+            return true;
+          },
+          dispose() {
+            if (rec.disposed) return;
+            rec.disposed = true;
+            warms.delete(id);
+            if (rec.waiterRes) {
+              const r = rec.waiterRes;
+              rec.waiterRes = null;
+              rec.cleanupWaiter?.();
+              rec.cleanupWaiter = null;
+              if (!r.writableEnded) send(r, 410, JSON.stringify({ cancelled: true }), "application/json");
+            }
+          },
+        };
+      },
       removeJob(job) {
         if (job?.mp4Handle) {
           try { void job.mp4Handle.close().catch(() => {}); } catch { /* ignore */ }
@@ -418,6 +511,16 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
         jobs.delete(job.id);
       },
       close() {
+        for (const rec of [...warms.values()]) {
+          rec.disposed = true;
+          rec.cleanupWaiter?.();
+          rec.cleanupWaiter = null;
+          if (rec.waiterRes && !rec.waiterRes.writableEnded) {
+            try { send(rec.waiterRes, 410, JSON.stringify({ cancelled: true }), "application/json"); } catch { /* ignore */ }
+          }
+          rec.waiterRes = null;
+        }
+        warms.clear();
         return new Promise((r) => { server.closeAllConnections(); server.close(() => r()); });
       },
       server,
