@@ -23,19 +23,22 @@ export class AdvStageData {
     this.initialCameraPosition = s._initialCameraPosition;
     this.initialCameraRotation = s._initialCameraRotation;
     this.focusDataSettingsKey = s._usingFocusDataSettingsKey;
-    this.focusPoints = s._focusPointsCollection._entries.map((e) => e._focusPointPositions);
+    const focusEntries = s._focusPointsCollection?._entries;
+    this.focusPoints = Array.isArray(focusEntries)
+      ? focusEntries.map((e) => (Array.isArray(e?._focusPointPositions) ? e._focusPointPositions : []))
+      : [];
     this.shadow = {
       texture: objects.id(s._shadowTexture, "Texture2D"), uv: s._shadowTextureUv, intensity: s._shadowTextureIntensity,
       amplitude: s._shadowTextureAmplitude, frequency: s._shadowTextureFrequency,
     };
     // a feature of the stage format this player does not draw: refused when the stage is loaded
     if (this.shadow.texture) throw new StoryCommandError(`stage ${this.name}: shadow textures are not supported`);
-    this.particleEffectGroupCollection = s._particleEffectGroupCollection;
+    this.particleEffectGroupCollection = s._particleEffectGroupCollection || { _groups: [] };
     // the effects of each AdvParticleEffectGroup (built by initParticleGroups)
-    this.particleGroups = this.particleEffectGroupCollection._groups.map(() => []);
+    this.particleGroups = (this.particleEffectGroupCollection._groups || []).map(() => []);
     this.loop = null;
-    this.volumeProfiles = s._allVolumeProfileCollection._profiles.map((ref) => objects.profile(ref));
-    this.lightGroups = s._lightGroupCollection._groups.map((g) => g._lights.map((ref) => {
+    this.volumeProfiles = (s._allVolumeProfileCollection?._profiles || []).map((ref) => objects.profile(ref));
+    this.lightGroups = (s._lightGroupCollection?._groups || []).map((g) => (g._lights || []).map((ref) => {
       const path = this.prefab.pathOf(ref);
       const light = this.prefab.fields(path, "Light");
       const urp = this.prefab.fields(path, "UniversalAdditionalLightData");

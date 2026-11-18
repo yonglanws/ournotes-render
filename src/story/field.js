@@ -184,12 +184,15 @@ export class AdvCharacterField {
   // .GetFocusPoints: an index out of range takes entry 0), the character stages at every second point; all at the
   // origin without a stage
   applyFocusStagePositions(stage, index = 0) {
-    if (!stage) {
+    const all = Array.isArray(stage?.focusPoints) ? stage.focusPoints : [];
+    const candidate = all.length ? all[index >= 0 && index < all.length ? index : 0] : null;
+    const pts = Array.isArray(candidate) && candidate.length ? candidate
+      : all.find((entry) => Array.isArray(entry) && entry.length);
+    if (!stage || !pts) {
       for (const a of this.anchors) a.localPosition = { x: 0, y: 0, z: 0 };
       for (const s of this.stages) s.localPosition = { x: 0, y: 0, z: 0 };
       return;
     }
-    const all = stage.focusPoints, pts = all[index >= 0 && index < all.length ? index : 0];
     pts.forEach((pt, i) => {
       if (i >= this.anchors.length) throw new RangeError(`stage ${stage.name}: ${pts.length} focus points, ${this.anchors.length} anchors`);
       this.anchors[i].localPosition = { ...pt };

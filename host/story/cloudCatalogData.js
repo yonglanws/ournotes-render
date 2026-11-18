@@ -65,6 +65,44 @@ export const webpDimensions = (buf) => {
   return { width: 2048, height: 1119 };
 };
 
+// Standard 5-row x 9-slot focus point grid shared by official AdvStage prefabs.
+const makeFocusRow = (xs, z = 0) => ({
+  _focusPointPositions: xs.map((x) => ({ x, y: 0, z })),
+});
+
+export const DEFAULT_FOCUS_POINTS_ENTRIES = Object.freeze([
+  makeFocusRow([-2.1, -1.58, -1.05, -0.53, 0, 0.53, 1.05, 1.58, 2.1], 0),
+  makeFocusRow([-2.6, -1.95, -1.3, -0.65, 0, 0.65, 1.3, 1.95, 2.6], 1.5),
+  makeFocusRow([-2.6, -1.95, -1.3, -0.65, 0, 0.65, 1.3, 1.95, 2.6], -1.25),
+  makeFocusRow([-7.4, -5.55, -3.7, -1.85, 0, 1.85, 3.7, 5.55, 7.4], 0),
+  makeFocusRow([-5, -3.75, -2.5, -1.25, 0, 1.25, 2.5, 3.75, 5], 0),
+]);
+
+const cloneDefaultFocusPointsEntries = () =>
+  DEFAULT_FOCUS_POINTS_ENTRIES.map((entry) => ({
+    _focusPointPositions: entry._focusPointPositions.map((pt) => ({ ...pt })),
+  }));
+
+const hasValidFocusEntries = (entries) => Array.isArray(entries)
+  && entries.length > 0
+  && entries.every((e) => Array.isArray(e?._focusPointPositions) && e._focusPointPositions.length >= 9);
+
+// Repairs any AdvStage component whose `_focusPointsCollection._entries` is missing or empty.
+export const ensureStageFocusPoints = (prefab) => {
+  if (!prefab || typeof prefab !== "object" || !Array.isArray(prefab.nodes)) return false;
+  let repaired = false;
+  for (const node of prefab.nodes) {
+    for (const comp of Array.isArray(node?.components) ? node.components : []) {
+      if (comp?.class !== "AdvStage") continue;
+      if (!hasValidFocusEntries(comp._focusPointsCollection?._entries)) {
+        comp._focusPointsCollection = { _entries: cloneDefaultFocusPointsEntries() };
+        repaired = true;
+      }
+    }
+  }
+  return repaired;
+};
+
 // Synthesizes a valid AdvStage prefab matching ournotes-player-site's GLTex & AdvStageData contract
 // when an unused cloud stage `.webp` has no donor story manifest.
 export const synthesizeStagePrefab = (stageId, width, height, textureRel) => {
@@ -131,7 +169,7 @@ export const synthesizeStagePrefab = (stageId, width, height, textureRel) => {
             _initialCameraPosition: { x: 0, y: 0, z: 0 },
             _initialCameraRotation: { x: 0, y: 0, z: 0 },
             _usingFocusDataSettingsKey: "Settings-Default",
-            _focusPointsCollection: { _entries: [] },
+            _focusPointsCollection: { _entries: cloneDefaultFocusPointsEntries() },
             _lightGroupCollection: {
               _groups: [{ _lights: [{ component: "MonoBehaviour", gameObject: lightPath, class: "AdvLight" }] }],
             },

@@ -14,7 +14,7 @@ import { loadConfig } from "../config.js";
 import { runDoctor } from "../doctor.js";
 import { buildStoryMessages } from "../ai/prompt.js";
 import { buildCastMessages, buildStoryboardMessages } from "../ai/staged.js";
-import { loadCloudCatalog, webpDimensions } from "../story/cloudCatalogData.js";
+import { loadCloudCatalog, synthesizeStagePrefab, webpDimensions } from "../story/cloudCatalogData.js";
 import { ensureCloudRuntimeBase, materializeSiteStoryAssets } from "../story/cloudSite.js";
 import { loadResourceGuide } from "../story/resourceGuide.js";
 import { SiteFormatCatalog } from "../story/siteFormat.js";
@@ -524,5 +524,236 @@ test("materializeSiteStoryAssets coalesces concurrent downloads via per-asset lo
     assert.ok(pool.stages.adv_bkg_stage_000042 && pool.stages.adv_bkg_stage_000043, "serialized pool merge preserves all concurrent additions");
   } finally {
     await new Promise((r) => srv.close(r));
+  }
+});
+
+test("synthesizeStagePrefab populates valid focusPoints and materializeSiteStoryAssets/buildSiteStory auto-repair empty cloud-pool entries", async () => {
+  const synth = synthesizeStagePrefab("adv_bkg_stage_000185", 2048, 1119, "textures/adv_bkg_stage_000185-adv_bkg_stage_000185.webp");
+  const advComp = synth.nodes[0].components.find((c) => c.class === "AdvStage");
+  assert.equal(advComp._focusPointsCollection._entries.length, 5);
+  for (const row of advComp._focusPointsCollection._entries) {
+    assert.equal(row._focusPointPositions.length, 9);
+  }
+
+  const site = tmpDir("ournotes-stage-repair-");
+  fs.mkdirSync(path.join(site, "stories"), { recursive: true });
+  fs.mkdirSync(path.join(site, "assets"), { recursive: true });
+  fs.mkdirSync(path.join(site, "models"), { recursive: true });
+  const putBlob = (data, ext = "json") => {
+    const b = gzAsset(data, ext);
+    fs.writeFileSync(path.join(site, b.rel), b.raw);
+    return b.entry;
+  };
+  const baseScene = putBlob({ stages: { "Adv/Stage/adv_bkg_stage_000152/adv_bkg_stage_000152": { nodes: [] } } });
+  const baseStory = putBlob({ models: { anon: "adv_live2d_anon_002_live_01" } });
+  const baseEp = putBlob({ advId: 10610, commands: [{ cmd: "Stage", TargetAssetName: "Adv/Stage/adv_bkg_stage_000152/adv_bkg_stage_000152" }], text: {}, sounds: {}, cuesheets: {} });
+  const uiTrans = putBlob({});
+  const uiTex = putBlob({});
+  const fonts = putBlob({ texts: {}, textures: {}, materials: {}, materialKeywords: {} });
+  const anonPrefab = putBlob({
+    nodes: [{ components: [{ class: "Live2DCharacter", _motionList: ["idle01_L", "idle01_C", "idle01_R"], _expressionList: ["idle01"], DefaultMotionName: "idle01_C", DefaultExpressionName: "idle01" }] }],
+  });
+  fs.writeFileSync(path.join(site, "models", "adv_live2d_anon_002_live_01.json"), JSON.stringify({ key: "anon", files: { "anon.prefab.json": anonPrefab } }));
+  fs.writeFileSync(path.join(site, "stories", "10610.json"), JSON.stringify({
+    format: "ournotes.story-manifest/2",
+    advId: 10610,
+    language: "zh-Hans",
+    models: { adv_live2d_anon_002_live_01: "models/adv_live2d_anon_002_live_01.json" },
+    files: { "scene.json": baseScene, "story.json": baseStory, "episode.json": baseEp },
+    languages: { "zh-Hans": { files: { "ui/ui.json": { parts: [["transitions", uiTrans.asset, uiTrans.size, uiTrans.stored], ["textures", uiTex.asset, uiTex.size, uiTex.stored]], size: 100 }, "ui/fonts.json": fonts } } },
+  }));
+
+  // Seed cloud-pool.json with a broken synthesized stage whose _entries is [] (matching cached adv_bkg_stage_000185).
+  const brokenPrefab = structuredClone(synth);
+  brokenPrefab.nodes[0].components[0]._focusPointsCollection._entries = [];
+  const texEntry = putBlob(tinyVp8lWebp(2048, 1119), "webp");
+  fs.writeFileSync(path.join(site, "cloud-pool.json"), JSON.stringify({
+    format: "ournotes.cloud-pool/1",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    stages: {
+      adv_bkg_stage_000185: {
+        key: "Adv/Stage/adv_bkg_stage_000185/adv_bkg_stage_000185",
+        prefab: brokenPrefab,
+        shaders: [],
+        files: { "textures/adv_bkg_stage_000185-adv_bkg_stage_000185.webp": texEntry },
+      },
+    },
+    audio: {},
+  }, null, 2));
+
+  // Even without running materializeSiteStoryAssets first, buildSiteStory repairs the bundled scene.json stage.
+  const script = {
+    format: "ournotes.story-script/1",
+    base: "stories/10610.json",
+    language: "zh-Hans",
+    title: "舞台修复测试",
+    cast: { anon: { model: "adv_live2d_anon_002_live_01", name: "千早爱音" } },
+    beats: [
+      { scene: "adv_bkg_stage_000185", positions: { anon: "center" } },
+      { say: "anon", text: "舞台切换正常。" },
+    ],
+  };
+  const built = buildSiteStory({ site, baseRel: "stories/10610.json", script, advId: 900185, language: "zh-Hans" });
+  assert.equal(built.errors, undefined, JSON.stringify(built.errors));
+  const sceneEntry = built.manifest.files["scene.json"];
+  const bundledStages = Array.isArray(sceneEntry.parts)
+    ? JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(site, sceneEntry.parts.find(([k]) => k === "stages")[1]))).toString("utf8"))
+    : JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(site, sceneEntry.asset))).toString("utf8")).stages;
+  const bundledAdv = bundledStages["Adv/Stage/adv_bkg_stage_000185/adv_bkg_stage_000185"].nodes[0].components[0];
+  assert.equal(bundledAdv._focusPointsCollection._entries.length, 5);
+  assert.equal(bundledAdv._focusPointsCollection._entries[0]._focusPointPositions.length, 9);
+
+  // materializeSiteStoryAssets also auto-repairs the cached cloud-pool.json on disk with zero network hits.
+  await materializeSiteStoryAssets({
+    site,
+    script,
+    language: "zh-Hans",
+    storageBaseUrl: "http://127.0.0.1:1",
+    assetBaseUrl: "http://127.0.0.1:1",
+    allowPrivateUrl: true,
+    logger: quietLogger(),
+  });
+  const repairedPool = JSON.parse(fs.readFileSync(path.join(site, "cloud-pool.json"), "utf8"));
+  const poolEntries = repairedPool.stages.adv_bkg_stage_000185.prefab.nodes[0].components[0]._focusPointsCollection._entries;
+  assert.equal(poolEntries.length, 5);
+  assert.equal(poolEntries[0]._focusPointPositions.length, 9);
+});
+
+test("donor-backed SE cues resolve under audio/<cue>/ in donor manifests (sound_se_adv_pulsation & sound_se_adv_clap_solo) and fallback handles per-cue CDN paths", async () => {
+  const blobMap = new Map();
+  const addBlob = (b) => { blobMap.set(b.rel, b.raw); return b.entry; };
+
+  const makeDonorManifest = (advId, cue, soundId, sheetId) => {
+    const m4a = addBlob(gzAsset(Buffer.from(`M4A-${cue}`), "m4a"));
+    const cues = addBlob(gzAsset({ [cue]: { file: `${cue}.m4a`, sampleRate: 48000, samples: 32000, channels: 2, categories: ["Se"] } }));
+    const ep = addBlob(gzAsset({
+      advId,
+      commands: [],
+      text: {},
+      sounds: { [soundId]: { _id: soundId, _category: 1, _soundCueSheetID: sheetId, _cueName: cue } },
+      cuesheets: { [sheetId]: { _id: sheetId, _cueSheetName: cue } },
+    }));
+    return {
+      format: "ournotes.story-manifest/2",
+      advId,
+      language: "zh-Hans",
+      files: {
+        "episode.json": ep,
+        [`audio/${cue}/${cue}.m4a`]: m4a,
+        [`audio/${cue}/cues.json`]: cues,
+      },
+    };
+  };
+
+  const donor10980 = makeDonorManifest(10980, "sound_se_adv_pulsation", 2100000000101, 2100000000101);
+  const donor10524 = makeDonorManifest(10524, "sound_se_adv_clap_solo", 2100000000202, 2100000000202);
+  // Empty donor manifest for a cue that falls back to per-cue CDN path after Cri/Sound/sound_se_adv/... 404s.
+  const donorEmpty = { format: "ournotes.story-manifest/2", advId: 10061, language: "zh-Hans", files: {} };
+
+  const requestedPaths = [];
+  const srv = http.createServer((req, res) => {
+    const clean = req.url.split("?")[0];
+    requestedPaths.push(clean);
+    if (clean === "/storage/stories/10980.json") { res.writeHead(200); res.end(JSON.stringify(donor10980)); return; }
+    if (clean === "/storage/stories/10524.json") { res.writeHead(200); res.end(JSON.stringify(donor10524)); return; }
+    if (clean === "/storage/stories/10061.json") { res.writeHead(200); res.end(JSON.stringify(donorEmpty)); return; }
+    if (clean.startsWith("/storage/assets/")) {
+      const rel = clean.slice("/storage/".length);
+      if (blobMap.has(rel)) { res.writeHead(200); res.end(blobMap.get(rel)); return; }
+    }
+    if (clean === "/assets/zh-Hans/Cri/Sound/sound_se_adv_clap_min_loop/sound_se_adv_clap_min_loop.m4a") {
+      res.writeHead(200);
+      res.end(Buffer.from("FALLBACK-CLAP-MIN"));
+      return;
+    }
+    res.writeHead(404);
+    res.end("not found");
+  });
+  await new Promise((resolve) => srv.listen(0, "127.0.0.1", resolve));
+  const { port } = srv.address();
+  const storageBaseUrl = `http://127.0.0.1:${port}/storage`;
+  const assetBaseUrl = `http://127.0.0.1:${port}/assets`;
+
+  const site = tmpDir("ournotes-se-donor-");
+  fs.mkdirSync(path.join(site, "stories"), { recursive: true });
+  fs.mkdirSync(path.join(site, "assets"), { recursive: true });
+  fs.mkdirSync(path.join(site, "models"), { recursive: true });
+  const putBlob = (data, ext = "json") => {
+    const b = gzAsset(data, ext);
+    fs.writeFileSync(path.join(site, b.rel), b.raw);
+    return b.entry;
+  };
+  const baseScene = putBlob({ stages: { "Adv/Stage/adv_bkg_stage_000152/adv_bkg_stage_000152": { nodes: [] } } });
+  const baseStory = putBlob({ models: { anon: "adv_live2d_anon_002_live_01" } });
+  const baseEp = putBlob({ advId: 10610, commands: [{ cmd: "Stage", TargetAssetName: "Adv/Stage/adv_bkg_stage_000152/adv_bkg_stage_000152" }], text: {}, sounds: {}, cuesheets: {} });
+  const uiTrans = putBlob({});
+  const uiTex = putBlob({});
+  const fonts = putBlob({ texts: {}, textures: {}, materials: {}, materialKeywords: {} });
+  const anonPrefab = putBlob({
+    nodes: [{ components: [{ class: "Live2DCharacter", _motionList: ["idle01_L", "idle01_C", "idle01_R"], _expressionList: ["idle01"], DefaultMotionName: "idle01_C", DefaultExpressionName: "idle01" }] }],
+  });
+  fs.writeFileSync(path.join(site, "models", "adv_live2d_anon_002_live_01.json"), JSON.stringify({ key: "anon", files: { "anon.prefab.json": anonPrefab } }));
+  fs.writeFileSync(path.join(site, "stories", "10610.json"), JSON.stringify({
+    format: "ournotes.story-manifest/2",
+    advId: 10610,
+    language: "zh-Hans",
+    models: { adv_live2d_anon_002_live_01: "models/adv_live2d_anon_002_live_01.json" },
+    files: { "scene.json": baseScene, "story.json": baseStory, "episode.json": baseEp },
+    languages: { "zh-Hans": { files: { "ui/ui.json": { parts: [["transitions", uiTrans.asset, uiTrans.size, uiTrans.stored], ["textures", uiTex.asset, uiTex.size, uiTex.stored]], size: 100 }, "ui/fonts.json": fonts } } },
+  }));
+
+  try {
+    const script = {
+      format: "ournotes.story-script/1",
+      base: "stories/10610.json",
+      language: "zh-Hans",
+      title: "SE Donor 测试",
+      cast: { anon: { model: "adv_live2d_anon_002_live_01", name: "千早爱音" } },
+      beats: [
+        { scene: "adv_bkg_stage_000152", positions: { anon: "center" } },
+        { say: "anon", text: "心跳加速。", se: "sound_se_adv_pulsation" },
+        { say: "anon", text: "拍手！", se: "sound_se_adv_clap_solo" },
+        { say: "anon", text: "零星掌声。", se: "sound_se_adv_clap_min_loop" },
+      ],
+    };
+
+    const mat = await materializeSiteStoryAssets({
+      site,
+      script,
+      language: "zh-Hans",
+      storageBaseUrl,
+      assetBaseUrl,
+      allowPrivateUrl: true,
+      logger: quietLogger(),
+    });
+    assert.ok(mat.materialized.includes("sound_se_adv_pulsation"));
+    assert.ok(mat.materialized.includes("sound_se_adv_clap_solo"));
+    assert.ok(mat.materialized.includes("sound_se_adv_clap_min_loop"));
+    assert.ok(!requestedPaths.includes("/assets/zh-Hans/Cri/Sound/sound_se_adv/sound_se_adv_pulsation.m4a"),
+              "donor-backed sound_se_adv_pulsation must not fall back to CDN 404");
+    assert.ok(!requestedPaths.includes("/assets/zh-Hans/Cri/Sound/sound_se_adv/sound_se_adv_clap_solo.m4a"),
+              "donor-backed sound_se_adv_clap_solo must not fall back to CDN 404");
+
+    const poolDoc = JSON.parse(fs.readFileSync(path.join(site, "cloud-pool.json"), "utf8"));
+    assert.equal(poolDoc.audio.sound_se_adv_pulsation.sheet, "sound_se_adv_pulsation");
+    assert.ok(poolDoc.audio.sound_se_adv_pulsation.files["audio/sound_se_adv_pulsation/sound_se_adv_pulsation.m4a"]);
+    assert.equal(poolDoc.audio.sound_se_adv_clap_solo.sheet, "sound_se_adv_clap_solo");
+    assert.ok(poolDoc.audio.sound_se_adv_clap_solo.files["audio/sound_se_adv_clap_solo/sound_se_adv_clap_solo.m4a"]);
+    assert.equal(poolDoc.audio.sound_se_adv_clap_min_loop.sheet, "sound_se_adv_clap_min_loop");
+
+    const built = buildSiteStory({ site, baseRel: "stories/10610.json", script, advId: 900199, language: "zh-Hans" });
+    assert.equal(built.errors, undefined, JSON.stringify(built.errors));
+    for (const cue of ["sound_se_adv_pulsation", "sound_se_adv_clap_solo", "sound_se_adv_clap_min_loop"]) {
+      assert.ok(built.manifest.files[`audio/${cue}/cues.json`], `${cue} cues.json bundled`);
+      assert.ok(built.manifest.files[`audio/${cue}/${cue}.m4a`], `${cue} .m4a bundled`);
+      const cuesDoc = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(site, built.manifest.files[`audio/${cue}/cues.json`].asset))).toString("utf8"));
+      assert.equal(cuesDoc[cue]?.file, `${cue}.m4a`);
+    }
+    const builtStory = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(site, built.manifest.files["story.json"].asset))).toString("utf8"));
+    assert.equal(builtStory.audio.sound_se_adv_pulsation, "audio/sound_se_adv_pulsation");
+    assert.equal(builtStory.audio.sound_se_adv_clap_solo, "audio/sound_se_adv_clap_solo");
+    assert.equal(builtStory.audio.sound_se_adv_clap_min_loop, "audio/sound_se_adv_clap_min_loop");
+  } finally {
+    await new Promise((resolve) => srv.close(resolve));
   }
 });

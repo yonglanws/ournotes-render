@@ -7,7 +7,13 @@
 //   and a partial local `resources/site` without deleting existing files.
 import fs from "node:fs";
 import path from "node:path";
-import { loadCloudCatalog, probeM4aCue, synthesizeStagePrefab, webpDimensions } from "./cloudCatalogData.js";
+import {
+  ensureStageFocusPoints,
+  loadCloudCatalog,
+  probeM4aCue,
+  synthesizeStagePrefab,
+  webpDimensions,
+} from "./cloudCatalogData.js";
 import {
   collectDeps,
   collectStageVolumeProfiles,
@@ -344,6 +350,7 @@ const scanLocalAssets = (site) => {
   }
   const poolPath = path.join(site, "cloud-pool.json");
   let cloudPool = { format: "ournotes.cloud-pool/1", updatedAt: "", stages: {}, audio: {} };
+  let repairedStages = false;
   if (fs.existsSync(poolPath)) {
     try {
       const prev = JSON.parse(fs.readFileSync(poolPath, "utf8"));
@@ -355,13 +362,48 @@ const scanLocalAssets = (site) => {
           audio: { ...(prev.audio || {}) },
         };
       }
-      for (const id of Object.keys(cloudPool.stages)) stageIds.add(id);
+      for (const [id, st] of Object.entries(cloudPool.stages)) {
+        if (st?.prefab && ensureStageFocusPoints(st.prefab)) repairedStages = true;
+        stageIds.add(id);
+      }
       for (const [cue, au] of Object.entries(cloudPool.audio)) {
         if (au?.files && Object.keys(au.files).length) cueFiles.set(cue, au.sheet);
       }
     } catch { /* rebuild clean pool */ }
   }
-  return { stageIds, cueFiles, cloudPool };
+  return { stageIds, cueFiles, cloudPool, repairedStages };
+};
+
+const findDonorAudioMatch = (files, cue, preferredSheet) => {
+  if (!files || typeof files !== "object") return null;
+  const candidates = [];
+  const push = (s) => { if (s && !candidates.includes(s)) candidates.push(s); };
+  push(preferredSheet);
+  push(cue);
+  for (const rel of Object.keys(files)) {
+    const m = /^audio\/([^/]+)\/cues\.json$/i.exec(rel);
+    if (m && !/^adv_voice_/i.test(m[1])) push(m[1]);
+  }
+  for (const rel of Object.keys(files)) {
+    const m = /^audio\/([^/]+)\/([^/]+)\.(?:m4a|wav|mp3|ogg|flac|aac|bin)$/i.exec(rel);
+    if (m && m[2] === cue && !/^adv_voice_/i.test(m[1])) push(m[1]);
+  }
+  for (const candSheet of candidates) {
+    const cuesRel = `audio/${candSheet}/cues.json`;
+    const prefix = `audio/${candSheet}/${cue}.`;
+    const matchingAudio = Object.entries(files).filter(([rel]) => rel.startsWith(prefix));
+    if (files[cuesRel] && matchingAudio.length) {
+      return { donorSheet: candSheet, cuesRel, matchingAudio };
+    }
+  }
+  for (const candSheet of candidates) {
+    const prefix = `audio/${candSheet}/${cue}.`;
+    const matchingAudio = Object.entries(files).filter(([rel]) => rel.startsWith(prefix));
+    if (matchingAudio.length) {
+      return { donorSheet: candSheet, cuesRel: null, matchingAudio };
+    }
+  }
+  return null;
 };
 
 const modelAssetsPresent = (site, modelId) => {
@@ -418,10 +460,10 @@ export const materializeSiteStoryAssets = async ({
   const lang = language || script.language || "zh-Hans";
   const cc = loadCloudCatalog();
   const req = extractRequestedAssets(script);
-  const { stageIds: localStages, cueFiles: localCues, cloudPool } = scanLocalAssets(site);
+  const { stageIds: localStages, cueFiles: localCues, cloudPool, repairedStages } = scanLocalAssets(site);
   const donorManifests = new Map();
   const materialized = [];
-  let poolDirty = false;
+  let poolDirty = repairedStages;
 
   const getDonorManifest = (advId) => {
     const key = String(advId);
@@ -521,6 +563,7 @@ export const materializeSiteStoryAssets = async ({
             const stageKey = Object.keys(sc.stages || {}).find((k) => k === stageId || k.endsWith(`/${stageId}`));
             if (stageKey && sc.stages[stageKey]) {
               const prefab = structuredClone(sc.stages[stageKey]);
+              ensureStageFocusPoints(prefab);
               // Ensure volume profiles referenced only by name are hydrated from donor stage prefabs
               const vp = new Map();
               for (const other of Object.values(sc.stages)) collectStageVolumeProfiles(other, vp);
@@ -599,17 +642,28 @@ export const materializeSiteStoryAssets = async ({
         const dm = await getDonorManifest(meta.donorAdvId);
         if (dm?.files) {
           try {
-            const cuesRel = `audio/${sheet}/cues.json`;
-            const prefix = `audio/${sheet}/${cue}.`;
-            const matchingAudio = Object.entries(dm.files).filter(([rel]) => rel.startsWith(prefix));
-            if (dm.files[cuesRel] && matchingAudio.length) {
-              await mirrorManifestEntry(cuesRel, dm.files[cuesRel]);
-              const cuesDoc = readEntry(site, dm.files[cuesRel]);
+            const match = findDonorAudioMatch(dm.files, cue, sheet);
+            if (match) {
+              const { donorSheet, cuesRel, matchingAudio } = match;
+              let cuesDoc = {};
+              if (cuesRel) {
+                await mirrorManifestEntry(cuesRel, dm.files[cuesRel]);
+                cuesDoc = readEntry(site, dm.files[cuesRel]) || {};
+              }
               const filesObj = {};
               await mapLimit(matchingAudio, 4, async ([aRel, aEntry]) => {
                 await mirrorManifestEntry(aRel, aEntry);
                 filesObj[aRel] = aEntry;
               });
+              let cueEntry = cuesDoc[cue] || null;
+              if (!cueEntry) {
+                const [firstRel, firstEntry] = matchingAudio[0];
+                const audioBytes = readEntry(site, firstEntry, "bytes");
+                cueEntry = {
+                  ...probeM4aCue(audioBytes, cue, isBgm),
+                  file: path.posix.basename(firstRel),
+                };
+              }
               let row = null, cuesheet = null;
               if (dm.files["episode.json"]) {
                 await mirrorManifestEntry("episode.json", dm.files["episode.json"]);
@@ -617,18 +671,21 @@ export const materializeSiteStoryAssets = async ({
                 const sEntry = Object.values(depEp.sounds || {}).find((r) => r?._cueName === cue);
                 if (sEntry) {
                   row = sEntry;
-                  cuesheet = depEp.cuesheets?.[sEntry._soundCueSheetID] || null;
+                  const depSheet = depEp.cuesheets?.[sEntry._soundCueSheetID] || null;
+                  cuesheet = depSheet
+                    ? (depSheet._cueSheetName === donorSheet ? depSheet : { ...depSheet, _cueSheetName: donorSheet })
+                    : null;
                 }
               }
               return {
-                sheet,
+                sheet: donorSheet,
                 cue,
                 kind: isBgm ? "bgm" : "se",
                 soundId: row?._id,
                 sheetId: cuesheet?._id || row?._soundCueSheetID,
                 row,
                 cuesheet,
-                cueEntry: cuesDoc[cue] || null,
+                cueEntry,
                 files: filesObj,
               };
             }
@@ -638,23 +695,28 @@ export const materializeSiteStoryAssets = async ({
           }
         }
       }
-      try {
-        const audioUrl = `${cleanAssets}/${encodeURIComponent(lang)}/Cri/Sound/${sheet}/${cue}.m4a`;
-        const m4aBytes = await fetchRemoteBytes(audioUrl, fetchOpts);
-        const m4aEntry = writeAsset(site, m4aBytes, "m4a");
-        const cueEntry = probeM4aCue(m4aBytes, cue, isBgm);
-        return {
-          sheet,
-          cue,
-          kind: isBgm ? "bgm" : "se",
-          cueEntry,
-          files: { [`audio/${sheet}/${cue}.m4a`]: m4aEntry },
-        };
-      } catch (e) {
-        if (signal?.aborted) throw signal.reason || e;
-        logger.warn?.(`cloud-site: could not materialize audio ${cue}: ${e.message}`);
-        return null;
+      const fallbackSheets = cue && cue !== sheet ? [sheet, cue] : [sheet];
+      let lastAudioErr = null;
+      for (const fbSheet of fallbackSheets) {
+        try {
+          const audioUrl = `${cleanAssets}/${encodeURIComponent(lang)}/Cri/Sound/${fbSheet}/${cue}.m4a`;
+          const m4aBytes = await fetchRemoteBytes(audioUrl, fetchOpts);
+          const m4aEntry = writeAsset(site, m4aBytes, "m4a");
+          const cueEntry = probeM4aCue(m4aBytes, cue, isBgm);
+          return {
+            sheet: fbSheet,
+            cue,
+            kind: isBgm ? "bgm" : "se",
+            cueEntry,
+            files: { [`audio/${fbSheet}/${cue}.m4a`]: m4aEntry },
+          };
+        } catch (e) {
+          if (signal?.aborted) throw signal.reason || e;
+          lastAudioErr = e;
+        }
       }
+      logger.warn?.(`cloud-site: could not materialize audio ${cue}: ${lastAudioErr?.message || "not found"}`);
+      return null;
     });
     if (audioEntry) {
       pendingAudio[cue] = audioEntry;
@@ -680,6 +742,9 @@ export const materializeSiteStoryAssets = async ({
             };
           }
         } catch { /* merge into current */ }
+      }
+      for (const st of Object.values(latest.stages)) {
+        if (st?.prefab) ensureStageFocusPoints(st.prefab);
       }
       Object.assign(latest.stages, pendingStages);
       Object.assign(latest.audio, pendingAudio);

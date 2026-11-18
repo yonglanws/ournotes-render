@@ -46,11 +46,19 @@ test("stage profiles resolve by object identity even when their names coincide",
     _particleEffectGroupCollection: { _groups: [] }, _lightGroupCollection: { _groups: [] },
     _allVolumeProfileCollection: { _profiles: profiles.map(ref) },
   })])]);
+  const missingFocusRoot = o.prefab([node("StageNoFocus", [mb("AdvStage", {
+    _backgroundSprite: null, _shadowTexture: null,
+  })])]);
   const resources = new ObjectResources(new AssetStore({ objects: o.objects }));
   const stage = new AdvStageData(resources.prefab(root), resources);
   assert.deepEqual(stage.volumeProfiles.map((p) => p.components[0].intensity.m_Value), [0.2, 0.9]);
   assert.equal(stage.volumeProfile(0), resources.profile(profiles[0]));
   assert.equal(stage.volumeProfile(0).components[0].asset, "Bloom");
+
+  const noFocusStage = new AdvStageData(resources.prefab(missingFocusRoot), resources);
+  assert.deepEqual(noFocusStage.focusPoints, []);
+  assert.deepEqual(noFocusStage.lightGroups, []);
+  assert.deepEqual(noFocusStage.volumeProfiles, []);
 });
 
 test("parented UI instances keep font component identities and local reference targets", () => {

@@ -501,6 +501,15 @@ test("AdvCharacterField: focus stage positions, field position and scale", () =>
   f.setStageInfo(null);
   assert.deepEqual(f.field.localPosition, { x: 0, y: 0, z: 0 });
   assert.deepEqual(f.stages[4].localScale, { x: 1, y: 1, z: 1 });
+
+  // Missing or empty focusPoints must reset safely instead of throwing TypeError on pts.forEach.
+  f.setStageInfo(stage, 1);
+  assert.equal(f.anchors[0].localPosition.x, 10);
+  for (const emptyStage of [synthStage({ focusPoints: [] }), synthStage({ focusPoints: undefined }), synthStage({ focusPoints: [[]] })]) {
+    f.applyFocusStagePositions(emptyStage, 0);
+    assert.deepEqual(f.anchors[0].localPosition, { x: 0, y: 0, z: 0 });
+    assert.deepEqual(f.stages[0].localPosition, { x: 0, y: 0, z: 0 });
+  }
 });
 
 test("AdvStageData: light groups by GameObject activity; ChangeLights keeps the index", () => {

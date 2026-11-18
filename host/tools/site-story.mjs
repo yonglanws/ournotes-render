@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { compileScript, checkScript, cueLabel, fontFamily, parseScript, withBrowserFonts } from "../../scripts/lib/story-author/script.js";
 import { STORY_LANGUAGES } from "../../src/story/params.js";
 import { assertPublicHttpUrl, isPrivateAddress, resolvePublicUrl } from "../net/urlGuard.js";
-import { loadCloudCatalog } from "../story/cloudCatalogData.js";
+import { ensureStageFocusPoints, loadCloudCatalog } from "../story/cloudCatalogData.js";
 import { applyMusicGuide, applySoundGuide, applyStageGuide, loadResourceGuide } from "../story/resourceGuide.js";
 
 export const OFFICIAL_ASSET_BASE_URL = "https://assets.bdon.moe";
@@ -462,17 +462,23 @@ export const collectStageVolumeProfiles = (prefab, volumeProfiles) => {
 };
 
 const hydrateStagePrefab = (prefab, volumeProfiles) => {
-  if (!prefab || !volumeProfiles?.size) return prefab;
-  const profs = stageAdvComp(prefab)?._allVolumeProfileCollection?._profiles;
-  if (!Array.isArray(profs) || !profs.some((p) => p && p.name && !Array.isArray(p.components) && volumeProfiles.has(p.name))) {
-    return prefab;
-  }
+  if (!prefab) return prefab;
+  const adv = stageAdvComp(prefab);
+  const profs = adv?._allVolumeProfileCollection?._profiles;
+  const needsProfiles = !!(volumeProfiles?.size && Array.isArray(profs)
+    && profs.some((p) => p && p.name && !Array.isArray(p.components) && volumeProfiles.has(p.name)));
+  const needsFocus = !!(adv && (!Array.isArray(adv._focusPointsCollection?._entries)
+    || adv._focusPointsCollection._entries.length === 0));
+  if (!needsProfiles && !needsFocus) return prefab;
   const cloned = structuredClone(prefab);
-  const clonedProfs = stageAdvComp(cloned)._allVolumeProfileCollection._profiles;
-  for (let i = 0; i < clonedProfs.length; i++) {
-    const p = clonedProfs[i];
-    if (p && p.name && !Array.isArray(p.components) && volumeProfiles.has(p.name)) {
-      clonedProfs[i] = structuredClone(volumeProfiles.get(p.name));
+  ensureStageFocusPoints(cloned);
+  if (needsProfiles) {
+    const clonedProfs = stageAdvComp(cloned)._allVolumeProfileCollection._profiles;
+    for (let i = 0; i < clonedProfs.length; i++) {
+      const p = clonedProfs[i];
+      if (p && p.name && !Array.isArray(p.components) && volumeProfiles.has(p.name)) {
+        clonedProfs[i] = structuredClone(volumeProfiles.get(p.name));
+      }
     }
   }
   return cloned;
@@ -661,8 +667,10 @@ const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = t
         const cp = JSON.parse(fs.readFileSync(cloudPoolPath, "utf8"));
         for (const [id, st] of Object.entries(cp?.stages || {})) {
           if (!st?.key || !st?.prefab) continue;
-          collectStageVolumeProfiles(st.prefab, volumeProfiles);
-          stagePrefabs.set(st.key, st.prefab);
+          const prefab = structuredClone(st.prefab);
+          ensureStageFocusPoints(prefab);
+          collectStageVolumeProfiles(prefab, volumeProfiles);
+          stagePrefabs.set(st.key, prefab);
           if (Array.isArray(st.shaders) && st.shaders.length) stageShaders.set(st.key, new Map(st.shaders));
           if (st.files && Object.keys(st.files).length) stageFiles.set(st.key, st.files);
           if (!stageIds.has(id)) {
