@@ -6,7 +6,11 @@ import { motionStems } from "../../scripts/lib/story-author/script.js";
 import { frameChoices, postEffectChoices, soundChoices, transitionChoices } from "../story/resourceGuide.js";
 import { budgetCount, dialogueBudgetFor, directionBudgetFor, gazeBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
 import { dialoguePersonaPrompt } from "./personas.js";
-import { frameLine, musicLine, postEffectLine, soundLine, stageLine, transitionLine } from "./resourceLines.js";
+import {
+  formatCategorizedMusic, formatCategorizedSounds, formatCategorizedStages,
+  selectPromptCharacterGroups, selectPromptSounds,
+} from "./catalogSelection.js";
+import { frameLine, postEffectLine, transitionLine } from "./resourceLines.js";
 
 const pct = (value) => Math.round(value * 100);
 const pct1 = (value) => (Math.round(value * 1000) / 10).toFixed(1);
@@ -153,15 +157,14 @@ export const buildPlanMessages = ({ catalog, request, config }) => {
   const language = request.language || catalog.language;
   const minutes = Number(request.targetMinutes ?? config.story.targetMinutes ?? 3);
   const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
-  const models = [];
-  for (const m of catalog.models || []) {
-    const key = m.key || m.character || m.name;
-    if (!key || models.some((x) => (x.key || x.character || x.name) === key)) continue;
-    models.push(m);
-    if (models.length >= MAX_PROMPT_MODELS) break;
-  }
-  const cast = models.map((m) => `- ${m.name}${m.character && m.character !== m.name ? ` (${m.character})` : ""}`).join("\n");
-  const stages = catalog.stages.slice(0, 40).map((s) => `- ${s.id}${s.caption ? ` — ${s.caption}` : ""}`).join("\n");
+  const charGroups = selectPromptCharacterGroups(catalog.models || [], { query: request.prompt || "", maxCap: MAX_PROMPT_MODELS });
+  const models = [...charGroups.values()].map((list) => list[0]).filter(Boolean);
+  const cast = models.map((m) => `- ${m.name}${m.band ? `（${m.band}）` : m.character && m.character !== m.name ? ` (${m.character})` : ""}`).join("\n");
+  const stages = formatCategorizedStages(catalog.stages || [], {
+    query: request.prompt || "",
+    castBands: models.map((m) => m.band),
+    limit: 64,
+  });
   return [
     {
       role: "system",
@@ -246,7 +249,7 @@ export const stagingRules = (maxOnStage = 3, budget = null) => {
       "- 走位与蹲起：已出场角色换位直接用 positions 或 move（{cast, to/dir/dx/dy/dz, duration}），不要 Out+In 闪人；弯腰/蹲下找东西用 move {dir: \"down\", distance: 0.25} 配合 pedestal -0.25 与 focusTargetHead: true，起身用 dir: \"up\" 恢复。\n" +
       "- 倾斜、冲击与视线：angle {z: -12~12} 做歪头/迟疑；爆发/吐槽用 shake {target: \"ui\", power: 3~5} 震动对话框；低头回避用 look: 0.4, lookY: -0.5~-0.8，抬头用 look: \"stop\"（或 lookAt: \"stop\"）收回。\n" +
       "- 回忆与独白：用 postEffect（如 reminiscence1/2）、frame（如 letterbox_black/fog）、brightness {target: \"bg\", value: 0.5}、fadeColor \"#FFFFFF\" / transition \"dissolve\"，结束时用 postEffectStop: true / frameStop: true / brightness 1 复位。",
-    `表演：一句台词最多一个说话者动作，听者反应最多一个；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的台词没有 Motion；表情和动作一起写，默认 idle，不要每句都笑。动作写 stem（如 mtn_smile01），编译器会按左 _R / 中 _C / 右 _L 自动面向对话伙伴；只有刻意转头避开或正对镜头时才写完整 _L/_C/_R 后缀。close/very-close 单人近景自动对齐角色头部高度（TargetName），middle/far 蹲起或身高差时也可显式设 focusTargetHead: true。`,
+    `表演：一句台词最多一个说话者动作，听者反应最多一个；约 ${pct(OFFICIAL_TARGETS.noMotionShare)}% 的台词没有 Motion；表情和动作一起写，默认 idle，不要每句都笑。动作写 stem（如 mtn_smile01），编译器会按左 _L / 中 _C / 右 _R 自动面向对话伙伴；只有刻意转头避开或正对镜头时才写完整 _L/_C/_R 后缀。close/very-close 单人近景自动对齐角色头部高度（TargetName），middle/far 蹲起或身高差时也可显式设 focusTargetHead: true。`,
     limit === 2
       ? `视线：双人戏每 3~4 句写一个 lookAt，不要每 1~2 句都写；角色把视线移开时用独立 look/lookY（最多 ${gaze?.independentMax ?? 2} 次，计入总视线预算），结束后用 look: "stop" 收回。`
       : `视线：双人戏每 3~4 句写一个 lookAt，三人以上只在被点名或明显反应时用；角色把视线移开时用独立 look/lookY（最多 ${gaze?.independentMax ?? 2} 次，计入总视线预算），结束后用 look: "stop" 收回。`,
@@ -280,7 +283,10 @@ export const buildStoryMessages = ({ catalog, request, config, plan = null }) =>
   // the staged storyboard system/user pair.
   const direction = directionBudgetFor(lineBudget);
   const gaze = gazeBudgetFor(direction);
-  const models = catalog.models.slice(0, MAX_PROMPT_MODELS);
+  const charGroups = selectPromptCharacterGroups(catalog.models || [], { query: request.prompt || "", maxCap: MAX_PROMPT_MODELS });
+  const models = charGroups.size <= 6
+    ? [...charGroups.values()].flat()
+    : [...charGroups.values()].map((list) => list[0]).filter(Boolean);
   const modelLines = models.map((m) => {
     // The single pass writes dialogue too, so a persona is trimmed the same way the staged dialogue pass trims it.
     // The fast cast has usually narrowed the pool to 1~3 models by now, so the full sheet would also fit — the trim
@@ -300,18 +306,22 @@ export const buildStoryMessages = ({ catalog, request, config, plan = null }) =>
     ].filter(Boolean).join("\n");
   }).join("\n");
 
-  const stages = catalog.stages.slice(0, 80), music = catalog.music.slice(0, 40);
   const resolvedSounds = soundChoices(catalog.soundChoices || catalog.sounds || []);
   const resolvedFrames = frameChoices(catalog.frameChoices || catalog.frames || []);
   const resolvedPostEffects = postEffectChoices(catalog.postEffectChoices || catalog.postEffects || []);
   const resolvedTransitions = transitionChoices(catalog.transitionChoices || catalog.transitions || []);
-  const stageLines = stages.map(stageLine).join("\n") || "(none)";
-  const musicLines = music.map(musicLine).join("\n") || "(none)";
-  const soundLines = resolvedSounds.slice(0, 40).map(soundLine).join("\n") || "(none)";
+  const stageLines = formatCategorizedStages(catalog.stages || [], {
+    query: request.prompt || "",
+    castBands: models.map((m) => m.band),
+    limit: 80,
+  });
+  const musicLines = formatCategorizedMusic(catalog.music || [], { query: request.prompt || "", limit: 91 });
+  const pickedSounds = selectPromptSounds(resolvedSounds, { query: request.prompt || "", limit: 72 });
+  const soundLines = formatCategorizedSounds(pickedSounds, { query: request.prompt || "", limit: 72 });
   const frameLines = resolvedFrames.slice(0, 24).map(frameLine).join("\n") || "(none)";
   const postEffectLines = resolvedPostEffects.slice(0, 24).map(postEffectLine).join("\n") || "(none)";
   const transitionLines = resolvedTransitions.slice(0, 16).map(transitionLine).join("\n") || "(none)";
-  const exampleSe = resolvedSounds[0]?.cue || "";
+  const exampleSe = pickedSounds[0]?.cue || resolvedSounds[0]?.cue || "";
   const history = Array.isArray(request.history) ? request.history.slice(-6) : [];
   const historyBlock = history.length
     ? `\n## 最近对话（只用于保持称呼、关系和语气，不要复述）\n${
@@ -412,7 +422,7 @@ ${chatNote}${historyBlock}
 - 标题：${title || "由你取一个贴合场景的短标题"}
 - 台词总量 ${lineRange} 条（目标约 ${lineBudget} 条，按有文本 Talk 行计）；一场戏只推进一个事件或一个情绪转折。
 - 可用的底本 base：${catalog.manifest}（必须原样写入脚本的 base 字段）
-- 可用语言：${catalog.languages.join(", ")}
+- 可用语言：${(catalog.languages || [language]).filter(Boolean).join(", ")}
 ${planNotes}
 ## 官方节奏（30 部官方样本：8 部本地章节 + 22 部双人友情戏）
 - 台词：整条台词常见 1~${OFFICIAL_TARGETS.lineCharsP90} 字（均值 ${fixed(OFFICIAL_TARGETS.lineCharsMean, 1)} 字、中位 ${OFFICIAL_TARGETS.lineCharsMedian}、p90 ${OFFICIAL_TARGETS.lineCharsP90}）；显式换行片段常见 7~17 字、均值 ${fixed(OFFICIAL_TARGETS.segmentCharsMean, 1)} 字；约 ${pct(OFFICIAL_TARGETS.twoLineShare)}% 两行，三行以上不足 1%；2~6 字短反应约 ${pct(OFFICIAL_TARGETS.shortShare)}%；省略号约 ${pct(OFFICIAL_TARGETS.ellipsisShare)}%、问号约 ${pct(OFFICIAL_TARGETS.questionShare)}%、叹号约 ${pct(OFFICIAL_TARGETS.exclaimShare)}%。
@@ -444,7 +454,7 @@ ${JSON.stringify(example, null, 2)}
 - actions：一句台词内的听者反应，最多 1 条（加上 say.motion 共 2 个动作）：{"at": 0~1, "cast": 可选（默认说话者）, "motion": 可选, "expression": 可选, "lookAt": 可选或"stop"}。至少写 motion/expression/lookAt 之一；cast 必须在台上。**听者反应一律写 at: 0**；官方样本没有句中动作，不要用 0.3~0.7。
 - lookAt：一个站在台上的 cast id、位置名、1~9 的构图点，或 "stop" 收回视线。双人戏每 3~4 句写一个 lookAt；总视线（lookAt + 独立 look）约 ${gaze.total} 次/场，独立 look 最多 ${gaze.independentMax} 次（计入总视线）。
 - cast id 是字母开头、只含字母数字下划线的字符串；cast 的 model 必须是下方清单里的 model id，name 是显示名。
-- motion 优先写清单中的 stem（如 mtn_smile01），编译器按左侧 _R / 中间 _C / 右侧 _L 自动选择面向伙伴的变体；只有刻意背对/正对时才写完整带后缀名；expression 必须是完整名。动作说明（括号里）是按名称推断的，只用来帮你选，不要写进 JSON。
+- motion 优先写清单中的 stem（如 mtn_smile01），编译器按左侧 _L / 中间 _C / 右侧 _R 自动选择面向伙伴的变体；只有刻意背对/正对时才写完整带后缀名；expression 必须是完整名。动作说明（括号里）是按名称推断的，只用来帮你选，不要写进 JSON。
 - 同一时刻最多 3 个角色在台上；用 positions 换组，不要为每次换人新开一个 scene。
 - 台词每行不超过 22 个全角字符，单条最多 2 行（用 \\n 换行）；约 ${pct(OFFICIAL_TARGETS.twoLineShare)}% 两行；约 ${pct(OFFICIAL_TARGETS.shortShare)}% 是 2~6 字的短反应；不要空行，不要首尾空白。
 - 不要输出清单之外的任何名称；不确定的动作/表情/特效就省略该字段。
@@ -534,13 +544,8 @@ ${modelLines}
 // carries 1~3 compact personas instead of every sheet. The staged pipeline does the same with its cast pass.
 export const buildQuickCastMessages = ({ catalog, request, config, history = [] }) => {
   const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
-  const rosterModels = [];
-  for (const m of catalog.models || []) {
-    const key = m.key || m.character || m.name;
-    if (!key || rosterModels.some((x) => (x.key || x.character || x.name) === key)) continue;
-    rosterModels.push(m);
-    if (rosterModels.length >= MAX_PROMPT_MODELS) break;
-  }
+  const charGroups = selectPromptCharacterGroups(catalog.models || [], { query: request.prompt || "", maxCap: MAX_PROMPT_MODELS });
+  const rosterModels = [...charGroups.values()].map((list) => list[0]).filter(Boolean);
   const roster = rosterModels
     .map((m) => {
       const entry = personaEntryFor(config.story?.personas, m);

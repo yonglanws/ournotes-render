@@ -76,22 +76,24 @@ from (Normal episodes; home spot talks and live result talks cannot be bases).
 ```
 
 - `stages[].id` is what a scene's `scene` names: the last segment of the stage key (the whole key where two stages
-  end alike). `name`, `description` and `tags` come from the site resource guide
-  ([`host/story/site-resources.yaml`](../host/story/site-resources.yaml)); `caption` is the location caption the base
-  story shows on that stage, empty when it has none. A title-card backdrop (`kind: title`, a black screen) is never
-  offered as a scene.
-- `music[].cue` is what a scene's `music` names; `name`, `mood` and `use` come from the guide. The AI writer's
+  end alike). `name`, `description`, `indoor`, `timeOfDay`, `band`, and `tags` come from the site resource guide
+  ([`host/story/site-resources.yaml`](../host/story/site-resources.yaml), generated alongside
+  [`host/story/cloud-catalog.json`](../host/story/cloud-catalog.json) covering 343 stages, 91 BGMs, 345 SEs, and
+  209 TW + 58 JP = 267 Live2D models); `caption` is the location caption the base story shows on that stage, empty
+  when it has none. Title-card backdrops (`kind: title`, such as `adv_bkg_stage_000217`, `000218`, `000333`) are
+  never offered as a scene.
+- `music[].cue` is what a scene's `music` names; `name`, `mood`, `tempo` and `use` come from the guide. The AI writer's
   prompt tells it to match the cue's mood and purpose to the scene's overall tone (e.g. no comedy cue under a serious
   talk); there is no automatic replacement.
-- `sounds[].cue` is what a beat's `se` names (a sheet may hold several); `name` and `use` come from the guide.
-- The stage, music and SE lists are pooled from **every** story of the site, not just the base: a new episode can use a
-  location or sound another story brought. The base story's own entries stay first.
-- A pooled location is only offered when the first story that used it casts at least one character the base story
-  also casts. This keeps another band's school rooftop or bedroom out of a MyGO episode; sounds are pooled
-  unconditionally. Title-card backdrops (`kind: title`) are never offered.
+- `sounds[].cue` is what a beat's `se` names (a sheet may hold several); `name`, `category` and `use` come from the guide.
+- In the host/site-format pipeline (`host/tools/site-story.mjs` and the default zero-local-site `cloud-site` runtime),
+  stages, music, SEs, frames, post-effects, particle effects, stills, rule transitions and Live2D models are pooled
+  from every local story and merged with the full cloud semantic catalog (`castOnly: false` by default, so all valid
+  cloud assets and cross-band venues are accepted unless `castOnly: true` is passed). Title-card backdrops (`kind: title`)
+  are always filtered out of scene pools.
 - A site may ship its own `<site>/story-resources.yaml` (same shape as the bundled file) to describe a different
   site's ids; without one, unknown ids fall back to the story's caption and label.
-- `cast`: the models the base story itself uses (any model of `models.json` can be cast).
+- `cast`: the models the base story itself uses (any model of `models.json` or the merged cloud catalog can be cast).
 - With `--out`: `stages.png`, the background picture of each stage with its id and caption.
 
 ### models
@@ -240,20 +242,23 @@ A script with errors is not built.
 | `cast` | Cast id → `{model, name}`: a model id of `models.json` and the name shown in the talk window. A cast id is a letter followed by letters, digits or `_`. |
 | `beats` | The story in order. The first beat is a scene. |
 
-Beats (each has one of the keys `scene`, `positions`, `say`, `narrate`, `camera`, `fade`, `pause`, `action`; any
-beat may have an `id`, reported with its lines by `render`). The director fields are described in
-[Story director](story-director.md):
+Beats (each has one of the beat keys in `scripts/lib/story-author/grammar.js`: `scene`, `positions`, `say`, `narrate`,
+`camera`, `fade`, `pause`, `action`, plus standalone FX/audio beats `move`, `angle`, `bgm`, `bgmFade`, `bgmVolume`,
+`still`, `subtitles`, `frame`, `frameStop`, `postEffect`, `postEffectStop`, `brightness`, `shake`, `cameraShake`,
+`flash`, `stageEnv`, `talkWindow`, `se`, `seStop`, `hideTalk`; any beat may have an `id`, reported with its lines by
+`render`). The director fields are described in [Story director](story-director.md):
 
 | Beat | Keys |
 |---|---|
-| scene | `scene`: a stage id. `music`: a cue of the site, `"stop"`, or absent to keep what plays. `location`: a caption shown at the start. `camera`: `near` (1.2x, the widest), `middle` (1.4x, default), `far` (1.8x, group), `close` (2.8x, close-up) or `very-close` (4x), or `{distance, focus, track}`. `focus`: a cast id, a position, or a focus point 1..9 the camera looks at. `track`: optional horizontal camera offset. `focusDuration`, `trackDuration`: optional seconds of the camera move. `positions`: who stands where (absent: nobody). `se`, `seDuration`, `seDelay`, `seStop`: an optional sound effect (see [Camera, gaze and sound fields](#camera-gaze-and-sound-fields)). A scene after the first fades out and in, and clears the stage. |
-| positions | `positions`: who stands where from now on; characters not named leave, characters on a new position leave and enter there, each with a short fade. `camera`, `focus`, `track`: optional, as for a scene. `focusDuration`, `trackDuration`: optional camera move seconds. `motionFadeIn`, `motionWait`: optional Motion row fields. |
-| say | `say`: a cast id. `text`: the line. `motion`: optional, a motion of the speaker's model. `expression`: optional, an expression of the speaker's model. `lookAt`: optional gaze target. `focus`, `camera`, `track`: optional camera. `zoom`, `zoomDuration`: optional slow push-in/pull-out. `focusDuration`, `trackDuration`, `pedestal`, `pedestalDuration`, `pan`, `panDuration`, `panFocusSlide`, `dof`, `dofDuration`, `dofLayers`, `look`, `lookY`, `lookDuration`, `se`, `seDuration`, `seDelay`, `seStop`, `motionFadeIn`, `motionWait`: optional official camera, gaze, acting and sound fields. `actions`: optional timed acting before or during the line (speaker or listeners). |
-| narrate | `narrate`: a line without a speaker. `focus`, `camera`, `track`: optional. `zoom`, `zoomDuration`: optional slow push-in/pull-out. `focusDuration`, `trackDuration`, `pedestal`, `pedestalDuration`, `pan`, `panDuration`, `panFocusSlide`, `dof`, `dofDuration`, `dofLayers`: optional camera fields. `actions`: optional; each action names its `cast`. |
-| camera | `camera`: a distance or `{distance, focus, track}`. `focus`, `track`: optional. `zoom`, `zoomDuration`: optional slow zoom (its seconds default to `cameraDuration`, else 1.5). `cameraDuration`: seconds of the move; `duration` is its older alias. `focusDuration`, `trackDuration`, `pedestal`, `pedestalDuration`, `pan`, `panDuration`, `panFocusSlide`, `dof`, `dofDuration`, `dofLayers`, `se`, `seDuration`, `seDelay`, `seStop`: optional official fields. Moves the camera without changing the staging. |
-| fade | `fade`: `"out"` or `"in"`. `duration`: seconds (default 1). |
-| pause | `pause`: seconds of silence, compiled to `Delay`. |
-| action | `action`: a cast id. `motion`, `expression`, `lookAt`: optional, at least one. `look`, `lookY`, `lookDuration`, `dof`, `dofDuration`, `dofLayers`, `se`, `seDuration`, `seDelay`, `seStop`, `motionFadeIn`, `motionWait`: optional official fields. `duration`: optional silent beat after it. |
+| scene | `scene`: a stage id. `music`: a cue of the site, `"stop"`, or absent to keep what plays. `location`: a caption shown at the start. `camera`: `full` (1.0x), `near` (1.2x, wide & 3-person group default), `middle` (1.4x, default 2-person shot), `far` (1.8x, tight medium), `close` (2.8x, close-up), `very-close` (4x), or `macro` (6x), or `{distance, focus, track}`. `focus`: a cast id, a position, or a focus point 1..9 the camera looks at. `track`: optional horizontal camera offset. `focusDuration`, `trackDuration`: optional seconds of the camera move. `positions`: who stands where (absent: nobody). `transition`, `transitionDuration`, `fadeRule` (`0001`..`0005`), `fadeColor` (`#000000`/`#FFFFFF`), `se`, `seDuration`, `seDelay`, `seStop`: optional transition and sound effect fields. A scene after the first transitions and clears the stage. |
+| positions | `positions`: who stands where from now on (slot name or `{"at", "dx", "dy", "dz", "motion", "expression"}`); characters not named leave, characters on a new position leave and enter there, each with a short fade. `camera`, `focus`, `track`: optional, as for a scene. `focusDuration`, `trackDuration`, `moveDuration`: optional camera/move seconds. `motionFadeIn`, `motionWait`: optional Motion row fields. |
+| say | `say`: a cast id. `text`: the line. `thought`, `ignoreLipSync`, `hideTalk`: optional booleans. `motion`, `expression`, `lookAt`, `focus`, `camera`, `track`, `zoom`, `zoomDuration`, `focusDuration`, `trackDuration`, `pedestal`, `pedestalDuration`, `pan`, `panDuration`, `panFocusSlide`, `dof`, `dofDuration`, `dofLayers`, `dofTarget`, `ease`, `cameraDelay`, `focusSharp`, `focusTargetHead`, `role`, `roleDuration`, `tilt`, `tiltDuration`, `look`, `lookY`, `lookDuration`, `move`, `angle`, `bgm`, `bgmFade`, `bgmVolume`, `bgmStart`, `frame`, `frameAction`, `frameDuration`, `frameStop`, `postEffect`, `postEffectDuration`, `postEffectStop`, `brightness`, `shake`, `cameraShake`, `cameraShakeFade`, `cameraShakeStrength`, `flash`, `talkWindow`, `se`, `seDuration`, `seDelay`, `seStop`, `motionFadeIn`, `motionWait`: optional official camera, gaze, acting, FX and sound fields. `actions`: optional timed acting before or during the line (speaker or listeners). |
+| narrate | `narrate`: a line without a speaker. `thought`, `ignoreLipSync`, `hideTalk`, `focus`, `camera`, `track`, `zoom`, `zoomDuration`, `focusDuration`, `trackDuration`, `pedestal`, `pedestalDuration`, `pan`, `panDuration`, `panFocusSlide`, `dof`, `dofDuration`, `dofLayers`, `dofTarget`, `ease`, `cameraDelay`, `focusSharp`, `focusTargetHead`, `role`, `roleDuration`, `tilt`, `tiltDuration`, `talkWindow`: optional camera/text fields. `actions`: optional; each action names its `cast`. |
+| camera | `camera`: a distance or `{distance, focus, track}`. `focus`, `track`: optional. `zoom`, `zoomDuration`: optional slow zoom (its seconds default to `cameraDuration`, else 1.5). `cameraDuration`: seconds of the move; `duration` is its older alias. `focusDuration`, `trackDuration`, `pedestal`, `pedestalDuration`, `pan`, `panDuration`, `panFocusSlide`, `dof`, `dofDuration`, `dofLayers`, `dofTarget`, `ease`, `cameraDelay`, `focusSharp`, `focusTargetHead`, `role`, `roleDuration`, `tilt`, `tiltDuration`, `se`, `seDuration`, `seDelay`, `seStop`: optional official fields. Moves the camera without changing the staging. |
+| fade | `fade`: `"out"` or `"in"`. `duration`: seconds (default 1). `fadeRule` (`0001`..`0005`), `fadeColor` (`#000000`/`#FFFFFF`). |
+| pause | `pause`: seconds of silence, compiled to `Delay` (`>= 0.6` auto-hides the talk window). |
+| action | `action`: a cast id. `motion`, `expression`, `lookAt`: optional, at least one. `look`, `lookY`, `lookDuration`, `move`, `angle`, `dof`, `dofDuration`, `dofLayers`, `dofTarget`, `se`, `seDuration`, `seDelay`, `seStop`, `motionFadeIn`, `motionWait`: optional official fields. `duration`: optional silent beat after it. |
+| FX / audio beats | `move`, `angle`, `bgm`/`bgmFade`/`bgmVolume`, `still`, `subtitles`, `frame`/`frameStop`, `postEffect`/`postEffectStop`, `brightness`, `shake`, `cameraShake`, `flash`, `stageEnv`, `talkWindow`, `se`/`seStop`, `hideTalk`: standalone beat forms of the corresponding official commands. |
 
 An `actions` entry is `{"at": 0..1, "cast": optional, "motion": optional, "expression": optional, "lookAt":
 optional}`. `at` is the fraction of the line's body (voice length, else the typed text's display time). An action at
@@ -312,16 +317,20 @@ story engine and the 0.1.8 site engine read `PositionType` first, then `TargetNa
 The default AI storyboard uses `at: 0` listener reactions only; timed gaze stays in `actions` as before, and the new
 gaze is the independent `Look` row (`docs/story-director.md` has the verified command whitelist).
 
-Positions: `far-left`, `left`, `center`, `right`, `far-right`. A position is a name, or `{"at": <name>, "motion",
-"expression"}` to enter (or, staying where it is, to act) with a motion and an expression. Two characters cannot share a
-position.
+Positions: `far-left` (slot 1), `left` (slot 3), `center` (slot 5), `right` (slot 7), `far-right` (slot 9). A position is a
+slot name, or `{"at": <name>, "dx", "dy", "dz", "motion", "expression"}` to enter (or, staying where it is, to act)
+with a motion, an expression, or a position offset. Two characters cannot share a position. Two-person scenes use
+`left` / `right` (slots 3/7) with `camera: "middle"` (1.4x) and `focus: 5`; three-person groups use `far-left` / `center` /
+`far-right` (slots 1/5/9) with `camera: "near"` (1.2x), `focus: 5`, and `track: 0` (saving `close` for single-speaker
+close-ups).
 
-Motions are named by stem (`mtn_smile01`): the variant that faces the character's side of the stage plays (`_L` on the
-left positions, `_C` in the centre, `_R` on the right, the centre one where the model has no such variant). A full clip
-name (`mtn_smile01_L`) plays as it is. A motion or an expression needs the speaker on stage; a speaker off stage still
-talks (warning `speakerOffStage`). Every compiled `Motion` / `Expression` row carries `MotionFadeIn: -1`, so the player
-uses the clip's own fade-in (1 s in the game's motion data) and cross-fades from the pose on screen instead of cutting
-to the new clip's first frame.
+Motions are named by stem (`mtn_smile01`): per `SIDE = { 1: "L", 3: "L", 5: "C", 7: "R", 9: "R" }`, left slots (`1, 3`)
+use `_L` (facing screen-right/inward toward the partner), center (`5`) uses `_C`, and right slots (`7, 9`) use `_R`
+(facing screen-left/inward toward the partner), falling back to `_C` or the stem where the model has no such variant.
+A full clip name (`mtn_smile01_L`) plays as it is. A motion or an expression needs the speaker on stage; a speaker off
+stage still talks (warning `speakerOffStage`). Every compiled `Motion` / `Expression` row carries `MotionFadeIn: -1`,
+so the player uses the clip's own fade-in (1 s in the game's motion data) and cross-fades from the pose on screen instead
+of cutting to the new clip's first frame.
 
 Text is shown as written: `<` and `\` are characters, not rich text tags or escapes, and `\n` in the JSON string
 breaks the line. Keep each text line within the talk window's width; `render` reports lines that do not fit.

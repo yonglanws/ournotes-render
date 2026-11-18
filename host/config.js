@@ -447,8 +447,7 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
         "the API would be reachable without authentication" });
   }
   if (!cfg.paths.site && !cfg.paths.siteFormat) {
-    warnings.push({ path: "paths.site",
-      message: "not set; set paths.site (nnnotes product site) or paths.siteFormat (downloaded bdon site)" });
+    // Cloud-first runtime base will be bootstrapped automatically into `<paths.cache>/cloud-site` on host startup.
   } else if (!cfg.paths.site) {
     warnings.push({ path: "paths.site",
       message: "not set; using paths.siteFormat (a downloaded bdon site) for the full pipeline" });

@@ -10,7 +10,11 @@ import { frameChoices, postEffectChoices, soundChoices, transitionChoices, trans
 import { budgetCount, dialogueBudgetFor, directionBudgetFor, gazeBudgetFor, OFFICIAL_TARGETS } from "./official-targets.js";
 import { dialoguePersonaPrompt } from "./personas.js";
 import { MAX_PROMPT_MODELS, expressionListFor, motionListFor, officialDenominatorNote, personaEntryFor, stagingRules, voiceStyleFor } from "./prompt.js";
-import { frameLine, musicLine, postEffectLine, soundLine, stageLine, transitionLine } from "./resourceLines.js";
+import {
+  formatCategorizedMusic, formatCategorizedSounds, formatCategorizedStages,
+  selectPromptCharacterGroups, selectPromptSounds,
+} from "./catalogSelection.js";
+import { frameLine, postEffectLine, transitionLine } from "./resourceLines.js";
 
 const MAX_CAST = 3;
 
@@ -70,22 +74,8 @@ const castableModels = (catalog) => {
   return out;
 };
 
-// The cast prompt groups every costume under its character, but the prompt budget still caps characters (not
-// costumes) and excludes models the storyboard has no action names for (a product catalog appends those).
-const castableCharacters = (catalog) => {
-  const out = new Map();
-  for (const m of catalog.models || []) {
-    if (m.actionsKnown === false) continue;
-    const key = m.character || m.name;
-    if (!key) continue;
-    if (!out.has(key)) {
-      if (out.size >= MAX_PROMPT_MODELS) break;
-      out.set(key, []);
-    }
-    out.get(key).push(m);
-  }
-  return out;
-};
+const castableCharacters = (catalog, query = "") =>
+  selectPromptCharacterGroups(catalog.models || [], { query, maxCap: MAX_PROMPT_MODELS });
 
 export const modelIndex = (catalog) => {
   const byId = new Map((catalog.models || []).map((m) => [m.id, m]));
@@ -158,7 +148,8 @@ export const buildCastMessages = ({ catalog, request, config }) => {
   const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
   // One line per character with every costume the site ships, so the cast pass can pick a consistent outfit instead
   // of receiving one arbitrary costume (the old base-story order put 爱音 in her stage outfit next to 灯's school one).
-  const byCharacter = castableCharacters(catalog);
+  const byCharacter = castableCharacters(catalog, request.prompt || "");
+  const castBands = [...byCharacter.values()].map((list) => list[0]?.band).filter(Boolean);
   const modelLines = [...byCharacter.entries()].map(([name, choices]) => {
     const first = choices[0];
     const p = personaEntryFor(config.story?.personas, first);
@@ -167,8 +158,15 @@ export const buildCastMessages = ({ catalog, request, config }) => {
     const costumes = choices.map((m) => `${m.id}（${m.costumeLabel || m.costume || "默认"}）`).join("、");
     return `- ${name}${group ? `（${group}）` : ""}${summary ? `：${summary}` : ""}\n  服装：${costumes}`;
   }).join("\n") || "(none)";
-  const stages = catalog.stages.slice(0, 40).map(stageLine).join("\n") || "(none)";
-  const musicLines = catalog.music.slice(0, 40).map(musicLine).join("\n") || "(none)";
+  const stages = formatCategorizedStages(catalog.stages || [], {
+    query: request.prompt || "",
+    castBands,
+    limit: 64,
+  });
+  const musicLines = formatCategorizedMusic(catalog.music || [], {
+    query: request.prompt || "",
+    limit: 91,
+  });
   const fixed = config.story?.cast?.length
     ? "\n本单只允许从清单里的角色选（配置的 story.cast 已限定可用角色）。" : "";
 
@@ -651,13 +649,31 @@ const storyboardExample = ({ plan, dialogue, catalog }) => {
 export const buildStoryboardMessages = ({ plan, dialogue, catalog, request, config, planNotes = "" }) => {
   const index = modelIndex(catalog);
   const maxOnStage = Math.max(2, Math.min(3, Math.round(Number(config.story?.maxOnStage ?? 3) || 3)));
-  const stageLines = catalog.stages.slice(0, 80).map(stageLine).join("\n") || "(none)";
-  const musicLines = catalog.music.slice(0, 40).map(musicLine).join("\n") || "(none)";
-  const resolvedSounds = soundChoices(catalog.soundChoices || catalog.sounds || []).slice(0, 40);
+  const queryText = [request.prompt, plan.event, plan.logline, plan.setting?.location].filter(Boolean).join(" ");
+  const castBands = plan.cast.map((c) => index.byId.get(c.model)?.band || c.group).filter(Boolean);
+  const stageLines = formatCategorizedStages(catalog.stages || [], {
+    query: queryText,
+    castBands,
+    limit: 80,
+  });
+  const musicLines = formatCategorizedMusic(catalog.music || [], {
+    query: queryText,
+    tone: plan.tone || "",
+    limit: 91,
+  });
+  const resolvedSounds = selectPromptSounds(
+    soundChoices(catalog.soundChoices || catalog.sounds || []),
+    { query: queryText, tone: plan.tone || "", dialogue, limit: 72 },
+  );
   const resolvedFrames = frameChoices(catalog.frameChoices || catalog.frames || []).slice(0, 24);
   const resolvedPostEffects = postEffectChoices(catalog.postEffectChoices || catalog.postEffects || []).slice(0, 24);
   const resolvedTransitions = transitionChoices(catalog.transitionChoices || catalog.transitions || []).slice(0, 16);
-  const soundLines = resolvedSounds.map(soundLine).join("\n") || "(none)";
+  const soundLines = formatCategorizedSounds(resolvedSounds, {
+    query: queryText,
+    tone: plan.tone || "",
+    dialogue,
+    limit: 72,
+  });
   const frameLines = resolvedFrames.map(frameLine).join("\n") || "(none)";
   const postEffectLines = resolvedPostEffects.map(postEffectLine).join("\n") || "(none)";
   const transitionLines = resolvedTransitions.map(transitionLine).join("\n") || "(none)";
@@ -769,7 +785,7 @@ ${planNotes ? `## 导演计划（参考）\n${planNotes}\n` : ""}
 - **换机位上限**：整场只有 ${Math.max(0, budget.focusChanges - 2)} 句 line beat 可以写 focus/camera/track（scene/positions 的 Focus 另计）；请把镜头字段集中到真正的剪辑句，其余 line beat 一个镜头字段都不要写；多写的会在合并时删除。
 - **慢推镜**：全场约 ${budget.zoomMin}~${budget.zoomMax} 次 zoom，写在情绪句/近景或结尾：推近 1.03~1.10，拉远 0.92~0.98，zoomDuration 3~5 秒、ease "OutSine"。一个机位最多 1 次；不写就静止，不要每个镜头都推。
 - **视线预算**：全场总视线（lookAt + 独立 look）约 ${gaze.total} 次；双人戏每 3~4 句最多 1 个 lookAt，三人以上只在被点名或明显反应时写。lookAt 是台上的 cast id、位置名、1~9 构图点或 "stop"；不要每句都看着对方。独立 look 最多 ${gaze.independentMax} 个（计入上面的总视线，不额外增加），如低头回避 "look": 0.4, "lookY": -0.6, "lookDuration": 0.4，结束后用 "look": "stop" 收回。
-- **表演预算**：全场至少 ${budget.motionMin} 个、目标 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；低于 ${budget.motionMin} 个视为不合格。约 ${noMotionTarget} 句可以完全没有 Motion（参考上限 ${budget.maxStatic} 句；超出预算时优先保留短反应句，修剪长段中的重复动作）；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。motion 优先写 stem（如 mtn_smile01），编译器会按左 _R / 中 _C / 右 _L 自动对齐面向。
+- **表演预算**：全场至少 ${budget.motionMin} 个、目标 ${motionBudget} 个表演动作（Motion/Expression，官方约 ${fixed(OFFICIAL_TARGETS.motionsPerTextLine, 2)}/句）；低于 ${budget.motionMin} 个视为不合格。约 ${noMotionTarget} 句可以完全没有 Motion（参考上限 ${budget.maxStatic} 句；超出预算时优先保留短反应句，修剪长段中的重复动作）；约 ${pct1(OFFICIAL_TARGETS.twoMotionShare)}% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)；独立 Expression 默认 0（官方每集约 ${fixed(OFFICIAL_TARGETS.standaloneExpressionPerEpisode, 2)} 条），确有必要最多 1 条。表情尽量和 motion 一起写，默认 idle。motion 优先写 stem（如 mtn_smile01），编译器会按左 _L / 中 _C / 右 _R 自动对齐面向。
 - **扩展运镜、演出特效与声音（按剧情动机使用，静坐对话可为 0，所有开关效果用完必收回）**：
   - 建议写 ${budgetCount(0, budget.pedestal)} 个 pedestal（蹲下找东西用 -0.25，静坐对话可为 0）、${budgetCount(0, budget.panV2)} 个 pan（多句倾诉/换组横移用 -12~12，ease "OutSine" 或 "Linear"，静坐对话可为 0）、${budgetCount(0, budget.dof)} 个 dof（背景虚化用 "dof": 0.5, "dofLayers": 0；**绝不虚化聚焦说话者**，角色 dofLayers 2 必须写 dofTarget 指向非说话者）、独立 look 最多 ${gaze.independentMax} 个（计入总视线）；Se 约 ${budget.se} 条（只能写上方清单 cue；(none) 时不写），Track 约 ${budget.track} 次（close 自动限幅 ±0.25）。
   - 动机触发：情绪转折用 ease "OutSine" + zoom + 背景 dof + bgm: "stop"；沉默停顿用 hideTalk: true + pause（>= 0.6s 自动隐藏对话窗）；省略号/心声设 thought: true / ignoreLipSync: true；蹲起/走位用 move {dir: "down"|"up", distance, duration} + focusTargetHead: true；歪头用 angle {z}；惊呼爆发用 shake {target: "ui", power: 3~5}；回忆独白用 postEffect / frame / brightness {target: "bg", value: 0.5} / fadeColor "#FFFFFF" / transition "dissolve"，结束时必须成对写 postEffectStop: true / frameStop: true / brightness 1 / look: "stop" / role: 0 / tilt: 0。

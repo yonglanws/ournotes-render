@@ -284,11 +284,15 @@ test("readSiteCatalog & bundleSiteEpisodeAssets pool visual assets, shaders, tra
   const { dir } = makePooledSite();
   const cat = readSiteCatalog(dir, "stories/100.json", "ja");
 
-  // Shared neutral venue adv_bkg_stage_000084 from Ave Mujica story is offered; Ave-only 000017 stays excluded under castOnly.
+  // Default castOnly=false exposes all pooled/cloud stages (including cross-band venues); explicit castOnly=true still filters.
   const stageIds = cat.base.stages.map((s) => s.id);
   assert.ok(stageIds.includes("adv_bkg_stage_000010"));
   assert.ok(stageIds.includes("adv_bkg_stage_000084"), "shared venue relaxed across castOnly");
-  assert.ok(!stageIds.includes("adv_bkg_stage_000017"), "cast-owned venue still filtered");
+  assert.ok(stageIds.includes("adv_bkg_stage_000017"), "default castOnly=false exposes cross-band venues");
+  const strictCat = readSiteCatalog(dir, "stories/100.json", "ja", { castOnly: true });
+  const strictStageIds = strictCat.base.stages.map((s) => s.id);
+  assert.ok(strictStageIds.includes("adv_bkg_stage_000084"), "shared venue stays offered under castOnly: true");
+  assert.ok(!strictStageIds.includes("adv_bkg_stage_000017"), "explicit castOnly: true still filters cast-owned venue");
 
   assert.ok(cat.base.frames.includes("adv_frame_glitch_1/adv_frame_glitch_1"));
   assert.ok(cat.base.postEffects.includes("adv_effect_posteffect_monochrome"));

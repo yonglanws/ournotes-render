@@ -24,6 +24,11 @@ const normalizeEntry = (value) => {
     actions: stringList(value.actions),
     kind: string(value.kind),
     mood: string(value.mood),
+    tempo: string(value.tempo),
+    category: string(value.category),
+    band: string(value.band),
+    indoor: typeof value.indoor === "boolean" ? value.indoor : undefined,
+    timeOfDay: string(value.timeOfDay),
     use: string(value.use),
   };
 };
@@ -156,6 +161,26 @@ const BUILTIN_POST_EFFECTS = Object.freeze({
     mood: "压迫、扭曲、失真",
     use: "心理扭曲或夸张透视；结束后写 postEffectStop: true",
   },
+  adv_effect_posteffect_glitch: {
+    name: "数字信号故障滤镜",
+    mood: "崩溃、错乱、冲击",
+    use: "电子信号紊乱或剧烈心理冲击；结束后写 postEffectStop: true",
+  },
+  adv_effect_posteffect_glitch2: {
+    name: "强信号故障滤镜 2",
+    mood: "剧烈动摇、混乱",
+    use: "较强画面撕裂干扰；结束后写 postEffectStop: true",
+  },
+  adv_effect_posteffect_glitch3: {
+    name: "局部干扰故障滤镜 3",
+    mood: "异样、焦躁",
+    use: "短促画面干扰；结束后写 postEffectStop: true",
+  },
+  adv_effect_posteffect_glitch4: {
+    name: "全屏错位故障滤镜 4",
+    mood: "失控、冲击",
+    use: "强烈数字失真；结束后写 postEffectStop: true",
+  },
 });
 
 const BUILTIN_TRANSITIONS = Object.freeze({
@@ -178,6 +203,10 @@ const BUILTIN_TRANSITIONS = Object.freeze({
   "0005": {
     name: "扩散渐隐规则转场",
     use: "柔和扩散擦除，适合情绪余韵或回忆/梦境过渡",
+  },
+  "0006": {
+    name: "百叶/光影规则转场",
+    use: "光影切换规则擦除，适合时间流逝或节奏转场",
   },
   dissolve: {
     name: "背景直接叠化（scene.transition: \"dissolve\"）",
@@ -270,13 +299,27 @@ const lookupTransitionEntry = (id, guide) => {
 export const applyStageGuide = (stage, guide) => {
   const entry = guide.stages.get(stage.id) || {};
   if (entry.kind === "title") return null;
-  return { ...stage, name: entry.name || "", description: entry.description || "", tags: entry.tags || [],
-           kind: entry.kind || "" };
+  return {
+    ...stage,
+    name: entry.name || stage.name || "",
+    description: entry.description || stage.description || "",
+    tags: entry.tags?.length ? entry.tags : (stage.tags || []),
+    kind: entry.kind || stage.kind || "",
+    ...(entry.band ? { band: entry.band } : {}),
+    ...(entry.indoor !== undefined ? { indoor: entry.indoor } : {}),
+    ...(entry.timeOfDay ? { timeOfDay: entry.timeOfDay } : {}),
+  };
 };
 
 export const applyMusicGuide = (music, guide) => {
   const entry = guide.music.get(music.cue) || {};
-  return { ...music, name: entry.name || "", mood: entry.mood || "", use: entry.use || "" };
+  return {
+    ...music,
+    name: entry.name || music.name || "",
+    mood: entry.mood || music.mood || "",
+    ...(entry.tempo ? { tempo: entry.tempo } : {}),
+    use: entry.use || music.use || "",
+  };
 };
 
 export const applySoundGuide = (sound, guide) => {
@@ -286,22 +329,40 @@ export const applySoundGuide = (sound, guide) => {
     ...item,
     label: item.label || humanLabel(item.cue, /^sound_(?:bgm|se)_(?:adv_)?/i),
     name: entry.name || item.name || "",
+    ...(entry.category ? { category: entry.category } : {}),
     use: entry.use || item.use || "",
   };
+};
+
+const inferFrameMeta = (id) => {
+  const s = string(id).toLowerCase();
+  if (/rain/.test(s)) return { name: `雨丝前景遮罩（${s.replace(/^adv_frame_/, "")}）`, use: "室外下雨场景前景雨丝特效，结束时写 frameStop: true" };
+  if (/eyeblink/.test(s)) return { name: `睁闭眼遮罩（${s.replace(/^adv_frame_/, "")}）`, use: "第一人称眨眼、昏迷苏醒或闭眼转场" };
+  if (/effectline|speedline/.test(s)) return { name: `漫画效果线（${s.replace(/^adv_frame_/, "")}）`, use: "强调冲击、奔跑、震惊或紧张吐槽的漫符速度线" };
+  if (/fill_/.test(s)) return { name: `纯色遮罩（${s.replace(/^adv_frame_/, "")}）`, use: "全屏压暗、强光闪烁或颜色氛围遮罩，结束时写 frameStop: true" };
+  if (/shadow_/.test(s)) return { name: `阴影压迫遮罩（${s.replace(/^adv_frame_/, "")}）`, use: "心理阴影或压抑情绪暗角，结束时写 frameStop: true" };
+  if (/video|tv|poweroff|slander|rec_/.test(s)) return { name: `录像/屏幕画框（${s.replace(/^adv_frame_/, "")}）`, use: "录像、直播、电视或网络舆论屏幕框效果，结束时写 frameStop: true" };
+  if (/smoke/.test(s)) return { name: "烟雾前景遮罩", use: "舞台干冰烟雾或朦胧氛围前景，结束时写 frameStop: true" };
+  if (/underwater/.test(s)) return { name: "水下光影遮罩", use: "水下或深海沉浸意象遮罩，结束时写 frameStop: true" };
+  if (/lightleak|lensflare/.test(s)) return { name: `漏光光斑遮罩（${s.replace(/^adv_frame_/, "")}）`, use: "逆光暖色光晕效果，结束时写 frameStop: true" };
+  if (/irisout/.test(s)) return { name: "圆形收拢黑场", use: "圆孔收缩聚焦与戏剧化收尾" };
+  if (/pillarbox|scrollwork|key_open/.test(s)) return { name: `画幅装饰遮罩（${s.replace(/^adv_frame_/, "")}）`, use: "回忆窄画幅或特定戏剧画框，结束时写 frameStop: true" };
+  return { name: humanLabel(id, /^adv_frame_/i), use: "官方剧情前景遮罩特效，不用时写 frameStop: true" };
 };
 
 export const applyFrameGuide = (frame, guide = EMPTY) => {
   const item = typeof frame === "string" ? { id: frame } : (frame || {});
   const id = string(item.id || item.key);
   const entry = lookupFrameEntry(id, guide);
+  const fallback = !entry.name || !entry.use ? inferFrameMeta(id) : null;
   return {
     ...item,
     id,
     key: item.key || id,
-    name: entry.name || item.name || humanLabel(id, /^adv_frame_/i),
+    name: entry.name || item.name || fallback?.name || humanLabel(id, /^adv_frame_/i),
     tags: entry.tags?.length ? entry.tags : (item.tags || []),
     actions: entry.actions?.length ? entry.actions : (item.actions || []),
-    use: entry.use || item.use || "",
+    use: entry.use || item.use || fallback?.use || "",
   };
 };
 

@@ -125,8 +125,10 @@ The story data page describes the documents and their cross-references:
 ## Site entry products
 
 A story listing (`stories.json`, format `ournotes.stories/1`) maps a story entry to its manifest path, language list and
-title. An entry may be a `nnnotes.product/1` story manifest (the AI queue's input) or an
-`ournotes.story-manifest/2` episode (the site-format path rendered by `host/tools/render-story.mjs`).
+title. An entry may be a `nnnotes.product/1` story manifest (used when `paths.site` is configured) or an
+`ournotes.story-manifest/2` episode (used by the default zero-local-site `cloud-site` runtime in `paths.cache/cloud-site`,
+`paths.siteFormat`, and `host/tools/render-story.mjs`; on-demand cloud assets are cached alongside it in `cloud-pool.json`
+and `official-bundles.json`).
 
 ## Validation
 
@@ -135,7 +137,7 @@ story parts and their languages. The authoring tools add the script-level checks
 
 ```sh
 node scripts/story-author.mjs check story.json --site path/to/site
-node host/tools/site-story.mjs --site path/to/site --base stories/10610.json --script story.json --adv 90001
+npm run host:site-story -- --site path/to/site --base stories/10610.json --script story.json --adv 90001
 ```
 
 `docs/story-director.md` describes the director fields these checks cover.

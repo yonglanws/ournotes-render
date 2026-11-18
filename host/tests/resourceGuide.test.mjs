@@ -73,10 +73,15 @@ test("a downloaded site pools every story's locations and sounds, without title 
             "every stage has a human description");
   assert.ok(catalog.base.stages.some((stage) => stage.id === "adv_bkg_stage_000294"),
             "a stage only another story of the same cast used is offered");
-  assert.ok(!catalog.base.stages.some((stage) => stage.id === "adv_bkg_stage_000017"),
-            "another band's school rooftop is not offered to this cast");
-  assert.ok(!catalog.base.stages.some((stage) => stage.id === "adv_bkg_stage_000262"),
-            "another band's room is not offered to this cast");
+  assert.ok(catalog.base.stages.some((stage) => stage.id === "adv_bkg_stage_000017"),
+            "default castOnly=false lifts castOnly blindness across bands");
+  assert.ok(catalog.base.stages.some((stage) => stage.id === "adv_bkg_stage_000262"),
+            "another band's room is offered when castOnly is lifted");
+  const strictCast = readSiteCatalog(site, "stories/10438.json", "zh-Hans", { castOnly: true });
+  assert.ok(!strictCast.base.stages.some((stage) => stage.id === "adv_bkg_stage_000017"),
+            "explicit castOnly: true still filters another band's school rooftop");
+  assert.ok(!strictCast.base.stages.some((stage) => stage.id === "adv_bkg_stage_000262"),
+            "explicit castOnly: true still filters another band's room");
   assert.ok(catalog.base.stages.slice(0, 3).every((stage) => stage.caption !== "" || stage.id === "adv_bkg_stage_000164"),
             "the base story's own locations stay first");
   assert.ok(catalog.base.music.length >= 9, `music (${catalog.base.music.length})`);

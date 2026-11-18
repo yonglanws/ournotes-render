@@ -1,4 +1,6 @@
-# Official-Script Harness and Generation Fidelity Implementation Plan
+# [Archived / Historical] Official-Script Harness and Generation Fidelity Implementation Plan
+
+> **Historical / Archived Document (2026-11-10):** This implementation plan is preserved for historical context. For current architecture, cloud-first runtime, and CLI/API usage, see [Render host](../../host.md) and [Story director](../../story-director.md).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

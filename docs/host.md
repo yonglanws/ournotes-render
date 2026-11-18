@@ -1,11 +1,12 @@
 # 无头渲染宿主（Our Notes 风格 Live2D 视频 API）
 
 本仓库只保留**视频渲染框架**：无头、纯 API 的 Our Notes 风格剧情视频渲染器。它接收一句场景描述或一份
-`ournotes.story-script/1` 导演脚本，在后端完成 **AI 分镜与剧本 → TTS 配音 → 编译 Our Notes 剧情 → 无头浏览器
-逐帧渲染 → 音频混合 → MP4**，通过 HTTP 返回视频。浏览器播放器、谱面播放与 UI 预览等无关功能已移除；
-任何机器人或客户端只需要调用 HTTP API；仓库内的 `astrbot_plugin_ournotes_script/` 是官方对接插件。
+`ournotes.story-script/1` 导演脚本，在后端完成 **AI 分镜与剧本 → TTS 配音 → 按需拉取云端资源 → 编译 Our Notes 剧情 →
+无头浏览器逐帧渲染 → 音频混合 → MP4**，通过 HTTP 返回视频。浏览器播放器、谱面播放与 UI 预览等无关功能已移除；
+任何机器人或客户端只需要调用 HTTP API；官方对接的 AstrBot 插件已拆分为独立仓库
+[astrbot_plugin_ournotes_script](https://github.com/yonglanws/astrbot_plugin_ournotes_script)。
 
-与 [MySekaiStoryteller-API](https://github.com/yuntian/MySekaiStoryteller-API) 的对应关系：
+与 [MySekaiStoryteller-API](https://github.com/yonglanws/MySekaiStoryteller-API) 的对应关系：
 
 - **画风与引擎是 Our Notes**：直接运行本仓库的 `StorySession`（游戏自己的 13:6 对话 UI、Live2D 着色器、舞台、
   相机与字体），不是 Project SEKAI 的 PixiJS 渲染器。
@@ -13,74 +14,100 @@
   （`tts.defaultVoice` + `tts.voices` / `voices.yaml`），不读取 AstrBot 等外部机器人的配置；见 [TTS 配置与试音](tts.md)。
 - **确定性渲染**：无头页面以固定 1/30 秒步进推进剧情，只在虚拟时间轴上取帧；音频由页面上报的播放事件在
   后端重建，不依赖实时录音速度。
-- **导演脚本**：AI 不只写台词，还写镜头焦点、远近、横向平移、Live2D 动作/表情、听者反应、黑场和留白。提示词
-  按官方剧情的实测节奏（双人戏 36~44 句、每 3~4 句切一次、约 1.1 个动作/句、表情挂在动作上、双人戏常用
+- **导演脚本**：AI 不只写台词，还写镜头焦点、远近、横向平移、Live2D 动作/表情、听者反应、转场和留白。提示词
+  按官方剧情的实测节奏（双人戏 36~44 句、每 3~4 句切一次、约 1.30 个动作/句、表情挂在动作上、双人戏常用
   `lookAt`）和 30 部官方剧情的镜头分布编写。格式与规则见 [导演脚本](story-director.md)。
 
 ## 目录
 
 - `host/`：宿主源码（纯 ESM，Node 22+）
-- `host/ai/`：提示词、AI 剧本编写、可选分镜计划、校验与自动修复
-- `host/tools/fetch-story.mjs`：下载一集公开剧情站点（剧情、UI/字体、音频、Live2D 模型），或按角色补齐模型
-- `host/tools/render-story.mjs`：不经过 AI/TTS，直接把一集现有剧情渲染成 MP4
+- `host/ai/`：提示词（`prompt.js`、`staged.js`）、语义/关键词分类筛选（`catalogSelection.js`）、AI 剧本编写与自动修复
+- `host/story/`：站点目录与云端目录层（`cloudSite.js`、`cloudCatalogData.js`、`cloud-catalog.json`、`site-resources.yaml`、`siteFormat.js`）
+- `host/tools/build-cloud-catalog.mjs`：离线从 `assets.bdon.moe` 与 `storage.bdon.moe/moenotes` 采集并生成全量云端中文语义目录
+- `host/tools/fetch-story.mjs`：可选离线工具，下载一集公开剧情站点或按角色预下载模型到本地
+- `host/tools/render-story.mjs`：不经过 AI/TTS，直接把一集本地剧情渲染成 MP4
 - `host/tools/site-story.mjs`：把导演脚本编译到站点格式的剧情站点（`ournotes.story-manifest/2`）
-- `host/tools/ai-site-story.mjs`：让 AI 直接为站点格式写导演脚本、合成 TTS 并编译
-- `host/tools/check.mjs`：`npm run check`，检查配置、站点、ffmpeg、Chrome、音色
+- `host/tools/ai-site-story.mjs`：让 AI 直接为站点格式写导演脚本、合成 TTS、物化缺失云端资产并编译
+- `host/tools/check.mjs`：`npm run check`，检查配置、站点模式、ffmpeg、Chrome、音色
 - `host/tools/tts-check.mjs`：`npm run tts:check`，列出音色并逐角色试音
-- `astrbot_plugin_ournotes_script/`：AstrBot 插件，`/视频对话` 与 `/剧本生成` 调用宿主的剧本 / 渲染接口并回传 MP4
+- 配套 AstrBot 插件（独立仓库）：[astrbot_plugin_ournotes_script](https://github.com/yonglanws/astrbot_plugin_ournotes_script)，提供 `/视频对话` 与 `/剧本生成`
 - `src/story/`、`src/live2d/`、`src/engine/`：剧情引擎、Live2D 运行时与渲染内核
 - `scripts/story-author.mjs`：命令行编写/校验/构建/预览分镜图
-- `config.example.yaml`：配置示例（标了必须修改的几处）
+- `config.example.yaml`：配置示例
 - `voices.example.yaml`：角色音色表模板
 - [TTS 配置与试音](tts.md)：音色、权重、情绪、翻译、试音与常见问题
-- `host/tests/`：队列、AI、TTS、混音、API、无头浏览器与真实站点测试
+- `host/tests/`：队列、AI、TTS、云端物化、混音、API、无头浏览器与真实站点测试
 
-## 前置条件
+## 前置条件与三种站点模式
 
 | 需要 | 用途 | 说明 |
 | --- | --- | --- |
 | Node.js 22+ | 宿主 | 与引擎一致 |
 | Chrome / Chromium / Edge | 无头渲染 | 宿主自动查找；`render.chrome` 可指定 |
 | ffmpeg | 编码/解码 | 根目录 `npm install` 安装 `ffmpeg-static` 即自带；也可 `video.ffmpegPath` 指定 |
-| 剧情站点 | 游戏资源 | `paths.site` 指向 nnnotes 的 `nnnotes.product/1` 站点；只有 bdon 站点时用 `paths.siteFormat` 也能生成完整视频 |
-| Live2D Cubism Core | Live2D | `render.core` 指向本地 `live2dcubismcore.min.js` 或 URL |
+| 剧情站点（可选） | 游戏资源 | `paths.site` 与 `paths.siteFormat` 默认均可留空，自动启用零本地站点云端运行时 |
+| Live2D Cubism Core | Live2D | `render.core` 指向本地 `live2dcubismcore.min.js` 或 URL；留空用 Live2D 官方 CDN（云端模式也会缓存到 `cloud-site/vendor/`） |
 | OpenAI 兼容 LLM | AI 剧本 | `llm.baseUrl` / `llm.model`，密钥只从环境变量读取 |
 | GPT-SoVITS / Irodori TTS | 配音 | `tts.provider` + `tts.baseUrl`；没有 TTS 也能渲染无声/仅有 BGM 的视频 |
 
-**仓库不附带游戏资源。** 站点有两种格式，用途不同：
+**仓库不附带游戏资源。** 宿主支持三种运行模式：
 
-- **AI 队列/剧本生成的站点**：用你自己的游戏文件通过 [nnnotes](https://github.com/MetaSekaiLab/nnnotes) 构建，
-  产物格式 `nnnotes.product/1`，由本仓库 0.2 引擎读取；`paths.site` 指向它，`/api/v1/generate` 才能工作。
-- **没有产品站点时也能出片**：把 `paths.siteFormat` 指向 `fetch-story` 下载的 bdon 站点（如 `resources/site`），
-  `/api/v1/generate` 会从该站点的舞台、BGM、模型和角色卡生成剧本、合成 TTS、把新剧情编译回站点，再用站点引擎
-  渲染 MP4。`/api/v1/script/generate` 仍然只生成剧本 JSON。
-- **现成剧情/站点格式的站点**：[bdon.moe 剧情播放器](https://bdon.moe/tools/story-player)发布的公开站点
-  （`ournotes.story-manifest/2`）。`fetch-story` 下载一集剧情、UI/字体/音频与 Live2D 模型；
-  `render-story` 用 `ournotes-player@0.1.8`（bdon.moe 播放器使用的同一引擎）直接渲染；
-  `site-story` 可以把同一份导演脚本编译成这个站点格式的新剧情。
+1. **零本地站点云端优先模式（默认）**：`paths.site` 和 `paths.siteFormat` 都留空（`""`）。
+   - 启动 `host/main.js` 时，`ensureCloudRuntimeBase()` 自动从 `https://storage.bdon.moe/moenotes` 初始化一个轻量云端运行时到
+     `paths.cache/cloud-site`：拉取 `models.json`（TW）与 `jp/models.json`（JP）、MotionSync Core、可选 Cubism Core，
+     以及种子剧情 `10610` 的非语音公共文件（跳过 `audio/adv_voice_*` 与全量 1,021 部剧情归档）。
+   - 每次生成或编译剧本时，`materializeSiteStoryAssets()` 仅按该剧本实际用到的资源，从
+     `https://storage.bdon.moe/moenotes` 与 `https://assets.bdon.moe` 按需拉取：
+     - Live2D 模型（支持 TW 与 JP manifest 自动回退）；
+     - 舞台背景（优先从 donor manifest 提取完整 prefab/shader/VolumeProfile；无 donor 时直接拉取 `.webp`，用 `webpDimensions()` 解析 RIFF/VP8X/VP8L/VP8 尺寸并由 `synthesizeStagePrefab()` 合成兼容 `AdvStage` prefab）；
+     - BGM 与 SE（优先从 donor manifest 提取完整 `cues.json`/audio；无 donor 时直接拉取 `.m4a` 并由 `probeM4aCue()` 解析 MP4 `mdhd` 采样率与长度，记录到 `cloud-pool.json`）；
+     - 画面遮罩、后期滤镜、粒子特效、CG 与规则转场（通过 `cloud-catalog.json` 中的 `donors` 索引定位 donor 剧情并按需拉取到 `official-bundles.json`）。
+2. **本地 bdon 站点格式（`paths.siteFormat`）**：指向离线下载或局部准备的 `ournotes.story-manifest/2` 目录（如 `resources/site`）。
+   若局部站点缺少部分舞台/BGM/SE/模型/特效，`materializeSiteStoryAssets()` 同样会按需补齐缺失的云端资源而不删除已有文件。
+3. **nnnotes 产品站点（`paths.site`）**：指向你自己的游戏文件通过 [nnnotes](https://github.com/MetaSekaiLab/nnnotes) 构建的
+   `nnnotes.product/1` 站点，走产品编译路径。
 
-下载内容写入 `resources/`，已被 `.gitignore` 排除，不会提交到仓库。没有站点时 `/api/v1/health` 仍可用，但
-`/api/v1/generate` 会返回 503。
+本地缓存与下载内容写入 `cache/` 与 `resources/`（均已 `.gitignore`），不会提交到仓库。
 
-## 下载资源并渲染示例
+## 全量云端中文语义目录与 AI 选角筛选
 
-最省事的“下载资源并渲染”路径不需要自己构建站点，也不需要 AI/TTS：
+为了避免 AI 在站点模式下盲选或受限于单集资源，`host/tools/build-cloud-catalog.mjs` 离线生成了全量简体中文语义目录
+`host/story/cloud-catalog.json`（`ournotes.cloud-catalog/1`）与 `host/story/site-resources.yaml`（`ournotes.site-resources/1`）：
+
+- **343 张舞台**（`adv_bkg_stage_*`）：包含简体中文名称、描述、`indoor`（室内/室外）、`timeOfDay`（白天/黄昏/夜晚）、`band`、
+  `tags` 与 `kind: shared` 通用场地标记；`adv_bkg_stage_000217` / `000218` / `000333` 标为 `kind: "title"`，会自动从场景池过滤。
+- **91 首 BGM**（`sound_bgm_adv_*`）：覆盖全量常驻与活动曲目（含 `sound_bgm_adv_f6b483` 等），附带中文曲名、情绪、节拍与用途。
+- **345 条 SE**（`sound_se_adv_*`）：附带中文名称、分类与适用动作。
+- **267 套 Live2D 模型（209 TW + 58 JP）**：按角色、所属乐队（`MyGO!!!!!`、`Ave Mujica`、`梦限大`、`家团`、`茉团`）与服装后缀分组，
+  并包含预提取的动作/表情列表。
+- **扩展资源 Donor 索引**：覆盖 **53** 个画面遮罩（`frames`）、**14** 个后期滤镜（`postEffects`）、**10** 个粒子特效（`effects`）、
+  **349** 张 CG（`stills`）与 **6** 个规则转场（`transitions`）。
+
+AI 提示词与编译集成（`host/ai/catalogSelection.js`、`host/tools/site-story.mjs`）：
+
+- `readSiteCatalog()` 默认 `castOnly = false`、`cloud = true`，将全量云端目录并入可用词表（显式传 `castOnly: true` 仍会按卡司过滤私有场地），
+  使编译与校验接受全部云端合法资源 ID。
+- 提示词构造不再使用盲目的 `.slice(0, 40)` / `.slice(0, 80)` 截断，而是按两字 CJK 切片 + 语义词库扩展 + `tone`/所属乐队匹配度打分，
+  分类输出均衡的舞台、BGM 与 SE 候选集，并按角色与乐队整理服装列表。
+
+## 可选离线工具：下载公开资源并渲染
+
+以下工具为**可选离线工具**（正常使用 `npm start` 云端模式无需提前运行）：
 
 ```sh
 npm install     # 根目录一次安装（host 是 workspace）
 
-# 1. 下载一集剧情（默认从 https://storage.bdon.moe/moenotes 读取）。--adv 是剧情编号，
-#    可在 https://bdon.moe/tools/story-player 的剧情列表里找到；这里用 10610「ライブ後」。
-node host/tools/fetch-story.mjs --adv 10610 --lang ja --out resources/site
+# 1. 可选：离线下载一集剧情（默认从 https://storage.bdon.moe/moenotes 读取，例如 10610「ライブ後」）
+npm run host:fetch-story -- --adv 10610 --lang ja --out resources/site
 
-# 2. 直接渲染这集剧情（13:6、30fps、带原版 BGM/SE/语音）
-node host/tools/render-story.mjs --site resources/site --story stories/10610.json --lang ja \
+# 2. 直接渲染这一集本地剧情（13:6、30fps、带原版 BGM/SE/语音）
+npm run host:render-story -- --site resources/site --story stories/10610.json --lang ja \
   --core resources/site/vendor/live2dcubismcore.min.js \
   --motionsync resources/site/vendor/live2dcubismmotionsynccore.min.js \
   --out output --job bdon-10610
 ```
 
-完整索引在 `https://storage.bdon.moe/moenotes/stories.json`（约 975 部，含标题、章节、命令数与语言），
+完整索引在 `https://storage.bdon.moe/moenotes/stories.json`（含标题、章节、命令数与语言），
 用 `--adv <id>` 下载对应集；`--lang` 选择 UI/字体语言，剧情文本行通常自带五种语言。
 
 `fetch-story` 会：
@@ -92,12 +119,10 @@ node host/tools/render-story.mjs --site resources/site --story stories/10610.jso
 
 ### 补齐其他角色的模型
 
-`--adv` 只下载那一集剧情实际用到的模型。bdon 的全局模型索引（`<base>/models.json`）有 194 个条目，覆盖每套服装；
-用 `--characters` 按角色 key 补一套首选服装（校园冬季 → 虚拟 → 便服 → Live 的顺序自动挑，跳过
-still/mask/hat/child），下载模型清单和内容寻址资源，并合并进本地的 `models.json` / `site.json`：
+`--adv` 只下载那一集剧情实际用到的模型。用 `--characters` 可按角色 key 离线预下载首选服装（下载模型清单与资源并合并进本地 `models.json` / `site.json`）：
 
 ```sh
-node host/tools/fetch-story.mjs --out resources/site \
+npm run host:fetch-story -- --out resources/site \
   --characters chieri,hotaru,houka,mahoro,miku,shizuku,yomogi,raika,uika,umiri,nyamu,sub_viola,sub_kanata,sub_mortis
 ```
 
@@ -120,10 +145,10 @@ node host/tools/fetch-story.mjs --out resources/site \
 把它编译到下载好的站点并渲染：
 
 ```sh
-node host/tools/site-story.mjs --site resources/site --base stories/10610.json \
+npm run host:site-story -- --site resources/site --base stories/10610.json \
   --script host/fixtures/director-demo.json --adv 90001 --lang ja --title "ライブのあとで"
 
-node host/tools/render-story.mjs --site resources/site --story stories/90001.json --lang ja \
+npm run host:render-story -- --site resources/site --story stories/90001.json --lang ja \
   --core resources/site/vendor/live2dcubismcore.min.js \
   --motionsync resources/site/vendor/live2dcubismmotionsynccore.min.js \
   --out output --job director-demo
@@ -131,44 +156,30 @@ node host/tools/render-story.mjs --site resources/site --story stories/90001.jso
 
 `site-story` 会：
 
-- 从底本读取舞台、BGM、模型、动作、表情，校验脚本；
+- 从底本与合并后的云端语义词表读取舞台、BGM、SE、遮罩/滤镜/转场、模型、动作、表情，校验脚本；
 - 编译成新的 `episode.json`（包含 `Focus`、`Track`、`Motion`、`Expression`、`LookTarget`、`Talk` +
   `HostActions`、`Delay`、`FadeOut/FadeIn` 等官方命令）；
 - 把字体产品切换为 browser-font 模式，让脚本里的新台词不会因字体图集缺字而变成方块；
 - 写 `stories/<adv>.json`、内容寻址的 episode 资源，并更新 `stories.json`。
 
-示例输出约 35.1 秒、1054 帧、1300×600、30fps、带 BGM。`--list` 可列出站点可用的舞台、BGM、模型、动作和表情：
+示例输出约 35.1 秒、1054 帧、1300×600、30fps、带 BGM。`--list` 可列出站点与云端合并后可用的舞台、BGM、SE、遮罩、滤镜、转场、模型、动作和表情：
 
 ```sh
-node host/tools/site-story.mjs --site resources/site --base stories/10610.json --list --lang ja
+npm run host:site-story -- --site resources/site --base stories/10610.json --list --lang ja
 ```
 
 ### 让 AI 直接写站点格式的剧情
 
-如果只有下载好的 bdon 站点、没有 nnnotes 产品站点，可以用 `ai-site-story`：它把站点的舞台、BGM、模型、动作、
-表情（带语义说明）做成 AI 目录，让模型直接写导演脚本，然后用内置 TTS 逐句合成，把 WAV、cue sheet 和
-`VoiceIDs`/`voiceCues` 写回站点，最后用 `site-story` 编译。`llm.pipeline` 默认 `staged`：先选角，再只带选中角色的
-核心人格段落写台词，最后单独写分镜/动作/BGM；台词逐字保留，修复轮只重写分镜。台词轮用 `turns` 结构
-（一个角色的一次发言为一个 turn），并有长度闸：句数或总字数明显低于目标时长时自动请求补写。`llm.directorPlan` 只对
-`pipeline: single` 有效。`pipeline: single` 在角色池大于同台人数时先做一次快速选角（场景点名 → 短选角调用），
-主提示词只带入选角色的紧凑人格。`tts.emotion` 打开时，LLM 会先给每句选情绪标签，再按角色的 `emotions` 参考音频或全局
-`speedFactor`/`temperature` 预设合成。
-
-站点格式的 AI 目录按 `story.personaDirs` 的角色卡列出全部可用模型，并把每个角色的全部服装放在同一行；选角提示词
-要求同一支乐队尽量统一到同一类服装（校服不同年级算同一类，优先覆盖人数最多的一类，个别没有该类的角色可以例外），
-避免一个人穿队服、另一个人穿初中校服，所以可以写跨乐队剧情；`story.cast` 仍可限定只从某个乐队选。跨乐队角色如果没有在 `tts.voices`/`voicesFile` 里配参考
-音频/权重，会落回 `tts.defaultVoice`，听起来会是同一个默认音色；API 结果的 `tts.fallbackSpeakers` 会列出这些角色。
+命令行下也可以调用 `ai-site-story` 对本地站点（或 `cache/cloud-site`）生成导演脚本、合成 TTS、自动调用 `materializeSiteStoryAssets()` 补齐云端资源并编译：
 
 ```sh
-node host/tools/ai-site-story.mjs --site resources/site --base stories/10610.json --lang ja \
+npm run host:ai-site-story -- --site resources/site --base stories/10610.json --lang ja \
   --prompt "ライブのあと、灯と愛音と爽世が次の演奏について話す" --adv 90002 --minutes 2
 ```
 
-输出会打印新剧情 manifest、生成的脚本 JSON 路径和行数；之后用 `render-story` 渲染。它能写的演出与 HTTP 队列
-相同：`focus`（角色/站位/构图点 1~9）、`camera`、`track`、`lookAt`、`motion`/`expression`、台词前/中的
-`actions`、`fade`/`pause`/`action`。
+输出会打印新剧情 manifest、生成的脚本 JSON 路径和行数；之后用 `render-story` 渲染。它能写的演出与 HTTP 队列相同，支持跨乐队选角、按乐队统一服装、以及完整的 `ournotes.story-script/1` 字段。
 
-> 资源版权归 Bushiroad / Craft Egg / Ishimori 所有；下载脚本只用于本地、非商业的渲染测试。Live2D Cubism Core
+> 资源版权归 Bushiroad / Craft Egg / Ishimori 所有；下载与云端拉取脚本只用于本地、非商业的渲染测试。Live2D Cubism Core
 > 与 MotionSync Core 受 Live2D 自己的许可约束；仓库不重新分发它们。
 
 ## 安装与启动
@@ -178,13 +189,13 @@ git clone https://github.com/empty-sekai/ournotes-player.git
 cd ournotes-player
 npm install                       # 根目录一次安装；host 是 npm workspace
 cp config.example.yaml config.yaml
-# 编辑 config.yaml 中标了 ← 的 paths.site / paths.siteFormat / llm / tts
-npm run check                     # 配置、ffmpeg、Chrome、站点、音色
+# 按需编辑 config.yaml 中的 llm / tts（paths.site / paths.siteFormat 留空即可自动走云端运行时）
+npm run check                     # 配置、ffmpeg、Chrome、站点模式（cloud-auto）、音色
 npm start                         # API: http://127.0.0.1:9881
 ```
 
 `npm run check` 会一次列出所有配置问题和修复方向（包括拼错的配置项、缺失的站点/音色/密钥、不可用的
-ffmpeg/Chrome）。TTS 音色很多时，把 `tts.voicesFile` 指向 `voices.yaml`（模板见 `voices.example.yaml`），
+ffmpeg/Chrome）；当 `paths.site` 与 `paths.siteFormat` 均为空时，会显示 `cloud-auto` 并报告通过。TTS 音色很多时，把 `tts.voicesFile` 指向 `voices.yaml`（模板见 `voices.example.yaml`），
 再用 `npm run tts:check` 试音；完整说明见 [TTS 配置与试音](tts.md)。
 
 启动后：
@@ -193,7 +204,7 @@ ffmpeg/Chrome）。TTS 音色很多时，把 `tts.voicesFile` 指向 `voices.yam
 curl http://127.0.0.1:9881/api/v1/health
 ```
 
-`health` 会报告站点、ffmpeg、浏览器、LLM、TTS（音色数量/默认音色）和队列状态。`ffmpeg-static` 首次安装会下载
+`health` 会报告站点配置、ffmpeg、浏览器、LLM、TTS（音色数量/默认音色）和队列状态。`ffmpeg-static` 首次安装会下载
 对应平台的二进制；如果安装脚本被 npm 策略或网络拦截，可执行 `npm install --ignore-scripts` 后把
 `video.ffmpegPath` 指向系统 ffmpeg，或设置 `OURNOTES_FFMPEG`。
 
@@ -318,12 +329,12 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
 
 | 配置 | 说明 |
 | --- | --- |
-| `paths.site` | nnnotes 产品站点目录（`/api/v1/generate` 完整渲染必需） |
-| `paths.siteFormat` | bdon 站点格式目录；没有产品站点时用同一套 `/api/v1/generate` 生成完整视频 |
-| `paths.output` / `paths.cache` | 成片、故事 JSON、TTS 缓存 |
-| `story.base` / `story.language` | 默认底本与语言；留空自动选择 |
+| `paths.site` | 可选：nnnotes 产品站点目录（`nnnotes.product/1`）；留空且 `siteFormat` 也留空时自动启用云端运行时 |
+| `paths.siteFormat` | 可选：本地 bdon 站点格式目录（`ournotes.story-manifest/2`）；留空时自动在 `paths.cache/cloud-site` 初始化云端运行时并按需拉取资源 |
+| `paths.output` / `paths.cache` | 成片、故事 JSON、TTS 缓存与云端底座（`paths.cache/cloud-site`） |
+| `story.base` / `story.language` | 默认底本与语言；留空自动选择（云端模式默认种子底本 `10610`、语言 `zh-Hans`） |
 | `story.cast` | 提供给 AI 的角色白名单（模型 id 或 character） |
-| `story.maxOnStage` | 同台人数上限：3（默认，官方群像 `far-left/center/far-right` + `camera: far`）或 2（严格两人，第三人换组进出） |
+| `story.maxOnStage` | 同台人数上限：3（默认，官方群像 `far-left/center/far-right` + `camera: near` 1.2×，近景仅单人 `close`）或 2（严格两人 `left/right` + `middle`，第三人换组进出） |
 | `story.personaDirs` | 角色卡目录：每个 `*.md` 一位角色，按文件名/标题/日文名/罗马音匹配模型；台词轮只带入选角色卡的核心段落（核心机制/语言与风格/角色档案/核心禁忌，其余聊天协议章节裁掉） |
 | `story.personas` | 单条人格覆盖；与目录里的角色卡同名时覆盖它 |
 | `llm.pipeline` | `staged`（默认：选角 → 台词 → 分镜三轮，角色提示词只进台词轮）或 `single`（一次写完整剧本；角色池大时先快速选角） |
@@ -367,13 +378,14 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
    staged 的修复轮只重发分镜提示词，台词稿固定在上下文里，所以修几轮都不会把台词改坏；single 的修复轮在
    同一会话里追加上一轮输出与问题清单。分镜经修复仍不可用时，staged 退回默认走位与无动作演出的可用剧本，
    而不是让整个任务失败；结果里的 `stages` 记录每次调用的耗时与成败。校验器与
-   [剧情编写工具](story-author.md)共用同一套规则。站点格式的 AI 目录列出所有“有角色卡或已知名字”的模型，并保留每个角色的全部服装；选角提示词要求
-   同一支乐队尽量统一到同一类服装（校服不同年级算同一类），个别没有该类的角色可以例外，因此可以写跨乐队剧情；
-   用 `story.cast` 可以限定只从某个乐队选。选角轮会声明整场的 `tone`，
-   分镜提示词要求 BGM 跟 `tone`、括号里的情绪和冒号后的用途一致：认真谈心/道歉/安慰/伤感场景里不要选轻巧、调侃、
-   喜剧曲，没有合适的就省略。staged 合并按本场
-   官方预算修剪过量的 focus/视线剪辑点，并把换行比例调整到官方约 38% 两行（只在现有标点后移动换行，不改字词）；
-   分镜修复后仍不可用时会退回「默认走位 + 无动作演出」。
+   [剧情编写工具](story-author.md)共用同一套规则。站点格式与云端模式的 AI 目录通过 `host/ai/catalogSelection.js`
+   在全量云端语义目录（343 张舞台含室内/室外/时段标签且过滤标题黑屏、91 首 BGM、345 条 SE、209 TW + 58 JP = 267 套模型）
+   中按 CJK 二字切片 + 语义/情绪/乐队打分进行分类精选，列出全部可用角色及其全部服装；选角提示词要求同一支乐队尽量统一到同一类服装
+   （校服不同年级算同一类），个别没有该类的角色可以例外，因此可以写跨乐队剧情；用 `story.cast` 可以限定只从某个乐队选。
+   选角轮会声明整场的 `tone`，分镜提示词要求 BGM 跟 `tone`、括号里的情绪和冒号后的用途一致：认真谈心/道歉/安慰/伤感场景里不要选轻巧、
+   调侃、喜剧曲，没有合适的就省略。staged 合并按本场官方预算修剪过量的 focus/视线剪辑点，按分段同台人数归一化站位与镜头
+   （2 人 `left`/`right` + `middle`，3 人 `far-left`/`center`/`far-right` + `near` 1.2×，仅单人特写用 `close`），并把换行比例调整到
+   官方约 38% 两行（只在现有标点后移动换行，不改字词）；分镜修复后仍不可用时会退回「默认走位 + 无动作演出」。
 3. **TTS**：按台词逐句调用 GPT-SoVITS 或 Irodori（可并发、磁盘缓存、可重试、失败降级；切换角色权重时串行）。
    Irodori 每个请求自带参考音频/LoRA/caption，没有权重状态；它只读日文，没有日文的句子会静音并记入
    `nonJapaneseLines`。角色音色来自
@@ -382,13 +394,18 @@ curl -sS -X POST http://127.0.0.1:9881/api/v1/script/check \
    时，先用 LLM 批量翻译。`tts.emotion.enabled` 打开时，一次 LLM 调用给每句选情绪标签，角色的 `emotions` 参考音频
    会覆盖 `refAudioPath`；没有情绪参考时，全局 `presets` 用 `speedFactor`/`temperature` 做语气差异。每句 WAV 被编译
    成一个 `story.sound` 产物，Talk 行写入 `VoiceIDs`；产品站点路径还写入 `Parameter1: "airlipsync_voice"`（宿主扩展）：
-   既播放该句 TTS 语音，又按游戏自带的 timed pseudo lip sync 让嘴型在打字/整句期间运动；语音结束时嘴闭合。站点格式
+   既播放该句 TTS 语音，又按游戏自带的 timed pseudo lip sync 让嘴型在打字/整句期间运动；语音结束时嘴闭合。站点格式与云端
    路径写入 `VoiceIDs`/`voiceCues`，由页面解码波形给 MotionSync。API 结果的 `tts` 会报告实际使用的音色、回落到默认
    音色的句子、静音句子和失败句子对应的角色。
-4. **编译**：`Site.compose` 把剧本编译成底本的 `episode.json`/`story.json`，只替换故事、字体与 TTS 音轨；
-   舞台、UI、着色器、BGM 仍来自底本站点。`focus` 编译成 `Focus`（角色/站位/构图点），`track` 编译成 `Track`；
-   `at: 0` 的 `actions` 编译成 Talk 前的 `Motion`/`Expression`/`LookTarget`，台词中的 `actions` 编译成 Talk 行的
-   `HostActions`；`fade`/`pause` 编译成 `FadeOut`/`FadeIn`/`Delay`。
+4. **云端资产物化与编译**：
+   - 在云端模式或本地 `paths.siteFormat` 模式下，先执行 `materializeSiteStoryAssets()`，按剧本需求从 `storage.bdon.moe/moenotes`
+     与 `assets.bdon.moe` 自动补齐缺失的模型、舞台（donor 或直接 `.webp` 合成）、BGM/SE（donor 或直接 `.m4a`）、遮罩、后期滤镜、
+     粒子特效、CG 与转场，再由 `buildSiteStory()` 编译成站点 manifest 与 `episode.json`（切换为 browser-font 模式）。
+   - 在产品站点（`paths.site`）模式下，由 `Site.compose` 把剧本编译成底本的 `episode.json`/`story.json`，只替换故事、字体与 TTS 音轨；
+     舞台、UI、着色器、BGM 仍来自底本站点。
+   - 两种路径均将 `focus` 编译成 `Focus`（角色/站位/构图点），`track` 编译成 `Track`，`at: 0` 的 `actions` 编译成 Talk 前的
+     `Motion`/`Expression`/`LookTarget`（按 `SIDE = { 1: "L", 3: "L", 5: "C", 7: "R", 9: "R" }` 解析方向后缀），台词中的
+     `actions` 编译成 Talk 行的 `HostActions`，`fade`/`pause` 编译成 `FadeOut`/`FadeIn`/`Delay`。
 5. **逐帧渲染**：无头 Chrome 通过 CDP 打开页面，`StorySession` 以固定 1/30 秒步进，`auto: true` 自动推进；
    每帧 `render()` 后把 canvas 编码成 JPEG POST 给宿主。**不按墙钟播放音频**，因此渲染速度不影响成片时间轴。
    `Talk` 在虚拟时钟上按正文比例调度 `HostActions`，动作/表情不会因为渲染快慢而漂移。
@@ -574,18 +591,21 @@ npm run audit:stories -- --episode output/phase1/episode.json \
 
 ## 已知限制
 
-- **AI 队列可以用产品站点或站点格式**：`paths.site` 指向 `nnnotes.product/1` 时走产品编译；`paths.siteFormat`
-  指向 `ournotes.story-manifest/2` 时，剧本会先编译成新剧情写入该站点，再由站点引擎渲染。两者都支持
-  `/api/v1/generate`；`ai-site-story` / `site-story` / `render-story` 仍是可单独调用的命令行工具。
-- 导演脚本只覆盖 `scene` / `positions` / `say` / `narrate` / `camera` / `fade` / `pause` / `action`。底本
-  finalize 行里的淡出等仍会执行，但作者不能逐条写任意 ADV 命令；只暴露经命令审计与抽帧验证的白名单
-  （`Focus` / `Track` / `Zoom` / `Pedestal` / `PanV2` / `DoF` / `Look` / `LookTarget` / `Se` 等），
+- **AI 队列支持三种站点来源**：`paths.site` 指向 `nnnotes.product/1` 时走产品编译；`paths.siteFormat`
+  指向 `ournotes.story-manifest/2` 时（或两者均留空由宿主自动初始化 `paths.cache/cloud-site`），剧本会按需
+  物化缺失云端资产并编译为新剧情写入站点，再由站点引擎渲染。三者均支持 `/api/v1/generate`；
+  `ai-site-story` / `site-story` / `render-story` / `fetch-story` 仍是可单独调用的命令行工具。
+- 导演脚本核心支持 `scene` / `positions` / `say` / `narrate` / `camera` / `fade` / `pause` / `action` 以及
+  `move` / `angle` / `bgm` / `frame` / `postEffect` / `brightness` / `shake` / `cameraShake` / `flash` /
+  `stageEnv` / `talkWindow` / `still` / `subtitles` / `se` / `hideTalk`。底本 finalize 行里的淡出等仍会执行，
+  但作者不能逐条写任意 ADV 命令；只暴露经命令审计与抽帧验证的白名单
+  （`Focus` / `Track` / `Zoom` / `Pedestal` / `PanV2` / `DoF` / `Role` / `Tilt` / `Look` / `LookTarget` / `Se` 等），
   `Track` 只作为 `camera`/`track` 字段暴露，不支持任意参数。
 - `actions` 只支持动作、表情和 `lookAt`，不支持逐参数面部曲线。
-- 产品站点的 AI 剧本 TTS 嘴型使用游戏的 air lip sync（按句时长），不是 MotionSync 音频分析。站点格式的
-  AI/TTS 剧情和现成剧情（`render-story`）则把语音波形解码成 PCM，按虚拟时钟喂给 MotionSync Core，口型跟随真实
+- 产品站点的 AI 剧本 TTS 嘴型使用游戏的 air lip sync（按句时长），不是 MotionSync 音频分析。云端模式与站点格式的
+  AI/TTS 剧情及现成剧情（`render-story`）则把语音波形解码成 PCM，按虚拟时钟喂给 MotionSync Core，口型跟随真实
   语音；这条路径的音频仍由宿主按事件重建，不依赖实时播放。
-- BGM/SE 来自底本故事的 cue sheet；TTS 只生成 Voice 轨。音频混合按页面上报的事件重建，线性淡入淡出，
+- BGM/SE 来自底本站点或按需从云端拉取的 cue sheet；TTS 只生成 Voice 轨。音频混合按页面上报的事件重建，线性淡入淡出，
   不逐采样复刻 WebAudio 的调度。
 - 输出帧率固定以 30 为基准，其他帧率是整数抽帧。
 - AI 生成质量取决于配置的 LLM；宿主只保证格式、名称、站位、镜头目标和动作合法，不保证剧情文学质量。
@@ -594,11 +614,11 @@ npm run audit:stories -- --episode output/phase1/episode.json \
 
 | 现象 | 检查 |
 | --- | --- |
-| `/generate` 返回 503 `site_missing` | `paths.site`（产品站点）或 `paths.siteFormat`（bdon 站点）是否配置；只想要剧本时用 `/script/generate` |
-| 页面报 `Live2D Cubism MotionSync Core is not loaded` | 本管线用 `airlipsync_voice`，不需要 MotionSync；若底本模型强制要求，配置 `render.motionsync` |
+| `/generate` 返回 503 `site_missing` | `paths.site` / `paths.siteFormat` 均未配置且启动时 `cloud-site` 初始化失败（检查外网访问 `storage.bdon.moe` 或本地 `cache/cloud-site`）；只想要剧本可先确认站点就绪 |
+| 页面报 `Live2D Cubism MotionSync Core is not loaded` | 产品站点用 `airlipsync_voice` 时可忽略；站点格式/云端模式需要 `live2dcubismmotionsynccore.min.js`（云端底座默认已缓存到 `cloud-site/vendor/`） |
 | 页面报 WebGL2 不可用 | Chrome 是否支持 SwiftShader；尝试 `render.gpu: true` 或更新浏览器 |
 | 渲染很慢 | 软件渲染正常；可降低 `video.width/height`、提高 `render.gpu`，或增加 `queue.concurrency` 但注意内存 |
-| 视频没有声音 | `tts.enabled`、`tts.provider`、`tts.voices`/`tts.defaultVoice` 是否配置、TTS 服务是否可达；`npm run tts:check -- --synthesize`；BGM 需要底本有 `sound_bgm*` cue |
+| 视频没有声音 | `tts.enabled`、`tts.provider`、`tts.voices`/`tts.defaultVoice` 是否配置、TTS 服务是否可达；`npm run tts:check -- --synthesize`；BGM 需要底本或云端曲库有 `sound_bgm*` cue |
 | 部分台词静音 | API 结果的 `tts.silentSpeakers` / `tts.failedSpeakers`；角色缺参考音频或服务端失败 |
 | Irodori 下部分台词没有声音 | 看 `tts.nonJapaneseLines` / `tts.nonJapaneseSpeakers`；这几句没有日文，检查 `translateForTts` |
 | 所有角色同一个声音 | `tts.fallbackSpeakers` 列出的角色没有匹配到命名音色，落到了 `defaultVoice`；补 `aliases` |

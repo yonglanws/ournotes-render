@@ -5,6 +5,7 @@ import { loadConfig, ensureDirs, publicConfig, ROOT } from "./config.js";
 import { runDoctor } from "./doctor.js";
 import { Logger } from "./util/logger.js";
 import { StoryCatalog } from "./story/catalog.js";
+import { ensureCloudRuntimeBase } from "./story/cloudSite.js";
 import { SiteFormatCatalog } from "./story/siteFormat.js";
 import { LLMClient } from "./ai/llm.js";
 import { VoiceBook, createTtsClient } from "./tts/tts.js";
@@ -65,7 +66,25 @@ const main = async () => {
       logger.error(`site-format: ${e.message}`);
     }
   } else {
-    logger.warn("paths.site and paths.siteFormat are empty: AI video generation cannot run until a site is configured");
+    const cloudDir = path.join(config.paths.cache, "cloud-site");
+    try {
+      await ensureCloudRuntimeBase({
+        dir: cloudDir,
+        language: config.story.language || "zh-Hans",
+        allowPrivateUrl: config.security.allowPrivateServiceEndpoints === true,
+        logger: logger.child("cloud"),
+      });
+      catalog = new SiteFormatCatalog({
+        dir: cloudDir,
+        language: config.story.language,
+        personas: config.story.personas,
+        base: config.story.base,
+        logger: logger.child("site"),
+      });
+      logger.info(`cloud-site: ${cloudDir} (${catalog.bases().length} base story/stories)`);
+    } catch (e) {
+      logger.error(`cloud-site: ${e.message}`);
+    }
   }
 
   let llm = null;

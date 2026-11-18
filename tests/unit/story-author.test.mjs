@@ -218,9 +218,10 @@ test("a model's motions and expressions; the clip a motion plays at a position",
                      defaultExpression: "exp_idle01" });
   assert.throws(() => actions([]), /Live2DCharacter/);
   const m = ACTIONS.m_a.motions;
-  assert.equal(resolveMotion("mtn_idle01", 3, m), "mtn_idle01_R");           // left side faces right (_R)
-  assert.equal(resolveMotion("mtn_smile01", 3, m), "mtn_smile01_C");          // no _R: the centre one
-  assert.equal(resolveMotion("mtn_smile01", 9, m), "mtn_smile01_L");          // far-right faces left (_L)
+  assert.equal(resolveMotion("mtn_idle01", 3, m), "mtn_idle01_L");           // left slot uses _L (head/body turns screen-right)
+  assert.equal(resolveMotion("mtn_smile01", 3, m), "mtn_smile01_L");         // left slot resolves _L when present
+  assert.equal(resolveMotion("mtn_smile01", 9, m), "mtn_smile01_C");         // no _R for smile01: falls back to _C
+  assert.equal(resolveMotion("mtn_idle01", 9, m), "mtn_idle01_R");           // far-right uses _R (head/body turns screen-left)
   assert.equal(resolveMotion("mtn_idle01_R", 1, m), "mtn_idle01_R");          // a clip name plays as it is
   assert.equal(resolveMotion("mtn_gone01", 5, m), "");
   assert.equal(resolveMotion("", 5, m), "");
@@ -291,11 +292,11 @@ test("a scene compiles to the game's rows: stage, music, entrances, focus, capti
     { cmd: "Character", TargetName: "b", TargetAssetName: "002_adv/m_b/model/m_b" },
     { cmd: "Stage", TargetAssetName: "st/garden" },
     { cmd: "Bgm", BgmID: 11, Parameter1: "1.5" },
-    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_R", ExpressionName: "exp_smile01" },
+    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_L", ExpressionName: "exp_smile01" },
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 5, CameraDistance: 1 },
     { cmd: "Location", AdvTextID: "custom_location_0" },
-    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_C", MotionFadeIn: -1, ExpressionName: "exp_smile01" },
+    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: -1, ExpressionName: "exp_smile01" },
     { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"], TargetTextColors: ["#FFFFFF"] },
     { cmd: "Talk", AdvTextID: "custom_line_2" },
     { cmd: "Expression", TargetName: "a", ExpressionName: "exp_idle01", MotionFadeIn: -1 },
@@ -333,7 +334,7 @@ test("a second scene fades out, clears the stage and fades in; a positions beat 
   ], { title: "" }));
   assert.deepEqual(strip(c.episode.commands).slice(2), [
     { cmd: "Stage", TargetAssetName: "st/garden" },
-    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_R" },
+    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_L" },
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 5, CameraDistance: 2 },
     // relocating an already-staged character emits MoveToDirection instead of Out + In
@@ -371,12 +372,12 @@ test("director beats compile to focus, timed actions, fades, pauses and silent a
   ]));
   assert.deepEqual(strip(c.episode.commands).slice(2), [
     { cmd: "Stage", TargetAssetName: "st/garden" },
-    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_R" },
+    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_L" },
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 3, CameraDistance: 3 },
     // the line's own camera (a wider distance eases back over 0.5 s), then the speaker's motion and the reactions
     { cmd: "Focus", PositionType: 7, CameraDistance: 1, Duration: 0.5, IsNoWait: 1 },
-    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_C", MotionFadeIn: -1, ExpressionName: "exp_idle01" },
+    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: -1, ExpressionName: "exp_idle01" },
     { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"], TargetTextColors: ["#FFFFFF"],
       HostActions: [{ at: 0.45, TargetName: "b", MotionFadeIn: 0.15, ExpressionName: "exp_idle01" },
                     { at: 0.6, TargetName: "a", MotionFadeIn: 0.15, LookTargetPosition: 7 }] },
@@ -490,7 +491,7 @@ test("official camera rows compile in deterministic order with their durations",
   ]));
   assert.deepEqual(strip(c.episode.commands).slice(2), [
     { cmd: "Stage", TargetAssetName: "st/garden" },
-    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_R" },
+    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_L" },
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 5, CameraDistance: 2 },
     // one Focus then one Track: the explicit Focus duration wins over cameraDuration for both
@@ -530,7 +531,7 @@ test("motion fade/wait and a SE stop reach their rows", () => {
     { action: "b", expression: "exp_idle01", motionFadeIn: 0.75, seStop: true },
   ]));
   assert.deepEqual(strip(c.episode.commands).slice(-4), [
-    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_C", MotionFadeIn: 0.5, MotionWait: true, ExpressionName: "exp_idle01" },
+    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: 0.5, MotionWait: true, ExpressionName: "exp_idle01" },
     { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"],
       TargetTextColors: ["#FFFFFF"] },
     { cmd: "Se", Parameter1: "Stop" },
@@ -648,7 +649,7 @@ test("track, focus points and pre-line reactions compile to the game's continuou
   ]));
   assert.deepEqual(strip(c.episode.commands).slice(2), [
     { cmd: "Stage", TargetAssetName: "st/garden" },
-    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_R" },
+    { cmd: "In", TargetName: "a", PositionType: 3, IsNoWait: 1, MotionName: "mtn_idle01_L" },
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     // the scene establishes a two-shot with a focus point between the two slots plus a pan
     { cmd: "Focus", PositionType: 5, CameraDistance: 3 },
@@ -658,7 +659,7 @@ test("track, focus points and pre-line reactions compile to the game's continuou
     { cmd: "Focus", PositionType: 2, CameraDistance: 2, Duration: 0.5, IsNoWait: 1 },
     { cmd: "Track", Parameter1: "-0.3", Duration: 0.5, IsNoWait: 1 },
     { cmd: "Expression", TargetName: "b", ExpressionName: "exp_idle01", MotionFadeIn: -1 },
-    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_C", MotionFadeIn: -1, ExpressionName: "exp_idle01" },
+    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: -1, ExpressionName: "exp_idle01" },
     { cmd: "LookTarget", TargetName: "a", PositionType: 7, Duration: 0.2, IsNoWait: 1 },
     { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"], TargetTextColors: ["#FFFFFF"],
       HostActions: [{ at: 0.5, TargetName: "a", MotionFadeIn: 0.15, LookTargetPosition: 7 }] },
@@ -1322,4 +1323,59 @@ test("close shots auto-target head height unless focusTargetHead is false, and o
   assert.deepEqual(focusRows[5], { cmd: "Focus", PositionType: 5, CameraDistance: 1, IsNoWait: 1 }, "same-beat Zoom snaps Focus to 0s");
   assert.deepEqual(focusRows[6], { cmd: "Focus", PositionType: 9, CameraDistance: 2, IsNoWait: 1 }, "same-beat PanV2 snaps Focus to 0s");
   assert.deepEqual(trackRows[0], { cmd: "Track", Parameter1: "0.2", IsNoWait: 1 }, "same-beat PanV2 snaps Track to 0s");
+});
+
+test("left slots compile motions with _L, right slots with _R, and center with _C", () => {
+  const fullMotions = [
+    "mtn_idle01_L", "mtn_idle01_C", "mtn_idle01_R",
+    "mtn_kime01_L", "mtn_kime01_C", "mtn_kime01_R",
+    "mtn_serious01_L", "mtn_serious01_C", "mtn_serious01_R",
+    "mtn_nervous01_L", "mtn_nervous01_C", "mtn_nervous01_R",
+  ];
+  const localSite = {
+    base: BASE,
+    models: { ...MODELS, m_c: "Character/Live2D/003_adv/m_c/model/m_c" },
+    actions: {
+      m_a: { motions: fullMotions, expressions: ["exp_idle01"], defaultMotion: "mtn_idle01_C", defaultExpression: "exp_idle01" },
+      m_b: { motions: fullMotions, expressions: ["exp_idle01"], defaultMotion: "mtn_idle01_C", defaultExpression: "exp_idle01" },
+      m_c: { motions: fullMotions, expressions: ["exp_idle01"], defaultMotion: "mtn_idle01_C", defaultExpression: "exp_idle01" },
+    },
+    sounds: BASE.sounds,
+  };
+  const doc = {
+    format: SCRIPT_FORMAT, base: "stories/9.json", language: "en", title: "Facing",
+    cast: {
+      anon: { model: "m_a", name: "Anon" },
+      soyo: { model: "m_b", name: "Soyo" },
+      tomori: { model: "m_c", name: "Tomori" },
+    },
+    beats: [
+      { scene: "garden", positions: { anon: "left", soyo: "right" } },
+      { say: "anon", text: "Left line.", motion: "mtn_kime01" },
+      { say: "soyo", text: "Right line.", motion: "mtn_serious01" },
+      { positions: { anon: "far-left", tomori: "center", soyo: "far-right" } },
+      { say: "tomori", text: "Center line.", motion: "mtn_nervous01" },
+      { say: "anon", text: "Far left.", motion: "mtn_kime01" },
+      { say: "soyo", text: "Far right.", motion: "mtn_serious01" },
+    ],
+  };
+  const parsed = parseScript(doc);
+  assert.deepEqual(parsed.errors, []);
+  const chk = checkScript(parsed.script, {
+    base: BASE, models: Object.keys(localSite.models), actions: localSite.actions, sounds: BASE.sounds,
+  });
+  assert.deepEqual(chk.errors, []);
+  const res = compileScript(parsed.script, localSite, chk.language);
+  const rows = strip(res.episode.commands);
+  const ins = rows.filter((r) => r.cmd === "In");
+  assert.equal(ins.find((r) => r.TargetName === "anon").MotionName, "mtn_idle01_L");
+  assert.equal(ins.find((r) => r.TargetName === "soyo").MotionName, "mtn_idle01_R");
+  const motions = rows.filter((r) => r.cmd === "Motion");
+  assert.deepEqual(motions.map((r) => [r.TargetName, r.MotionName]), [
+    ["anon", "mtn_kime01_L"],
+    ["soyo", "mtn_serious01_R"],
+    ["tomori", "mtn_nervous01_C"],
+    ["anon", "mtn_kime01_L"],
+    ["soyo", "mtn_serious01_R"],
+  ]);
 });

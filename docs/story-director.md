@@ -13,7 +13,7 @@
 这套格式来自对官方 ADV 命令的归纳：`Stage`、`Character`、`In` / `Out`、`Motion`、`Expression`、`Talk`、`Focus`、`Track`、`LookTarget`、`FadeOut` / `FadeIn`、`Delay`。它不试图暴露全部命令，而是把官方演出中最常用的部分做成可校验、可让 AI 稳定生成的子集。
 
 台词内 `actions` 的时间比例、说话者/听者双通道和“一句一个主动作”的预算，参考了
-[MySekaiStoryteller](https://github.com/Untitled-Story/MySekaiStoryteller) 的 story format；本项目把它们编译成
+[MySekaiStoryteller-API](https://github.com/yonglanws/MySekaiStoryteller-API) 的 story format；本项目把它们编译成
 Our Notes 自己的 `Talk` 行 + `HostActions` 扩展，并在官方 ADV 的虚拟时钟上执行。
 
 ## 官方一集的节奏（30 部官方样本：8 部本地章节 + 22 部双人友情戏）
@@ -44,7 +44,7 @@ Our Notes 自己的 `Talk` 行 + `HostActions` 扩展，并在官方 ADV 的虚�
    `Track` 95 次（3.2 次/集）、`DoF` 24 次（0.8 次/集）、`Se` 147 次（4.9 次/集）、`Bgm` 71 次（2.4 次/集）；
    缓慢的 ±10% 推拉很常见，所以脚本格式提供可选的 `zoom`/`zoomDuration`。
 
-所以提示词要求：**二人同框（`middle`）↔ 说话者近景（`close`）交替，每 3~4 句一组；`near` 全场最多 1 次，
+所以提示词要求：**双人戏用二人同框（`middle`，`focus: 5`）↔ 说话者近景（`close`，`focus` 该角色）交替，每 3~4 句一组（双人戏 `near` 全场最多 1 次）；三人同台用 `far-left`/`center`/`far-right` + `near`（1.2×，`focus: 5`，`track: 0`）群像，近景只拍单人特写（`close`/`very-close`），不用 `far` 或 `middle` 拍三人同框。
 `close` 约占 22.9% 的有文本行（30 句约 7 次），近景停 1~2 句后回到二人/群像；`Focus` 约 0.45/有文本行（官方 Talk 行 0.397）；`track` 只在
 换组/群像横移时用（约 0~2 次）；`zoom` 每场约 2~5 次。** `fade` 只留给真正的时间/地点跳跃，连续对话里不用。
 10610 的 `10 Focus / 5 Track / 20 Motion` 不要当成日常戏模板。所有预算由 `host/ai/official-targets.js` 的
@@ -279,11 +279,11 @@ stage：先两人对话，`positions` 引入第三人，再让一人退场、最
 
 | 名字 | CameraDistance | 视场 | 用法 |
 |---|---:|---:|---|
-| `full` | 0 | 1.0× | 最广全境开场 / 全景建筑空镜 |
-| `near` | 1 | 1.2× | 宽全景；开场/收尾，全场 0~1 次 |
-| `middle` | 2 | 1.4× | 双人中景，默认 |
-| `far` | 3 | 1.8× | 三人群像 / 紧中景 |
-| `close` | 4 | 2.8× | 情绪近景；约占 22.9% 的有文本行，1~3 句内回到 `middle`/`far`（除非直接收场） |
+| `full` | 0 | 1.0× | 最广全境开场 / 全景建筑空镜 / 4~5 人全景 |
+| `near` | 1 | 1.2× | 宽全景与三人群像默认机位（三人 `1/5/9` 默认用 `near`；双人戏开场/收尾 0~1 次） |
+| `middle` | 2 | 1.4× | 双人中景，默认（不用于三人 `1/5/9` 群像） |
+| `far` | 3 | 1.8× | 紧中景（只用于单人中近景或 `left`/`right` 紧双人；会裁切 `1/5/9` 两侧角色） |
+| `close` | 4 | 2.8× | 单人情绪近景；约占 22.9% 的有文本行，1~3 句内回到 `middle`（双人）/ `near`（三人）（除非直接收场） |
 | `very-close` | 5 | 4× | 大特写，最多 1 次 |
 | `macro` | 6 | 6× | 极近眼部/物品特写 |
 
@@ -329,12 +329,12 @@ Focus 时长；`ease`（`OutQuad` / `OutSine` / `Linear` / `OutQuint` / `InOutSi
 ## 官方风格的演出规则
 
 1. **一场戏一个 stage**：先建立空间，之后用 `positions` 换组，不要为每次换人新开 scene。只有真正换时间/地点才 `fade`。开场先放 1 人（最多 2 人），2~4 句后让下一人进场；一场最多 2 次 `positions` 变化。换组时让已有人物保持原位，只让角色退场/进场；把同一角色从 `left` 改到 `center` 会编译成 `Out` + `In`，画面会闪一下。
-2. **镜头按组**：双人戏用“二人同框（`middle`，`focus: 5`）↔ 说话者近景（`close`，`focus` 该角色）”交替，每个机位保持 3~4 句；三人同台默认用 `far` + `focus: 5` 群像，近景只给单人特写（`close`/`very-close` + `focus` 指向一个角色），不要三人 `middle` 中景或群像 `zoom` 推近（会挤）。`Focus` 约 0.45/有文本行（官方 Talk 行 0.397）：一场 30 句约 13 次 `Focus` 变化，不要只写 4 个就停。`near` 全场最多 1 次，`close` 约占 22.9% 的有文本行（30 句约 7 次），近景停 1~2 句后回到 `middle` + `focus: 5`；不要连续两句 `close`，也不要停在同一个 `close` 上直到结尾。推近时保持同一侧 `focus`，只改 `camera.distance`，不要换焦点；情绪镜头可以加一次 `zoom` 慢推。
-3. **两人分站两侧**：两人同台用 `left` / `right`，`focus: 5` 框住两人；不要用 `center+right` 或 `center+left`，两个角色会叠在一起。
-   官方底本的两人镜头绝大多数就是 3/7 这一对；`far-left` / `far-right` 是更宽的变体，对话戏会显得中间空太多。三人群像用 `far-left` / `center` / `far-right`，`camera: far`、`focus: 5`、`track: 0`，
-   并且三人同台默认保持 `far`（生成后会把 `middle` 与群像推近强制改回 `far`），单人特写除外
+2. **镜头按组**：双人戏用“二人同框（`middle`，`focus: 5`）↔ 说话者近景（`close`，`focus` 该角色）”交替，每个机位保持 3~4 句；三人同台默认用 `near`（1.2×）+ `focus: 5` + `track: 0` 群像，近景只给单人特写（`close`/`very-close` + `focus` 指向一个角色），不要三人 `middle`/`far` 中景（1.4×/1.8× 会裁掉两侧角色）或群像 `zoom` 推近。`Focus` 约 0.45/有文本行（官方 Talk 行 0.397）：一场 30 句约 13 次 `Focus` 变化，不要只写 4 个就停。双人戏 `near` 全场最多 1 次，`close` 约占 22.9% 的有文本行（30 句约 7 次），近景停 1~2 句后回到 `middle`（双人）/ `near`（三人）+ `focus: 5`；不要连续两句 `close`，也不要停在同一个 `close` 上直到结尾。推近时保持同一侧 `focus`，只改 `camera.distance`，不要换焦点；单人情绪镜头可以加一次 `zoom` 慢推。
+3. **两人分站两侧与动作朝向**：两人同台用 `left` / `right`（3/7 槽位），`focus: 5` 框住两人；不要用 `center+right` 或 `center+left`，两个角色会叠在一起。
+   官方底本的两人镜头绝大多数就是 3/7 这一对；`far-left` / `far-right` 是更宽的变体，对话戏会显得中间空太多。三人群像用 `far-left` / `center` / `far-right`（1/5/9 槽位）、`camera: near`、`focus: 5`、`track: 0`（可用 `positions` 的 `{ "at": ..., "dz": 0.6..1.5 }` 做景深错位），
+   并且三人同台非单人特写镜头默认保持 `near`（`enforceGroupShots` 会把三人 `middle`/`far` 群像与非特写 `zoom` 改回 `near` 群像）
    （AI 默认 `story.maxOnStage: 3`；要严格两人可设 2，第三人换组进出）。`focus` 优先写位置；角色 `focus` 只给
-   情绪最重的 1~2 句。
+   情绪最重的 1~2 句。**动作方向后缀按 `SIDE = { 1: "L", 3: "L", 5: "C", 7: "R", 9: "R" }` 解析**：左侧槽位（1/3，`far-left`/`left`）用 `_L`（面向屏幕右侧/搭档），居中（5，`center`）用 `_C`，右侧槽位（7/9，`right`/`far-right`）用 `_R`（面向屏幕左侧/搭档）；写 stem（如 `mtn_smile01`）即自动对齐朝向，只有刻意转头避开或正对镜头时才写完整 `_L`/`_C`/`_R`。
 4. **听者先反应**：听者的表情/动作写 `actions` 的 `at: 0`；说话者的主动作写 `say.motion`。一句最多一个说话者动作、一个听者反应。官方样本没有句中动作，`at` 一律写 0。
 5. **表情跟动作**：表情和 `motion` 写在同一条 `say` 上；默认 `idle`，不要每句都笑。官方独立 `Expression` 约 0.07 条/集（默认 0），确有必要一场最多 1 次。
 6. **动作预算**：`Motion` 约 1.30/句；约 6% 的句子没有 Motion；约 44.7% 的有文本行有 2 个以上表演动作 (Motion + Expression + Look + LookTarget)（518/1158；有动作的行中 47.3%；恰好 2 个 Motion 23.8%）。不要给同一角色同一句叠 2 个动作，也不要每句都动；staged merge 的 `maxStatic`（约 12%）只是参考上限，修剪仍以达到 `motionMax` 为准。
@@ -385,8 +385,8 @@ Focus 时长；`ease`（`OutQuad` / `OutSine` / `Linear` / `OutQuint` / `InOutSi
 - 每句只保留 1 个听者反应；独立 `Expression` 最多保留 1 条（官方约 0.07 条/集，默认 0），多出来的在合并时裁掉并记 warning。
 - 旁白（`narrate`）没有说话者：分镜只保留 `focus`/`camera`/`track`/`zoom`/运镜字段和 `actions`；`motion`、`expression`、`lookAt`、`look`、`se`、`motionFadeIn`、`motionWait` 等发言人字段在合并时丢弃并记 `narrateField` warning。
 - 非 line beat 按 `scene`/`positions`/`camera`/`fade`/`pause`/`action` 的类型只保留该类型允许的字段；多写的已知字段丢弃并记 `storyboardField` warning。
-- 站位在合并后按**分段同台人数**归一化：仅 2 人同台段落保持 `left`/`right`（3/7 站位），只有 3 人同时在场的那一段落才展开成 `far-left`/`center`/`far-right` 并改用 `camera: far`、`focus: 5`、`track: 0`（保留 `dz` 景深错位）；1 人退场后自动收窄回 `left`/`right`。模型写了 `center+right` 这种会叠人的站位也会被纠正。
-- 第一条不是 `scene` 时补一个默认 `scene`：1 人站 `center`，2 人站 `left`/`right`，3 人站
+- 站位在合并后按**分段同台人数**归一化：仅 2 人同台段落保持 `left`/`right`（3/7 站位），只有 3 人同时在场的那一段落才展开成 `far-left`/`center`/`far-right` 并改用 `camera: near`（1.2×）、`focus: 5`、`track: 0`（保留 `dz` 景深错位）；1 人退场后自动收窄回 `left`/`right`。模型写了 `center+right` 这种会叠人的站位也会被纠正。
+- 第一条不是 `scene` 时补一个默认 `scene`：1 人站 `left`（当后续有第 2 人加入时）或 `center`，2 人站 `left`/`right`，3 人站
   `far-left`/`center`/`far-right`。
 
 校验失败时，修复轮只重发**分镜**提示词（台词稿固定在上下文里），所以修几轮都不会把台词改坏。台词稿本身
@@ -401,32 +401,34 @@ llm:
 角色提示词很短、或想省调用次数时设 `pipeline: single`，行为与之前完全一致：一次输出完整的
 `ournotes.story-script/1`，可选的 `llm.directorPlan` 仍可先写一份分镜计划。
 
-## 站点格式与 AI 管线
+## 云端运行时、站点格式与 AI 管线
 
-两条路径使用同一个脚本格式：
+各路径共用同一个 `ournotes.story-script/1` 脚本格式：
 
-- **产品站点**（`nnnotes.product/1`）：`/api/v1/generate` 的 AI 队列、TTS、`scripts/story-author.mjs` 使用的路径。TTS 会为每句生成语音，注入 `VoiceIDs`，并用 `airlipsync_voice` 驱动口型。
-- **站点格式**（`ournotes.story-manifest/2`，bdon.moe 剧情播放器）：`host/tools/site-story.mjs` 把同一份脚本编译成新的剧情清单和 `episode.json`，写回站点目录，再由 `host/tools/render-story.mjs` 用 0.1.8 站点引擎渲染。它会把字体产品切换成 browser-font 模式，因此脚本里的新台词不会缺字。
-  `host/tools/ai-site-story.mjs` 进一步把站点目录交给 AI 写作器：它生成同一份导演脚本，用内置 TTS 逐句合成（支持情绪参考音频），把 WAV、cue sheet、`VoiceIDs`/`voiceCues` 写回站点，再编译。适合只有 bdon 下载资源、没有 nnnotes 产品站点的场景。
+- **零本地站点云端运行时（默认）**：`paths.site` 与 `paths.siteFormat` 均留空时，宿主启动会自动从 `https://storage.bdon.moe/moenotes` 初始化轻量云端底座到 `paths.cache/cloud-site`，并在生成/编译时调用 `materializeSiteStoryAssets()` 按需从 `storage.bdon.moe/moenotes` 与 `assets.bdon.moe` 拉取所用模型、舞台、BGM/SE、遮罩、滤镜、粒子特效、CG 与规则转场。
+- **全量云端中文语义目录与筛选**：`host/story/cloud-catalog.json` + `host/story/site-resources.yaml`（由 `node host/tools/build-cloud-catalog.mjs` 离线构建）提供 **343** 张舞台（含室内/室外/时段标签，过滤 `adv_bkg_stage_000217`/`000218`/`000333` 标题黑屏）、**91** 首 BGM、**345** 条 SE、**209 TW + 58 JP = 267** 套 Live2D 模型及 53 遮罩 / 14 后期滤镜 / 10 粒子特效 / 349 CG / 6 转场规则的 donor 索引；`host/ai/catalogSelection.js` 用 CJK 二字切片与语义/情绪/乐队打分做分类精选，`readSiteCatalog()` 默认 `castOnly = false` 接收全部合法云端资源 ID。
+- **站点格式**（`ournotes.story-manifest/2`，bdon.moe 剧情播放器）：`host/tools/site-story.mjs` 把同一份脚本编译成新的剧情清单和 `episode.json`，写回站点目录，再由 `host/tools/render-story.mjs` 用 `ournotes-player-site` 引擎渲染。它会把字体产品切换成 browser-font 模式，因此脚本里的新台词不会缺字。
+  `host/tools/ai-site-story.mjs` 进一步把站点目录交给 AI 写作器：它生成同一份导演脚本，用内置 TTS 逐句合成（支持情绪参考音频），调用 `materializeSiteStoryAssets()` 补齐云端资源，再把 WAV、cue sheet、`VoiceIDs`/`voiceCues` 写回站点并编译。
+- **产品站点**（`nnnotes.product/1`）：`paths.site` 指向本地 nnnotes 产品站点时走 `Site.compose`，TTS 会生成语音并注入 `VoiceIDs`，并用 `airlipsync_voice` 驱动口型。
 
 ```sh
-# 列出站点可用的舞台、BGM、音效（sounds）、模型、动作、表情
-node host/tools/site-story.mjs --site resources/site --base stories/10610.json --list --lang ja
+# 列出站点（含合并后的云端目录）可用的舞台、BGM、音效（sounds）、遮罩、滤镜、转场、模型、动作、表情
+npm run host:site-story -- --site resources/site --base stories/10610.json --list --lang ja
 
 # 把导演脚本编译成站点里的新剧情（adv 90001）
-node host/tools/site-story.mjs --site resources/site --base stories/10610.json \
+npm run host:site-story -- --site resources/site --base stories/10610.json \
   --script host/fixtures/director-demo.json --adv 90001 --lang ja --title "ライブのあとで"
 
 # 或者让 AI 从一句话写一份，并用内置 TTS 合成（需要 config.yaml 的 LLM 与 TTS）
-node host/tools/ai-site-story.mjs --site resources/site --base stories/10610.json --lang ja \
-  --prompt "ライブのあと、燈と愛音と爽世が次の演奏について話す" --adv 90002 --minutes 2
+npm run host:ai-site-story -- --site resources/site --base stories/10610.json --lang ja \
+  --prompt "ライブのあと、灯と愛音と爽世が次の演奏について話す" --adv 90002 --minutes 2
 
-# 已经有脚本时只做 TTS + 编译
-node host/tools/ai-site-story.mjs --site resources/site --base stories/10610.json \
+# 已经有脚本时只做 TTS + 物化云端资产 + 编译
+npm run host:ai-site-story -- --site resources/site --base stories/10610.json \
   --script output/90002.script.json --lang ja --adv 90002 --title "ライブのあとで"
 
 # 渲染
-node host/tools/render-story.mjs --site resources/site --story stories/90001.json --lang ja \
+npm run host:render-story -- --site resources/site --story stories/90001.json --lang ja \
   --core resources/site/vendor/live2dcubismcore.min.js \
   --motionsync resources/site/vendor/live2dcubismmotionsynccore.min.js \
   --out output --job director-demo

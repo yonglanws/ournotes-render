@@ -7,7 +7,7 @@
   caption 跟着每个请求走。
 
 音色、参考音频、GPT/SoVITS 权重或 LoRA、情绪参考全部写在本项目的配置里，可以单独备份、审查和迁移。两个后端的
-字段名与 MySekaiStoryteller 的 `tts` 节一致，同一份音色表可以在两个后端之间切换。
+字段名与 [MySekaiStoryteller-API](https://github.com/yonglanws/MySekaiStoryteller-API) 的 `tts` 节一致，同一份音色表可以在两个后端之间切换。
 
 如果你原来用 AstrBot 的 GPT-SoVITS 插件，只需要把 `persona_storage` / `emotion_storage` 里的数据抄进
 `voices.yaml` 一次（字段对应见文末），之后 AstrBot 怎么改都不影响本项目。

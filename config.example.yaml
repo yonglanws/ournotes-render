@@ -37,8 +37,9 @@ paths:
   site: ""                   # ← nnnotes.product/1 产品站点（含 stories.json / models.json / assets/）
                              #   与 paths.siteFormat 二选一；产品站点走产品编译
                              # env: OURNOTES_SITE
-  siteFormat: ""             # 可选：bdon 站点格式目录（fetch-story 下载的 resources/site）。没有产品站点时，
-                             #   /api/v1/generate 会生成剧本、配音、把新剧情编译回站点并渲染 MP4
+  siteFormat: ""             # 可选：bdon 站点格式目录（fetch-story 下载的 resources/site）。
+                             #   当 paths.site 与 paths.siteFormat 都留空时，启动时会自动在 paths.cache/cloud-site
+                             #   初始化轻量云端运行时并按需拉取所用模型/背景/音频。
                              # env: OURNOTES_SITE_FORMAT
   output: output             # 成片 MP4、故事 JSON、渲染帧（env: OURNOTES_OUTPUT）
   cache: cache               # TTS / 资源缓存（env: OURNOTES_CACHE）

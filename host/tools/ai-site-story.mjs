@@ -11,7 +11,7 @@ import { loadConfig } from "../config.js";
 import { configureFfmpeg } from "../render/ffmpeg.js";
 import { createTtsClient, synthesizeStory, VoiceBook } from "../tts/tts.js";
 import { buildSiteStory } from "./site-story.mjs";
-import { catalogFromSite } from "../story/siteFormat.js";
+import { catalogFromSite, materializeSiteStoryAssets } from "../story/siteFormat.js";
 
 export const parseArgs = (argv) => {
   const o = { site: "", base: "", prompt: "", script: "", adv: "", lang: "", title: "", config: "", out: "",
@@ -73,6 +73,13 @@ const main = async () => {
       onProgress: (p, message) => console.error(`tts ${Math.round((p || 0) * 100)}% ${message}`),
     });
   }
+  await materializeSiteStoryAssets({
+    site,
+    script: prepared.doc,
+    language: request.language,
+    allowPrivateUrl: cfg.security.allowPrivateServiceEndpoints === true,
+    logger: console,
+  });
   const built = buildSiteStory({ site, baseRel: o.base, script: prepared.doc, advId: o.adv, language: request.language,
     title: o.title || prepared.script.title, voices });
   if (built.errors) throw Object.assign(new Error(`the generated script did not compile (${out})`),

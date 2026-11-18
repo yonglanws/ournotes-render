@@ -77,11 +77,16 @@ export const runDoctor = (config, { logger = console } = {}) => {
       issue(errors, warnings, "paths.siteFormat", checks.site.detail);
     }
   } else {
+    const cloudDir = path.join(config.paths.cache, "cloud-site");
+    const seeded = fs.existsSync(path.join(cloudDir, "stories.json")) && fs.existsSync(path.join(cloudDir, "models.json"));
     checks.site = {
-      ok: false,
-      detail: "not set; /api/v1/generate needs an nnnotes product site, /api/v1/script/generate can use paths.siteFormat",
+      ok: true,
+      mode: "cloud-auto",
+      dir: cloudDir,
+      detail: seeded
+        ? `${cloudDir} (cloud-site ready)`
+        : `cloud-auto: will bootstrap lightweight runtime into ${cloudDir}`,
     };
-    issue(null, warnings, "paths.site", checks.site.detail);
   }
 
   try {

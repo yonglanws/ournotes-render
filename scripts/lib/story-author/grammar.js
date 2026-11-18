@@ -8,8 +8,8 @@ export const POSITIONS = Object.freeze({ "far-left": 1, left: 3, center: 5, righ
 // Default world X coordinate of each character slot in AdvStage focus points (spacing 1.05 units).
 export const SLOT_WORLD_X = Object.freeze({ 1: -2.1, 3: -1.05, 5: 0, 7: 1.05, 9: 2.1 });
 
-// Motion directional suffix facing center/partner: stage left slots (1, 3) face right (_R); stage right slots (7, 9) face left (_L).
-export const SIDE = Object.freeze({ 1: "R", 3: "R", 5: "C", 7: "L", 9: "L" });
+// Motion directional suffix: stage left slots (1, 3) use _L (head/body turned toward screen-right/partner); stage right slots (7, 9) use _R (turned toward screen-left/partner).
+export const SIDE = Object.freeze({ 1: "L", 3: "L", 5: "C", 7: "R", 9: "R" });
 
 // Focus CameraDistance scale: 0 = full/establishing, 1 = near (1.2x), 2 = middle (1.4x), 3 = far (1.8x),
 // 4 = close (2.8x), 5 = very-close (4x), 6 = macro.

@@ -28,8 +28,16 @@ export class Renderer {
     const cfg = this.config;
     const files = new Map(story.files);
     files.set(story.manifestPath, Buffer.from(JSON.stringify(story.manifest), "utf8"));
+    const siteDir = story.site || cfg.paths.site;
+    const vendorCore = siteDir ? path.join(siteDir, "vendor", "live2dcubismcore.min.js") : "";
+    const vendorMotion = siteDir ? [
+      path.join(siteDir, "vendor", "live2dcubismmotionsynccore.min.js"),
+      path.join(siteDir, "vendor", "cubism-motionsync-core-5.0.4", "live2dcubismmotionsynccore.min.js"),
+    ].find((p) => fs.existsSync(p)) : "";
+    const core = cfg.render.core || (vendorCore && fs.existsSync(vendorCore) ? vendorCore : undefined);
+    const motionsync = cfg.render.motionsync || vendorMotion || "";
     const pageServer = await createPageServer({
-      site: story.site || cfg.paths.site, files, core: cfg.render.core || undefined, motionsync: cfg.render.motionsync || "",
+      site: siteDir, files, core, motionsync,
       outputDir: cfg.paths.output, logger: this.logger,
     });
     const job = pageServer.createJob({

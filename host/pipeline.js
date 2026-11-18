@@ -184,11 +184,19 @@ export class Pipeline {
     };
 
     progress("compiling", 0.57, "把剧本编译到站点");
+    const siteDir = this.catalog.dir || this.config.paths.siteFormat;
     let advId = 0;
-    const built = await this._withSiteWrite(() => {
+    const built = await this._withSiteWrite(async () => {
+      if (this.catalog.materializeAssets) {
+        await this.catalog.materializeAssets({
+          script: doc || script,
+          language: script.language || catalog.language,
+          allowPrivateUrl: this.config.security.allowPrivateServiceEndpoints === true,
+          logger: this.logger,
+        });
+      }
       // `catalog.bases()` is language-filtered and cached for the process lifetime, so it cannot be the only source
       // of used ids: a story written earlier by this process (or one in another language) would be overwritten.
-      const siteDir = this.config.paths.siteFormat;
       const used = new Set();
       try {
         for (const name of fs.readdirSync(path.join(siteDir, "stories"))) {
@@ -206,7 +214,7 @@ export class Pipeline {
       advId = 900000 + (Date.now() % 100000);
       while (used.has(String(advId)) || fs.existsSync(path.join(siteDir, "stories", `${advId}.json`))) advId++;
       return buildSiteStory({
-        site: this.config.paths.siteFormat,
+        site: siteDir,
         baseRel: catalog.manifest,
         script: doc || script,
         advId,
@@ -222,7 +230,7 @@ export class Pipeline {
 
     const render = await this.renderer.render({
       story: { manifest: built.manifest, manifestPath: built.manifestPath, files: new Map(),
-               language: built.language, siteEngine: true, site: this.config.paths.siteFormat },
+               language: built.language, siteEngine: true, site: siteDir },
       jobId, signal,
       onProgress: (phase, p, message) => progress(phase, 0.6 + p * 0.38, message),
     });
@@ -231,7 +239,7 @@ export class Pipeline {
     const storyFile = path.join(this.config.paths.output, `${jobId}.story.json`);
     fs.writeFileSync(storyFile, JSON.stringify({
       format: script.format, script: doc, warnings, tts: ttsResult,
-      site: { dir: this.config.paths.siteFormat, manifest: built.manifestPath, advId, language: built.language },
+      site: { dir: siteDir, manifest: built.manifestPath, advId, language: built.language },
     }, null, 2));
     const stat = fs.statSync(render.output);
     return {

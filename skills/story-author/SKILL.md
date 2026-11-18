@@ -58,19 +58,23 @@ do not use its density for a daily scene.
 - Cut in groups of 3--4 lines: two-shot (`middle`, `focus: 5`) and a speaker close-up (`close`, `focus` that cast)
   alternate. Change `focus` only when the active group changes or at an emotional turn; do not cut every line, and do
   not stay in one static shot for the whole scene. A 30-line scene needs roughly 7--10 `Focus` changes. `full` (1.0x)
-  and `near` (1.2x) are wide establishing shots, at most once per scene; `close` (2.8x) is the close-up, about one per
-  8 lines (2--5 in 30 lines) and must recover within 1--3 lines to `middle`/`far` (unless ending the scene), never hold
-  the same `close` indefinitely. `middle` (1.4x) is the default two-shot, `far` (1.8x) for a 3-person group,
-  `very-close` (4x) and `macro` (6x) extreme close-ups (at most once). A slow `zoom` (1.03--1.10 in, 0.92--0.98 out,
-  `zoomDuration` 3--5, `ease: "OutSine"`) is optional, one per shot at most.
+  and `near` (1.2x) are wide establishing / group shots: two-person scenes use `near` at most once (for wide opening/closing),
+  while 3-person scenes (`far-left` / `center` / `far-right`) default to `near` (1.2x, `focus: 5`, `track: 0`). `close`
+  (2.8x) is the single-speaker close-up, about one per 8 lines (2--5 in 30 lines) and must recover within 1--3 lines to
+  `middle` (2-person) / `near` (3-person) unless ending the scene; never hold the same `close` indefinitely. `middle`
+  (1.4x) is the default two-shot; `far` (1.8x) is a tight medium shot for a solo or tight `left`/`right` pair (do not use
+  `far` or `middle` for a 1/5/9 3-person group—it clips the outer slots at ±2.10m). `very-close` (4x) and `macro` (6x)
+  are extreme close-ups (at most once). A slow `zoom` (1.03--1.10 in, 0.92--0.98 out, `zoomDuration` 3--5, `ease: "OutSine"`)
+  is optional, one per shot at most.
 - `focus` may be a cast id, a position, or a focus point 1--9: 1/3/5/7/9 are the slots, 2/4/6/8 frame a pair. Prefer a
   focus point or position; a character `focus` is for close-ups and emotional turns (`focusTargetHead: true` locks camera
   height to the target head). Pair `focus` with `track` (roughly -0.8..0.8 for two people, clamped to +/-0.25 in `close`
-  and 0 in `very-close`/`macro`); 0--2 `track` rows per scene, usually 0--1 for two people.
+  and 0 in `very-close`/`macro` or 3-person group shots); 0--2 `track` rows per scene, usually 0--1 for two people.
   Two people on stage stand at `left` / `right` (slots 3/7) with `focus: 5`; never use `center+right` or `center+left`
   (those overlap), and avoid overly wide `far-left`/`far-right` unless blocking a 3-person group. Three people use
-  `far-left` / `center` / `far-right` with `camera: far`, `focus: 5`, `track: 0` (use position objects `{ at, dz: 0.6..1.5 }`
-  for subtle Z-depth staggering); `story.maxOnStage` defaults to 3, and 2 keeps only the two-person `left`/`right` pair.
+  `far-left` / `center` / `far-right` with `camera: near`, `focus: 5`, `track: 0` (use position objects `{ at, dz: 0.6..1.5 }`
+  for subtle Z-depth staggering), and close-ups in 3-person scenes target only a single speaker (`close`/`very-close`);
+  `story.maxOnStage` defaults to 3, and 2 keeps only the two-person `left`/`right` pair.
 - Use motivated cinematography and FX rather than arbitrary PanV2/Pedestal wobbles on static 2-person dialogue:
   `OutSine` `zoom` + background `dof` (`dofLayers: 0`; never blur the focused speaker; character `dofLayers: 2` must name
   a non-speaker `dofTarget`) + optional `bgm: "stop"` on emotional turns; multi-line `PanV2` drifts; `hideTalk: true` +
@@ -82,8 +86,9 @@ do not use its density for a daily scene.
 - One main action for the speaker (`say.motion`) and at most one listener reaction in `actions` at `0`. Official episodes
   have no mid-line actions, so write `at: 0`; roughly 6% of lines have no motion at all. The compiler fades
   each motion in from the current pose (the clip's own 1 s fade), so you do not need extra beats to cover a switch.
-  Name motions by stem (`mtn_smile01`); the compiler chooses `_R` on left slots (1, 3), `_C` at center (5), and `_L` on
-  right slots (7, 9) toward conversation partners -- specify a full `_L`/`_C`/`_R` name only when deliberately turning away.
+  Name motions by stem (`mtn_smile01`); the compiler uses `SIDE = { 1: "L", 3: "L", 5: "C", 7: "R", 9: "R" }`—left slots
+  (1, 3) use `_L` (facing screen-right/inward toward partner), center (5) uses `_C`, and right slots (7, 9) use `_R`
+  (facing screen-left/inward toward partner); specify a full `_L`/`_C`/`_R` name only when deliberately turning away or facing straight ahead.
 - About 20--26 motions per 20 lines: roughly 12--16 lines with one, 3--5 with two, 3--4 with none. Prefer
   `nod` / `smile` / `check` / `question` / `thinking` / `denial` / `serious`; `surprised` 1--2 times, `angry` and `kime`
   at most once. Repeating a gentle gesture is natural.

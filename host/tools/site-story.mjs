@@ -5,17 +5,22 @@
 // This is the authoring bridge for sites that are not nnnotes product sites: the AI writer and the API queue use this
 // same script format, and the product path compiles it with the same script library.
 import crypto from "node:crypto";
+import dns from "node:dns/promises";
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
+import net from "node:net";
 import path from "node:path";
 import tls from "node:tls";
 import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { compileScript, checkScript, cueLabel, fontFamily, parseScript, withBrowserFonts } from "../../scripts/lib/story-author/script.js";
 import { STORY_LANGUAGES } from "../../src/story/params.js";
-import { resolvePublicUrl } from "../net/urlGuard.js";
+import { assertPublicHttpUrl, isPrivateAddress, resolvePublicUrl } from "../net/urlGuard.js";
+import { loadCloudCatalog } from "../story/cloudCatalogData.js";
 import { applyMusicGuide, applySoundGuide, applyStageGuide, loadResourceGuide } from "../story/resourceGuide.js";
+
+export const OFFICIAL_ASSET_BASE_URL = "https://assets.bdon.moe";
 
 const FIELD = (language) => {
   const field = STORY_LANGUAGES[language];
@@ -23,7 +28,7 @@ const FIELD = (language) => {
   return field;
 };
 
-const readAsset = (site, rel) => {
+export const readAsset = (site, rel) => {
   let b = fs.readFileSync(path.join(site, rel));
   if (rel.endsWith(".gz")) b = zlib.gunzipSync(b);
   else if (rel.endsWith(".br")) b = zlib.brotliDecompressSync(b);
@@ -32,7 +37,7 @@ const readAsset = (site, rel) => {
 
 // An entry of a site manifest: a file {asset,size,stored}, or parts [[key, asset, size, stored], ...] merged into one
 // object (the prefab of a model is split this way).
-const readEntry = (site, entry, kind = "json") => {
+export const readEntry = (site, entry, kind = "json") => {
   if (!entry) throw new Error("missing file entry");
   if (Array.isArray(entry.parts)) {
     const out = {};
@@ -43,13 +48,13 @@ const readEntry = (site, entry, kind = "json") => {
   return kind === "json" ? JSON.parse(bytes.toString()) : bytes;
 };
 
-const writeAtomic = (file, data) => {
+export const writeAtomic = (file, data) => {
   const tmp = `${file}.tmp-${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
   fs.writeFileSync(tmp, data);
   fs.renameSync(tmp, file);
 };
 
-const writeAsset = (site, bytes, ext = "json") => {
+export const writeAsset = (site, bytes, ext = "json") => {
   const sha = crypto.createHash("sha256").update(bytes).digest("hex");
   const gz = zlib.gzipSync(bytes);
   const rel = `assets/${sha}.${ext}.gz`;
@@ -190,12 +195,12 @@ const readSoundRows = (site, manifest, episode) => {
   return { music, sounds };
 };
 
-const isSafeRelPath = (rel) => {
+export const isSafeRelPath = (rel) => {
   if (!rel || typeof rel !== "string" || rel.includes("\0") || rel.startsWith("/") || rel.startsWith("\\")) return false;
   return !rel.split(/[\\/]/).some((seg) => seg === "" || seg === "." || seg === "..");
 };
 
-const addAliasKey = (map, rawKey, canonical) => {
+export const addAliasKey = (map, rawKey, canonical) => {
   if (!rawKey) return;
   const k = String(rawKey);
   if (!map.has(k)) map.set(k, canonical);
@@ -211,11 +216,22 @@ const addAliasKey = (map, rawKey, canonical) => {
   }
 };
 
-const hasEntryKey = (container, name) => (
-  container instanceof Map ? container.has(name) : Boolean(container && Object.hasOwn(container, name))
-);
+const hasEntryKey = (container, name) => {
+  if (!container) return false;
+  if (container instanceof Map) {
+    if (!container.has(name)) return false;
+    const v = container.get(name);
+    if (v && typeof v === "object") {
+      if ("entry" in v && v.entry === null) return false;
+      if ("profile" in v && v.profile === null) return false;
+      if ("transition" in v && v.transition === null) return false;
+    }
+    return true;
+  }
+  return Object.hasOwn(container, name);
+};
 
-const resolveAliasKey = (map, aliasMap, name) => {
+export const resolveAliasKey = (map, aliasMap, name) => {
   if (!name) return "";
   if (hasEntryKey(map, name)) return name;
   const direct = aliasMap.get(name) || aliasMap.get(String(name).toLowerCase());
@@ -263,7 +279,7 @@ const inlineAnimRefs = (node, anim, seenCtrl = new Set(), seenClip = new Set()) 
   return out;
 };
 
-const readShadersMap = (site, manifest) => {
+export const readShadersMap = (site, manifest) => {
   const entry = manifest.files && manifest.files["shaders/shaders.json"];
   if (!entry) return new Map();
   let list;
@@ -283,7 +299,7 @@ const readShadersMap = (site, manifest) => {
   return map;
 };
 
-const collectDeps = (node, donorFiles, donorShaders) => {
+export const collectDeps = (node, donorFiles, donorShaders) => {
   const files = {};
   const shaders = new Map();
   const seen = new Set();
@@ -395,13 +411,13 @@ const readUiTransitions = (site, manifest, preferredLang = "") => {
 
 // The stage prefabs of a story's own scene.json. The map is split out of a multi-part asset, so only the `stages`
 // part has to be read (and later rewritten).
-const readSceneStages = (site, manifest) => {
+export const readSceneStages = (site, manifest) => {
   const entry = manifest.files && manifest.files["scene.json"];
   if (!entry) return { entry: null, stages: {} };
   return { entry, stages: readSplitParts(site, entry, ["stages"]).stages || {} };
 };
 
-const textureEntries = (manifest, id) => Object.fromEntries(Object.entries(manifest.files || {})
+export const textureEntries = (manifest, id) => Object.fromEntries(Object.entries(manifest.files || {})
   .filter(([file]) => file.startsWith(`textures/${id}-`)));
 
 // The character key of a model id (`adv_live2d_anon_002_live_01` → anon, `adv_live2d_sub_mortis_...` → sub_mortis).
@@ -435,7 +451,7 @@ const stageAdvComp = (prefab) => {
   return null;
 };
 
-const collectStageVolumeProfiles = (prefab, volumeProfiles) => {
+export const collectStageVolumeProfiles = (prefab, volumeProfiles) => {
   const profs = stageAdvComp(prefab)?._allVolumeProfileCollection?._profiles;
   if (!Array.isArray(profs)) return;
   for (const p of profs) {
@@ -465,10 +481,11 @@ const hydrateStagePrefab = (prefab, volumeProfiles) => {
 // Every story of the site contributes its locations, sounds, frames, post-effects, particle effects, stills,
 // rule transitions and shaders to one pool, so a new episode is not limited to what its base story happened to use.
 // Shared neutral venues (`kind: shared` in resourceGuide) are kept even with `castOnly: true`.
-const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = true, castOnly = true, guide = null } = {}) => {
+const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = true, castOnly = false, guide = null, cloud = true } = {}) => {
   const stages = [], music = [], sounds = [];
   const stageIds = new Set(), musicCues = new Set(), soundCues = new Set();
   const stageFiles = new Map(), stagePrefabs = new Map(), stageShaders = new Map(), soundFiles = new Map();
+  const sheetCuesEntries = new Map(), sheetCuesAssets = new Map(), sheetCueMeta = new Map();
   const stageCasts = new Map();
   const volumeProfiles = new Map();
   const frames = new Map(), frameAliases = new Map();
@@ -477,6 +494,32 @@ const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = t
   const stills = new Map(), stillAliases = new Map();
   const transitions = new Map(), transitionAliases = new Map();
   const seen = new Set([baseRel]);
+
+  const absorbSoundAudio = (sheet, audioFiles = {}, cueMeta = null) => {
+    const dest = soundFiles.get(sheet) || {};
+    const cuesRel = `audio/${sheet}/cues.json`;
+    for (const [rel, entry] of Object.entries(audioFiles || {})) {
+      if (rel === cuesRel) {
+        const list = sheetCuesEntries.get(sheet) || [];
+        const seenAsset = sheetCuesAssets.get(sheet) || new Set();
+        const tag = entry?.asset || JSON.stringify(entry);
+        if (!seenAsset.has(tag)) {
+          seenAsset.add(tag);
+          list.push(entry);
+          sheetCuesAssets.set(sheet, seenAsset);
+          sheetCuesEntries.set(sheet, list);
+        }
+      } else {
+        dest[rel] = entry;
+      }
+    }
+    if (cueMeta && typeof cueMeta === "object") {
+      const meta = sheetCueMeta.get(sheet) || {};
+      Object.assign(meta, cueMeta);
+      sheetCueMeta.set(sheet, meta);
+    }
+    soundFiles.set(sheet, dest);
+  };
 
   const poolExtras = (manifest) => {
     const files = manifest.files || {};
@@ -574,16 +617,16 @@ const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = t
     if (episode) {
       const rows = readSoundRows(site, manifest, episode);
       for (const item of rows.music) {
+        absorbSoundAudio(item.sheet, item.audio);
         if (musicCues.has(item.cue)) continue;
         musicCues.add(item.cue);
         music.push(item);
-        soundFiles.set(item.sheet, item.audio);
       }
       for (const item of rows.sounds) {
+        absorbSoundAudio(item.sheet, item.audio);
         if (soundCues.has(item.cue)) continue;
         soundCues.add(item.cue);
         sounds.push(item);
-        soundFiles.set(item.sheet, item.audio);
       }
     }
     poolExtras(manifest);
@@ -612,6 +655,125 @@ const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = t
         if (bundle && bundle.files) poolExtras(bundle);
       } catch { /* ignore corrupt bundle cache */ }
     }
+    const cloudPoolPath = path.join(site, "cloud-pool.json");
+    if (fs.existsSync(cloudPoolPath)) {
+      try {
+        const cp = JSON.parse(fs.readFileSync(cloudPoolPath, "utf8"));
+        for (const [id, st] of Object.entries(cp?.stages || {})) {
+          if (!st?.key || !st?.prefab) continue;
+          collectStageVolumeProfiles(st.prefab, volumeProfiles);
+          stagePrefabs.set(st.key, st.prefab);
+          if (Array.isArray(st.shaders) && st.shaders.length) stageShaders.set(st.key, new Map(st.shaders));
+          if (st.files && Object.keys(st.files).length) stageFiles.set(st.key, st.files);
+          if (!stageIds.has(id)) {
+            stageIds.add(id);
+            stages.push({ key: st.key, id, caption: "" });
+            stageCasts.set(st.key, new Set());
+          }
+        }
+        let nextPoolSoundId = 820000;
+        let nextPoolSheetId = 820000;
+        for (const [cue, au] of Object.entries(cp?.audio || {})) {
+          if (!au?.sheet) continue;
+          absorbSoundAudio(au.sheet, au.files || {}, au.cueEntry ? { [cue]: au.cueEntry } : null);
+          const isBgm = au.kind === "bgm" || /^sound_bgm/i.test(au.sheet);
+          const soundId = Number(au.soundId) || nextPoolSoundId++;
+          const sheetId = Number(au.sheetId) || nextPoolSheetId++;
+          if (isBgm && !musicCues.has(cue)) {
+            musicCues.add(cue);
+            music.push({
+              cue, label: cueLabel(cue), sound: soundId, sheet: au.sheet,
+              row: au.row || { _id: soundId, _category: 0, _soundCueSheetID: sheetId, _cueName: cue },
+              cuesheet: au.cuesheet || { _id: sheetId, _cueSheetName: au.sheet },
+              audio: au.files || {},
+            });
+          } else if (!isBgm && !soundCues.has(cue)) {
+            soundCues.add(cue);
+            sounds.push({
+              cue, label: cueLabel(cue), sound: soundId, sheet: au.sheet,
+              row: au.row || { _id: soundId, _category: 1, _soundCueSheetID: sheetId, _cueName: cue },
+              cuesheet: au.cuesheet || { _id: sheetId, _cueSheetName: au.sheet },
+              audio: au.files || {},
+            });
+          }
+        }
+      } catch { /* ignore corrupt cloud-pool */ }
+    }
+  }
+  const hasCustomGuide = !!(site && fs.existsSync(path.join(site, "story-resources.yaml")));
+  if (cloud && all && !hasCustomGuide) {
+    const cc = loadCloudCatalog();
+    const bandMembers = new Map();
+    for (const [ck, b] of Object.entries(cc.characterBands || {})) {
+      if (!bandMembers.has(b)) bandMembers.set(b, new Set());
+      bandMembers.get(b).add(ck);
+    }
+    for (const s of cc.stages || []) {
+      if (!s?.id || s.kind === "title" || stageIds.has(s.id)) continue;
+      const key = `Adv/Stage/${s.id}/${s.id}`;
+      stageIds.add(s.id);
+      stages.push({ key, id: s.id, caption: "" });
+      stageCasts.set(key, s.kind === "shared" || !s.band ? new Set() : (bandMembers.get(s.band) || new Set()));
+    }
+    let nextSoundId = 800000;
+    let nextSheetId = 800000;
+    for (const m of cc.music || []) {
+      if (!m?.cue || musicCues.has(m.cue)) continue;
+      const soundId = nextSoundId++;
+      const sheetId = nextSheetId++;
+      const sheet = m.sheet || m.cue;
+      musicCues.add(m.cue);
+      music.push({
+        cue: m.cue, label: cueLabel(m.cue), sound: soundId, sheet,
+        row: { _id: soundId, _category: 0, _soundCueSheetID: sheetId, _cueName: m.cue },
+        cuesheet: { _id: sheetId, _cueSheetName: sheet },
+        audio: {},
+      });
+    }
+    const seSheetId = 819999;
+    let nextSeId = 810000;
+    for (const se of cc.sounds || []) {
+      if (!se?.cue || soundCues.has(se.cue)) continue;
+      const soundId = nextSeId++;
+      const sheet = se.sheet || "sound_se_adv";
+      soundCues.add(se.cue);
+      sounds.push({
+        cue: se.cue, label: cueLabel(se.cue), sound: soundId, sheet,
+        row: { _id: soundId, _category: 1, _soundCueSheetID: seSheetId, _cueName: se.cue },
+        cuesheet: { _id: seSheetId, _cueSheetName: sheet },
+        audio: {},
+      });
+    }
+    for (const k of Object.keys(cc.donors?.frames || {})) {
+      if (!resolveAliasKey(frames, frameAliases, k)) {
+        addAliasKey(frameAliases, k, k);
+        if (!frames.has(k)) frames.set(k, { key: k, entry: null, deps: null });
+      }
+    }
+    for (const k of Object.keys(cc.donors?.postEffects || {})) {
+      if (!resolveAliasKey(postEffects, postEffectAliases, k)) {
+        addAliasKey(postEffectAliases, k, k);
+        if (!postEffects.has(k)) postEffects.set(k, { key: k, profile: null, deps: null });
+      }
+    }
+    for (const k of Object.keys(cc.donors?.effects || {})) {
+      if (!resolveAliasKey(effectInstances, effectAliases, k) && !resolveAliasKey(effectAssets, effectAliases, k)) {
+        addAliasKey(effectAliases, k, k);
+        if (!effectInstances.has(k) && !effectAssets.has(k)) effectAssets.set(k, { assetName: k, entry: null, deps: null });
+      }
+    }
+    for (const k of Object.keys(cc.donors?.stills || {})) {
+      if (!resolveAliasKey(stills, stillAliases, k)) {
+        addAliasKey(stillAliases, k, k);
+        if (!stills.has(k)) stills.set(k, { key: k, entry: null, deps: null });
+      }
+    }
+    for (const k of Object.keys(cc.donors?.transitions || {})) {
+      if (!resolveAliasKey(transitions, transitionAliases, k)) {
+        addAliasKey(transitionAliases, k, k);
+        if (!transitions.has(k)) transitions.set(k, { addr: k, transition: null });
+      }
+    }
   }
   const baseStages = readStageRows(baseEpisode, field);
   const captions = new Map(baseStages.map((stage) => [stage.id, stage.caption]));
@@ -628,6 +790,7 @@ const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = t
   for (const stage of offered) stage.caption = captions.get(stage.id) || "";
   return {
     stages: offered, music, sounds, stageFiles, stagePrefabs, stageShaders, soundFiles, volumeProfiles,
+    sheetCuesEntries, sheetCueMeta,
     frames, frameAliases, postEffects, postEffectAliases,
     effectInstances, effectAssets, effectAliases,
     stills, stillAliases, transitions, transitionAliases,
@@ -636,7 +799,7 @@ const readSitePool = (site, baseRel, baseManifest, baseEpisode, field, { all = t
 };
 
 // The vocabulary of a site-format story: its stages, BGM, SE cues, visual effects and every model's actions.
-export const readSiteCatalog = (site, baseRel, language = "", { guide = null, pool = true } = {}) => {
+export const readSiteCatalog = (site, baseRel, language = "", { guide = null, pool = true, castOnly = false, cloud = true } = {}) => {
   const book = guide || loadResourceGuide(site);
   const baseManifest = JSON.parse(fs.readFileSync(path.join(site, baseRel), "utf8"));
   if (baseManifest.format !== "ournotes.story-manifest/2")
@@ -644,7 +807,7 @@ export const readSiteCatalog = (site, baseRel, language = "", { guide = null, po
   const lang = language || baseManifest.language;
   const field = FIELD(lang);
   const baseEpisode = readEntry(site, baseManifest.files["episode.json"]);
-  const poolData = readSitePool(site, baseRel, baseManifest, baseEpisode, field, { all: pool, guide: book });
+  const poolData = readSitePool(site, baseRel, baseManifest, baseEpisode, field, { all: pool, castOnly, guide: book, cloud });
   const stageList = poolData.stages.map((stage) => applyStageGuide(stage, book)).filter(Boolean);
   const music = poolData.music.map((item) => applyMusicGuide(item, book));
   const sounds = poolData.sounds.map((item) => applySoundGuide(item, book));
@@ -665,6 +828,23 @@ export const readSiteCatalog = (site, baseRel, language = "", { guide = null, po
       actions.set(id, a);
       modelKeys.set(id, a.key);
     } catch { /* not a model */ }
+  }
+  const hasCustomGuide = !!(site && fs.existsSync(path.join(site, "story-resources.yaml")));
+  if (cloud && !hasCustomGuide) {
+    const cc = loadCloudCatalog();
+    for (const m of [...(cc.models?.tw || []), ...(cc.models?.jp || [])]) {
+      if (!m?.id || actions.has(m.id)) continue;
+      const charKey = m.characterKey || modelKeyOf(m.id);
+      if (!charKey) continue;
+      actions.set(m.id, {
+        key: charKey,
+        motions: unique(m.actions?.motions || []),
+        expressions: unique(m.actions?.expressions || []),
+        defaultMotion: m.actions?.defaultMotion || "",
+        defaultExpression: m.actions?.defaultExpression || "",
+      });
+      modelKeys.set(m.id, charKey);
+    }
   }
   const modelIds = [...actions.keys()];
   const sheets = unique([...music.map((m) => m.sheet), ...sounds.map((s) => s.sheet)]);
@@ -727,7 +907,22 @@ export const bundleSiteEpisodeAssets = ({
       if (!addedShaders.has(name)) addedShaders.set(name, info);
     }
   }
-  for (const sheet of usedSheets) Object.assign(usedFiles, catalog.pool.soundFiles.get(sheet) || {});
+  for (const sheet of usedSheets) {
+    Object.assign(usedFiles, catalog.pool.soundFiles.get(sheet) || {});
+    const cueEntries = catalog.pool.sheetCuesEntries?.get(sheet) || [];
+    const inlineMeta = catalog.pool.sheetCueMeta?.get(sheet) || {};
+    const cuesRel = `audio/${sheet}/cues.json`;
+    if (cueEntries.length === 1 && !Object.keys(inlineMeta).length) {
+      usedFiles[cuesRel] = cueEntries[0];
+    } else if (cueEntries.length || Object.keys(inlineMeta).length) {
+      const mergedCues = {};
+      for (const e of cueEntries) {
+        try { Object.assign(mergedCues, readEntry(site, e)); } catch { /* skip corrupt cue sheet */ }
+      }
+      Object.assign(mergedCues, inlineMeta);
+      usedFiles[cuesRel] = writeAsset(site, Buffer.from(JSON.stringify(mergedCues)));
+    }
+  }
 
   const baseSceneStages = catalog.pool.baseSceneStages || {};
   const addedStages = [...usedStages].filter((key) => !(key in baseSceneStages));
@@ -751,7 +946,7 @@ export const bundleSiteEpisodeAssets = ({
     for (const req of usedFrames) {
       const canonical = resolveAliasKey(catalog.pool.frames, catalog.pool.frameAliases, req);
       const item = canonical ? catalog.pool.frames.get(canonical) : null;
-      if (!item) continue;
+      if (!item?.entry) continue;
       if (!(req in doc.frames)) {
         doc.frames[req] = item.entry;
         dirty = true;
@@ -776,7 +971,7 @@ export const bundleSiteEpisodeAssets = ({
     for (const req of usedPostEffects) {
       const canonical = resolveAliasKey(catalog.pool.postEffects, catalog.pool.postEffectAliases, req);
       const item = canonical ? catalog.pool.postEffects.get(canonical) : null;
-      if (!item) continue;
+      if (!item?.profile) continue;
       if (!(req in doc.postEffects)) {
         doc.postEffects[req] = { ...item.profile, name: req };
         dirty = true;
@@ -807,7 +1002,7 @@ export const bundleSiteEpisodeAssets = ({
         const assetKey = resolveAliasKey(catalog.pool.effectAssets, catalog.pool.effectAliases, req);
         if (assetKey) item = catalog.pool.effectAssets.get(assetKey);
       }
-      if (!item) continue;
+      if (!item?.entry) continue;
       if (doc.instances[req] !== item.assetName) { doc.instances[req] = item.assetName; dirty = true; }
       if (!(item.assetName in doc.effects)) { doc.effects[item.assetName] = item.entry; dirty = true; }
       absorbDeps(item.deps);
@@ -826,7 +1021,7 @@ export const bundleSiteEpisodeAssets = ({
     for (const req of usedStills) {
       const canonical = resolveAliasKey(catalog.pool.stills, catalog.pool.stillAliases, req);
       const item = canonical ? catalog.pool.stills.get(canonical) : null;
-      if (!item) continue;
+      if (!item?.entry) continue;
       if (!(req in doc.stills)) { doc.stills[req] = item.entry; dirty = true; }
       if (canonical && canonical !== req && !(canonical in doc.stills)) {
         doc.stills[canonical] = item.entry;
@@ -850,7 +1045,7 @@ export const bundleSiteEpisodeAssets = ({
       for (const req of usedTransitions) {
         const canonical = resolveAliasKey(catalog.pool.transitions, catalog.pool.transitionAliases, req);
         const item = canonical ? catalog.pool.transitions.get(canonical) : null;
-        if (!item) continue;
+        if (!item?.transition) continue;
         if (!(req in nextTransitions)) { nextTransitions[req] = item.transition; dirty = true; }
         if (canonical && canonical !== req && !(canonical in nextTransitions)) {
           nextTransitions[canonical] = item.transition;
@@ -888,7 +1083,7 @@ export const bundleSiteEpisodeAssets = ({
 
   let storyEntry = null;
   if (storyIndex) {
-    storyIndex.models = { ...(storyIndex.models || {}), ...castModels };
+    storyIndex.models = { ...castModels };
     if (voices && voices.size) storyIndex.audio = { ...(storyIndex.audio || {}), [TTS_SHEET]: `audio/${TTS_SHEET}` };
     for (const sheet of usedSheets) {
       storyIndex.audio = { ...(storyIndex.audio || {}), [sheet]: `audio/${sheet}` };
@@ -947,15 +1142,23 @@ export const buildSiteStory = ({ site, baseRel, script, advId, language = "", ti
   manifest.advId = Number(advId) || advId;
   manifest.language = lang;
   manifest.languages = { [lang]: JSON.parse(JSON.stringify(baseManifest.languages?.[lang] || { files: {} })) };
-  manifest.models = { ...(baseManifest.models || {}) };
+  manifest.models = {};
   const modelIndex = (() => {
-    try {
-      const doc = JSON.parse(fs.readFileSync(path.join(site, "models.json"), "utf8"));
-      return new Map((doc.models || []).map((m) => [m.id, m.manifest]));
-    } catch { return new Map(); }
+    const map = new Map();
+    for (const rel of ["jp/models.json", "models.json"]) {
+      try {
+        const doc = JSON.parse(fs.readFileSync(path.join(site, rel), "utf8"));
+        for (const m of doc.models || []) if (m?.id && m?.manifest) map.set(m.id, m.manifest);
+      } catch { /* optional */ }
+    }
+    return map;
   })();
   for (const modelId of Object.values(castModels)) {
-    const rel = modelIndex.get(modelId);
+    const localDefault = `models/${modelId}.json`;
+    const indexedRel = modelIndex.get(modelId) || "";
+    const rel = fs.existsSync(path.join(site, localDefault))
+      ? localDefault
+      : (indexedRel && fs.existsSync(path.join(site, ...indexedRel.split("/"))) ? indexedRel : localDefault);
     if (rel) manifest.models[modelId] = rel;
   }
 
@@ -1139,11 +1342,42 @@ const requestViaHttpProxy = (targetUrl, proxyUrl, timeoutMs) => new Promise((res
   connectReq.end();
 });
 
-const fetchRemoteBytes = async (url, { timeoutMs = 15000, allowPrivateUrl = false, proxyUrl = "" } = {}) => {
+const OFFICIAL_ASSET_HOSTS = new Set(["storage.bdon.moe", "assets.bdon.moe", "cubism.live2d.com"]);
+
+const isTunFakeIpV4 = (ip) => {
+  if (!net.isIPv4(ip)) return false;
+  const parts = ip.split(".").map(Number);
+  return parts[0] === 198 && (parts[1] === 18 || parts[1] === 19);
+};
+
+export const assertOfficialRemoteUrl = async (value, { allowPrivateUrl = false, proxy = "", lookup = null } = {}) => {
+  if (allowPrivateUrl) return new URL(String(value));
+  const u = assertPublicHttpUrl(value, "official asset url");
+  if (proxy) return u;
+  const host = u.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
+  if (!OFFICIAL_ASSET_HOSTS.has(host)) return resolvePublicUrl(value, "official asset url");
+  if (net.isIP(host)) return u;
+  const resolveDns = lookup || ((h) => dns.lookup(h, { all: true, verbatim: true }));
+  let addresses;
+  try {
+    addresses = await resolveDns(host);
+  } catch (e) {
+    throw new Error(`official asset url: cannot resolve ${host}: ${e.message}`, { cause: e });
+  }
+  if (!addresses?.length) throw new Error(`official asset url: ${host} resolves to no address`);
+  for (const { address } of addresses) {
+    if (isPrivateAddress(address) && !isTunFakeIpV4(address)) {
+      throw new Error(`official asset url: ${host} resolves to a private, loopback or reserved address`);
+    }
+  }
+  return u;
+};
+
+export const fetchRemoteBytes = async (url, { timeoutMs = 15000, allowPrivateUrl = false, proxyUrl = "" } = {}) => {
   let current = url;
   for (let hops = 0; hops < 5; hops++) {
-    if (!allowPrivateUrl) await resolvePublicUrl(current, "official asset url");
     const proxy = proxyUrl || selectProxyUrl(current);
+    await assertOfficialRemoteUrl(current, { allowPrivateUrl, proxy });
     let status = 0, location = "", body = null;
     if (proxy) {
       const res = await requestViaHttpProxy(current, proxy, timeoutMs);
@@ -1166,13 +1400,13 @@ const fetchRemoteBytes = async (url, { timeoutMs = 15000, allowPrivateUrl = fals
   throw new Error(`too many redirects fetching ${url}`);
 };
 
-const decodeRemoteAsset = (raw, relAsset) => {
+export const decodeRemoteAsset = (raw, relAsset) => {
   if (relAsset.endsWith(".gz")) return zlib.gunzipSync(raw);
   if (relAsset.endsWith(".br")) return zlib.brotliDecompressSync(raw);
   return raw;
 };
 
-const extOfRelPath = (rel) => {
+export const extOfRelPath = (rel) => {
   const clean = String(rel || "").replace(/\.(gz|br)$/i, "");
   const dot = path.posix.extname(clean).replace(/^\./, "").toLowerCase();
   return dot || "bin";
