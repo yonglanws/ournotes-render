@@ -1477,4 +1477,48 @@ test("mergeStagedScript and single-pass sanitizeOminousExpressions replace exp_g
     logger: quietLogger(),
   });
   assert.equal(singleOut.doc.beats[2].expression, "exp_smile01");
+  assert.ok(singleOut.warnings.some((w) => w.code === "ominousExpression"));
+
+  // Positive/healing prompts mentioning "阴影" or casual slang ("累死了") must not block sanitization,
+  // and negated reassurance ("不用担心，明天见") replaces shadow/pale02/mad01 expressions cleanly.
+  const healingBeats = [
+    { scene: "stage_a", positions: { a: "left", b: "right" } },
+    { say: "a", text: "累死了，不过今天真开心，明天见！", motion: "mtn_nod01", expression: "exp_grinning01" },
+    { say: "b", text: "不用担心，明天见。", motion: "mtn_smile01", expression: "exp_pale02" },
+    { say: "a", text: "别难过了，谢谢你。", motion: "mtn_smile01", expression: "exp_shadow01" },
+    { say: "b", text: "……太好了，大家明天见！", motion: "mtn_nod01", expression: "exp_mad01" },
+  ];
+  const healingCatalog = {
+    ...CATALOG,
+    models: [
+      { ...CATALOG.models[0], expressions: ["exp_grinning01", "exp_shadow01", "exp_mad01", "exp_smile01", "exp_idle01"] },
+      { ...CATALOG.models[1], expressions: ["exp_pale02", "exp_mad01", "exp_smile01", "exp_idle01"] },
+    ],
+  };
+  const healingReplaced = sanitizeOminousExpressions(healingBeats, {
+    cast: PLAN2.cast,
+    catalog: healingCatalog,
+    request: { prompt: "走出心理阴影，温暖约定明天见" },
+  });
+  assert.equal(healingReplaced, 4);
+  assert.equal(healingBeats[1].expression, "exp_smile01");
+  assert.equal(healingBeats[2].expression, "exp_smile01");
+  assert.equal(healingBeats[3].expression, "exp_smile01");
+  assert.equal(healingBeats[4].expression, "exp_smile01");
+
+  // Even under a dark prompt, a warm relief farewell without sinister wording in the line itself is sanitized,
+  // whereas an ominous non-warm line in the same dark scene preserves exp_grinning01.
+  const mixedDarkBeats = [
+    { scene: "stage_a", positions: { a: "left" } },
+    { say: "a", text: "……我就在你后面看着你。", motion: "mtn_idle01", expression: "exp_grinning01" },
+    { say: "a", text: "终于走出来了，大家明天见！", motion: "mtn_nod01", expression: "exp_grinning01" },
+  ];
+  const mixedReplaced = sanitizeOminousExpressions(mixedDarkBeats, {
+    cast: PLAN2.cast,
+    catalog: healingCatalog,
+    request: { prompt: "万圣节鬼屋吓唬大家" },
+  });
+  assert.equal(mixedReplaced, 1);
+  assert.equal(mixedDarkBeats[1].expression, "exp_grinning01");
+  assert.equal(mixedDarkBeats[2].expression, "exp_smile01");
 });

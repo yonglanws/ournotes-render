@@ -1061,8 +1061,9 @@ export const parseScript = (doc) => {
       if (dir && !(dir in FADE_DIRECTIONS))
         errors.push(unknown(`${path}/fade`, "unknownFade", "fade direction", dir, Object.keys(FADE_DIRECTIONS)));
       else beat.fade = dir;
-      beat.duration = numberOf(b, "duration", `${path}/duration`,
-                               { min: 0.01, max: MAX_CAMERA_DURATION, defaultValue: SCENE_FADE, what: "duration" });
+      const fadeDur = numberOf(b, "duration", `${path}/duration`,
+                               { min: 0.01, max: MAX_CAMERA_DURATION, what: "duration" });
+      if (fadeDur !== undefined) beat.duration = fadeDur;
       directionOf(b, beat, path, "fade");
     } else if (kind === "pause") {
       beat.pause = numberOf(b, "pause", `${path}/pause`, { min: 0.01, max: MAX_PAUSE, what: "pause" });
@@ -2216,6 +2217,7 @@ export const compileScript = (script, site, language) => {
   };
 
   let pendingLocation = null;
+  let pendingFadeIn = null;
   for (let bi = 0; bi < script.beats.length; bi++) {
     const b = script.beats[bi];
     const shotChange = b.kind === "positions" || b.kind === "camera" ||
@@ -2283,20 +2285,25 @@ export const compileScript = (script, site, language) => {
       officialRows(b, "", dofTargetOf(b, next));
       syncCloseSafeFraming(next, lastShot, 0);
       emitEffects(b);
+      pendingFadeIn = null;
+      pendingLocation = null;
+      const inRule = b.fadeRule || (hasAdjacentFadeOut ? prevBeat.fadeRule : undefined);
+      const inColor = b.fadeColor || (hasAdjacentFadeOut ? prevBeat.fadeColor : undefined);
+      const inDur = b.duration ?? b.transitionDuration ?? (hasAdjacentFadeOut ? prevBeat.duration : undefined);
       const deferFadeIn = Boolean(scenes && !dissolve && hasAdjacentFadeIn);
-      if (scenes && !dissolve && !hasAdjacentFadeIn) {
-        const inRule = b.fadeRule || (hasAdjacentFadeOut ? prevBeat.fadeRule : undefined);
-        const inColor = b.fadeColor || (hasAdjacentFadeOut ? prevBeat.fadeColor : undefined);
-        const inDur = b.duration ?? b.transitionDuration ?? (hasAdjacentFadeOut ? prevBeat.duration : undefined) ?? SCENE_FADE;
+      const deferLocation = Boolean(hasAdjacentFadeIn && (!dissolve || hasAdjacentFadeOut));
+      if (deferFadeIn) {
+        pendingFadeIn = { rule: inRule, color: inColor, duration: inDur };
+      } else if (scenes && !dissolve) {
         const inRuleName = transitionAssetName(inRule);
         row("FadeIn", {
-          Duration: inDur,
+          Duration: inDur ?? SCENE_FADE,
           ...(inRuleName ? { TargetAssetName: inRuleName } : {}),
           ...(inColor ? { Parameter1: inColor } : {}),
         });
       }
       if (b.location.trim()) {
-        if (deferFadeIn) pendingLocation = { index: b.index, text: b.location };
+        if (deferLocation) pendingLocation = { index: b.index, text: b.location };
         else row("Location", { AdvTextID: textId(`custom_location_${b.index}`, plainText(b.location)) });
       }
       on = next;
@@ -2431,11 +2438,20 @@ export const compileScript = (script, site, language) => {
       }
     } else if (b.kind === "fade") {
       closeTalk();
-      const ruleName = transitionAssetName(b.fadeRule);
+      const nextBeat = bi + 1 < script.beats.length ? script.beats[bi + 1] : null;
+      const nextScene = b.fade === "out" && scenes > 0 && nextBeat && nextBeat.kind === "scene" && nextBeat.transition !== "dissolve"
+        ? nextBeat : null;
+      const inheritedIn = b.fade === "in" ? pendingFadeIn : null;
+      if (b.fade === "in") pendingFadeIn = null;
+      const effRule = b.fadeRule || nextScene?.fadeRule || inheritedIn?.rule;
+      const effColor = b.fadeColor || nextScene?.fadeColor || inheritedIn?.color;
+      const effDur = b.duration ?? (nextScene ? (nextScene.duration ?? nextScene.transitionDuration) : undefined) ??
+        inheritedIn?.duration ?? SCENE_FADE;
+      const ruleName = transitionAssetName(effRule);
       row(FADE_DIRECTIONS[b.fade], {
-        Duration: b.duration || SCENE_FADE,
+        Duration: effDur,
         ...(ruleName ? { TargetAssetName: ruleName } : {}),
-        ...(b.fadeColor ? { Parameter1: b.fadeColor } : {}),
+        ...(effColor ? { Parameter1: effColor } : {}),
       });
       if (b.fade === "in" && pendingLocation) {
         row("Location", { AdvTextID: textId(`custom_location_${pendingLocation.index}`, plainText(pendingLocation.text)) });

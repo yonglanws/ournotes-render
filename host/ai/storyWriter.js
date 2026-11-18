@@ -453,7 +453,8 @@ const generateSingle = async ({ llm, catalog, request, config, logger, signal, o
     }
     doc = trimLines(doc, maxLines, logger);
     spreadPositions(doc.beats, maxOnStage);
-    sanitizeOminousExpressions(doc.beats, { cast: doc.cast, catalog: narrowed, request });
+    const roundWarnings = [];
+    sanitizeOminousExpressions(doc.beats, { cast: doc.cast, catalog: narrowed, plan, request, warnings: roundWarnings });
 
     let problems = [];
     let warnings = [];
@@ -462,7 +463,7 @@ const generateSingle = async ({ llm, catalog, request, config, logger, signal, o
     if (!problems.length) {
       const checked = checkScript(parsed.script, site);
       problems = checked.errors;
-      warnings = checked.warnings;
+      warnings = [...roundWarnings, ...checked.warnings];
       if (!problems.length) problems = onStageProblems(doc.beats, maxOnStage);
       if (!problems.length) {
         const lines = linesOf(doc);

@@ -1472,4 +1472,41 @@ test("adjacent fade out/in around a scene beat emit a single FadeOut -> Stage ->
   const trailFadeInIdx = trailRows.findIndex((r) => r.cmd === "FadeIn");
   const trailLocIdx = trailRows.findIndex((r) => r.cmd === "Location");
   assert.ok(trailFadeInIdx >= 0 && trailFadeInIdx < trailLocIdx);
+
+  // Adjacent bare fade out/in inherit rule/color/duration from the scene beat
+  const bareFades = compiled(script([
+    { scene: "garden", positions: { a: "left" } },
+    { say: "a", text: "One." },
+    { fade: "out" },
+    { scene: "st/hall", location: "Hall", duration: 0.7, fadeRule: "0002", fadeColor: "#ffffff", positions: { b: "right" } },
+    { fade: "in" },
+    { say: "b", text: "Two." },
+  ]));
+  const bareRows = strip(bareFades.episode.commands);
+  assert.deepEqual(bareRows.filter((r) => r.cmd === "FadeOut"), [{
+    cmd: "FadeOut",
+    Duration: 0.7,
+    TargetAssetName: "adv_transition_0002/adv_transition_0002",
+    Parameter1: "#FFFFFF",
+  }]);
+  assert.deepEqual(bareRows.filter((r) => r.cmd === "FadeIn"), [{
+    cmd: "FadeIn",
+    Duration: 0.7,
+    TargetAssetName: "adv_transition_0002/adv_transition_0002",
+    Parameter1: "#FFFFFF",
+  }]);
+  const bareInIdx = bareRows.findIndex((r) => r.cmd === "FadeIn");
+  const bareLocIdx = bareRows.findIndex((r) => r.cmd === "Location");
+  assert.ok(bareInIdx >= 0 && bareInIdx < bareLocIdx);
+
+  // Scene 0 followed immediately by an explicit fade: "in" defers Location until after FadeIn
+  const scene0FadeIn = compiled(script([
+    { scene: "garden", location: "Garden", positions: { a: "left" } },
+    { fade: "in", fadeRule: "0001" },
+    { say: "a", text: "Morning." },
+  ]));
+  const s0Rows = strip(scene0FadeIn.episode.commands);
+  const s0InIdx = s0Rows.findIndex((r) => r.cmd === "FadeIn");
+  const s0LocIdx = s0Rows.findIndex((r) => r.cmd === "Location");
+  assert.ok(s0InIdx >= 0 && s0InIdx < s0LocIdx, "scene 0 Location appears after explicit FadeIn");
 });

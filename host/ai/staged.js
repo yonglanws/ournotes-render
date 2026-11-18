@@ -1217,10 +1217,11 @@ export const onStageProblems = (beats, maxOnStage = 3) => {
 // activate dark upper-face shadow / hidden eyes / no-highlight overlays. Replace them when used on warm, friendly,
 // or non-sinister beats so a warm farewell never renders with an ominous shadowed grin.
 const SINISTER_GRIN_RE = /^exp_grinning\d*$/i;
-const SHADOW_OMINOUS_RE = /^exp_(?:shadow\d*|hatred\d*|mad02|dispair\d*|nohighlight\d*|sdeprecate\d*|envy\d*)$/i;
-const DARK_SINISTER_INTENT_RE = /黑化|阴笑|冷笑|狞笑|诡异|恐怖|可怕|吓人|吓唬|鬼屋|幽灵|万圣节|算计|报复|复仇|威胁|暗算|背叛|仇恨|怨恨|诅咒|恶魔|噩梦|阴谋|别怪我|走着瞧|真可怜|笑死|蠢货|呵呵|哼哼|崩坏|黑暗|阴影|杀|死|毁掉|疯了|阴森|惊悚|悬疑|反派|敌意|dark|sinister|creepy|evil|ominous|horror|threat|revenge|villain|nightmare/i;
+const SHADOW_OMINOUS_RE = /^exp_(?:shadow\d*|hatred\d*|mad0[12]|dispair\d*|dispase\d*|nohighlight\d*|sdeprecate\d*|envy\d*|pale02|upset\d*)$/i;
+const DARK_SINISTER_INTENT_RE = /黑化|阴笑|冷笑|狞笑|诡异|恐怖|可怕|吓人|吓唬|鬼屋|幽灵|万圣节|算计|报复|复仇|威胁|暗算|背叛|仇恨|怨恨|诅咒|恶魔|噩梦|阴谋|别怪我|走着瞧|真可怜|蠢货|呵呵|哼哼|崩坏|黑暗面|黑影|杀死|杀掉|去死|死期|找死|弄死|毒死|索命|阴森|惊悚|悬疑|反派|敌意|dark|sinister|creepy|evil|ominous|horror|threat|revenge|villain|nightmare/i;
+const NEGATED_REASSURANCE_RE = /(?:不用|不必|不要|别|没必要|不会再?|不再|没什么好|哪会)(?:担心|害怕|恐惧|不安|焦虑|难过|伤心|哭|自卑|迷茫|压抑|紧张|讨厌|孤单|寂寞|失败|痛苦)/g;
 const GLOOMY_SAD_INTENT_RE = /对不起|抱歉|害怕|恐惧|担心|不安|焦虑|难过|伤心|哭|泪|痛|苦|低落|消沉|阴郁|委屈|自卑|配不上|做不到|写不出|唱不出|弹不出|不行|失败|搞砸|逃避|孤单|寂寞|迷茫|乱了|沉重|压抑|叹气|讨厌|烦|算了|没用|糟糕|崩溃|失落|伤感|嫉妒|羡慕|冷漠|疏远|内省|紧张|sad|gloom|depress|anxious|sorry|afraid|scared|tired|exhausted|hurt|pain|lonely/i;
-const WARM_FRIENDLY_FAREWELL_RE = /明天见|回头见|下次见|待会见|再见|拜拜|晚安|早安|一路顺风|路上小心|欢迎|谢谢|多谢|感谢|不客气|辛苦了|加油|太好了|开心|高兴|快乐|幸福|喜欢|温柔|安心|放心|说定了|约好了|一起|顺利|没问题|期待|恭喜|祝贺|请多关照|保重|没关系|别担心|挺好的|很棒|真好|see you|good\s*bye|bye|good\s*night|thank/i;
+const WARM_FRIENDLY_FAREWELL_RE = /明天见|回头见|下次见|待会见|再见|拜拜|晚安|早安|一路顺风|路上小心|欢迎|谢谢|多谢|感谢|不客气|辛苦了|加油|太好了|开心|高兴|快乐|幸福|喜欢|温柔|安心|放心|说定了|约好了|一起|顺利|没问题|期待|恭喜|祝贺|请多关照|保重|没关系|别担心|不用担心|挺好的|很棒|真好|see you|good\s*bye|bye|good\s*night|thank/i;
 const WARM_MOTION_RE = /^mtn_(?:smile|bye|nod|cheer|wink)/i;
 const WARM_TONE_RE = /温暖日常|轻松搞笑|明亮庆祝/;
 
@@ -1262,13 +1263,14 @@ export const sanitizeOminousExpressions = (beats, { cast, catalog, plan = null, 
     const isShadowOminous = SHADOW_OMINOUS_RE.test(exp);
     if (!isSinisterGrin && !isShadowOminous) return;
 
-    const hasDarkIntent = sceneHasDarkIntent || DARK_SINISTER_INTENT_RE.test(lineText);
-    if (hasDarkIntent) return;
-
-    const hasGloomyIntent = GLOOMY_SAD_INTENT_RE.test(lineText);
+    const lineForGloom = lineText.replace(NEGATED_REASSURANCE_RE, "");
+    const hasGloomyIntent = GLOOMY_SAD_INTENT_RE.test(lineForGloom);
     const isWarmLine = WARM_FRIENDLY_FAREWELL_RE.test(lineText) ||
       (WARM_MOTION_RE.test(String(motion || "")) && !hasGloomyIntent) ||
       (warmTone && !hasGloomyIntent);
+    const lineHasDarkIntent = DARK_SINISTER_INTENT_RE.test(lineText);
+    const hasDarkIntent = lineHasDarkIntent || (sceneHasDarkIntent && !isWarmLine);
+    if (hasDarkIntent) return;
 
     // exp_grinning01 always renders a dark horror upper-face shadow; replace whenever sinister intent is absent.
     // Other shadow expressions stay on gloomy/anxious lines, but are replaced on warm/friendly/farewell lines.
