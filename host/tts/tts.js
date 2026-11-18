@@ -288,11 +288,12 @@ export class GptSovitsClient {
                                                               { retryable: true })), timeout);
     const headers = { "content-type": "application/json", accept: "audio/*,application/octet-stream" };
     if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
-    let response;
+    let response, rawBuf;
     try {
       response = await fetch(`${this.base}/tts`, { method: "POST", headers,
         body: JSON.stringify(this.requestBody(text, voice, textLang)),
                                                    signal: controller.signal });
+      rawBuf = Buffer.from(await response.arrayBuffer());
     } catch (e) {
       if (controller.signal.aborted) throw controller.signal.reason || e;
       throw new TTSError(`TTS connection failed: ${e.message}`, { retryable: true });
@@ -302,13 +303,12 @@ export class GptSovitsClient {
     }
     const type = response.headers.get("content-type") || "";
     if (!response.ok || type.includes("application/json")) {
-      const body = Buffer.from(await response.arrayBuffer()).toString("utf8").slice(0, 500);
+      const body = rawBuf.toString("utf8").slice(0, 500);
       const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
       throw new TTSError(`TTS HTTP ${response.status}: ${body}`, { status: response.status, retryable });
     }
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (!bytes.length) throw new TTSError("TTS returned empty audio", { retryable: true });
-    return bytes;
+    if (!rawBuf.length) throw new TTSError("TTS returned empty audio", { retryable: true });
+    return rawBuf;
   }
 }
 
@@ -394,11 +394,12 @@ export class IrodoriClient {
                                                               { retryable: true })), timeout);
     const headers = { "content-type": "application/json", accept: "audio/*,application/octet-stream" };
     if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
-    let response;
+    let response, rawBuf;
     try {
       response = await fetch(`${this.base}/v1/audio/speech`, { method: "POST", headers,
         body: JSON.stringify(this.requestBody(text, voice)),
                                                              signal: controller.signal });
+      rawBuf = Buffer.from(await response.arrayBuffer());
     } catch (e) {
       if (controller.signal.aborted) throw controller.signal.reason || e;
       throw new TTSError(`TTS connection failed: ${e.message}`, { retryable: true });
@@ -408,13 +409,12 @@ export class IrodoriClient {
     }
     const type = response.headers.get("content-type") || "";
     if (!response.ok || type.includes("application/json")) {
-      const body = Buffer.from(await response.arrayBuffer()).toString("utf8").slice(0, 500);
+      const body = rawBuf.toString("utf8").slice(0, 500);
       const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
       throw new TTSError(`TTS HTTP ${response.status}: ${body}`, { status: response.status, retryable });
     }
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (!bytes.length) throw new TTSError("TTS returned empty audio", { retryable: true });
-    return bytes;
+    if (!rawBuf.length) throw new TTSError("TTS returned empty audio", { retryable: true });
+    return rawBuf;
   }
 }
 

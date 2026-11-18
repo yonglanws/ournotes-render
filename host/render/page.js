@@ -7,6 +7,20 @@ import { MISSING_CUE } from "/src/engine/audio.js";
 import { RecordingAudio } from "./recording-audio.js";
 import { StorySession } from "/src/story/session.js";
 import { postWithRetry } from "/host/render/fetchRetry.js";
+import { StreamingMp4Muxer } from "/host/render/mp4Muxer.js";
+
+const mapLimit = async (items, limit, fn) => {
+  if (!items.length) return;
+  let next = 0;
+  const n = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: n }, async () => {
+    for (;;) {
+      const idx = next++;
+      if (idx >= items.length) return;
+      await fn(items[idx], idx);
+    }
+  }));
+};
 
 const post = async (url, body, headers = {}, { label = "", attempts = 3 } = {}) => {
   const response = await postWithRetry(fetch, url, body, headers, {
@@ -23,10 +37,10 @@ const post = async (url, body, headers = {}, { label = "", attempts = 3 } = {}) 
 // storage; under memory pressure a blob can become unreadable, and resending that same Blob fails every time (the
 // production failures were three identical "Failed to fetch" in under a second while a string POST worked). Read the
 // blob into an ArrayBuffer before the request and, on failure, re-encode the still-drawn canvas into a fresh Blob.
-const uploadFrame = async (jobId, canvas, quality, index) => {
+const uploadCanvasBytes = async (jobId, sourceCanvas, quality, index) => {
   let last = null;
   for (let attempt = 1; attempt <= 4; attempt++) {
-    const blob = await blobOf(canvas, quality);
+    const blob = await blobOf(sourceCanvas, quality);
     let bytes = null;
     try { bytes = await blob.arrayBuffer(); } catch (e) { last = e; }
     if (bytes && bytes.byteLength) {
@@ -67,8 +81,22 @@ const cueExtension = (file) => {
   return ["wav", "m4a", "mp3", "flac", "ogg", "aac", "opus"].includes(ext) ? ext : "bin";
 };
 
-const uploadCues = async (jobId, store, data) => {
+const prepareHostCues = async (jobId, descriptors) => {
+  if (!descriptors.length) return new Set();
+  try {
+    const response = await postWithRetry(fetch, `/job/${encodeURIComponent(jobId)}/cues-prepare`,
+      JSON.stringify({ cues: descriptors.map(({ soundId, ext, sourcePath }) => ({ soundId, ext, sourcePath })) }),
+      { "content-type": "application/json" }, { label: "cues-prepare", attempts: 2 });
+    const data = await response.json();
+    return new Set((data?.missing || []).map(String));
+  } catch {
+    return new Set(descriptors.map((d) => String(d.soundId)));
+  }
+};
+
+const uploadCues = async (jobId, store, data, { hostCueResolve = false } = {}) => {
   const cues = {};
+  const descriptors = [];
   for (const [soundId, row] of Object.entries(data.episode.sounds || {})) {
     if (!row || row._cueName == null) continue;
     const sheet = data.cuesheets?.[row._soundCueSheetID];
@@ -76,23 +104,30 @@ const uploadCues = async (jobId, store, data) => {
     let meta;
     try { meta = data.cues(sheet._cueSheetName)[row._cueName]; } catch { continue; }
     if (!meta || !meta.file) continue;
-    let bytes;
-    try { bytes = store.bytes(meta.file); } catch { continue; }
     const ext = cueExtension(meta.file);
+    cues[String(soundId)] = {
+      file: `${soundId}.${ext}`, cue: row._cueName, sheet: sheet._cueSheetName,
+      sampleRate: meta.sampleRate || 48000, samples: meta.samples || 0, channels: meta.channels || 1,
+      categories: meta.categories || [], loopStart: meta.loopStart ?? null, loopEnd: meta.loopEnd ?? null,
+    };
+    descriptors.push({ soundId: String(soundId), ext, sourcePath: meta.file, meta, row, sheet });
+  }
+  const needUpload = hostCueResolve
+    ? await prepareHostCues(jobId, descriptors)
+    : new Set(descriptors.map((d) => d.soundId));
+  const toUpload = descriptors.filter((d) => needUpload.has(d.soundId));
+  await mapLimit(toUpload, 4, async ({ soundId, ext, sourcePath, meta, row, sheet }) => {
+    let bytes;
+    try { bytes = store.bytes(sourcePath); } catch { delete cues[soundId]; return; }
     await post(`/job/${jobId}/cue`, bytes, {
-      "x-sound-id": String(soundId), "x-ext": ext, "x-cue-name": row._cueName,
+      "x-sound-id": soundId, "x-ext": ext, "x-cue-name": row._cueName,
       "x-sheet": sheet._cueSheetName, "x-sample-rate": String(meta.sampleRate || 48000),
       "x-samples": String(meta.samples || 0), "x-channels": String(meta.channels || 1),
       "x-categories": JSON.stringify(meta.categories || []),
       "x-loop-start": meta.loopStart == null ? "" : String(meta.loopStart),
       "x-loop-end": meta.loopEnd == null ? "" : String(meta.loopEnd),
-    }, { label: `cue ${soundId} ${meta.file}` });
-    cues[String(soundId)] = {
-      file: `${soundId}.${cueExtension(meta.file)}`, cue: row._cueName, sheet: sheet._cueSheetName,
-      sampleRate: meta.sampleRate || 48000, samples: meta.samples || 0, channels: meta.channels || 1,
-      categories: meta.categories || [], loopStart: meta.loopStart ?? null, loopEnd: meta.loopEnd ?? null,
-    };
-  }
+    }, { label: `cue ${soundId} ${sourcePath}` });
+  });
   return cues;
 };
 
@@ -145,17 +180,21 @@ class SiteRecordingAudio extends RecordingAudio {
     this._decodeAll = (async () => {
       const ctx = this._audioContext();
       if (!ctx || typeof ctx.decodeAudioData !== "function") return;
+      const items = [];
       for (const id of soundIds) {
         let c;
         try { c = this.cueOf(id); } catch { continue; }
         if (!c.meta || !c.meta.file || c.category !== 2) continue;     // SOUND_CATEGORY.Voice
+        items.push({ id: String(id), path: `audio/${c.sheet}/${c.meta.file}` });
+      }
+      await mapLimit(items, 4, async ({ id, path }) => {
         let bytes;
-        try { bytes = this.assets.bytes(`audio/${c.sheet}/${c.meta.file}`); } catch { continue; }
+        try { bytes = this.assets.bytes(path); } catch { return; }
         try {
           const buffer = await ctx.decodeAudioData(bytes.slice().buffer);
-          this._decoded.set(String(id), { data: buffer.getChannelData(0), sampleRate: buffer.sampleRate });
+          this._decoded.set(id, { data: buffer.getChannelData(0), sampleRate: buffer.sampleRate });
         } catch { /* a codec the browser lacks: that voice stays silent for lip sync */ }
-      }
+      });
     })();
     return this._decodeAll;
   }
@@ -204,38 +243,236 @@ class SiteRecordingAudio extends RecordingAudio {
   }
 }
 
-const uploadCuesSite = async (jobId, store, audio) => {
+const uploadCuesSite = async (jobId, store, audio, { hostCueResolve = false } = {}) => {
   const story = store.json("story.json");
   const episode = store.json(story.episode);
   const cues = {};
+  const descriptors = [];
   for (const soundId of Object.keys(episode.sounds || {})) {
     let c;
     try { c = audio.cueOf(soundId); } catch { continue; }
     const meta = c?.meta;
     const name = meta && safeCueFile(meta.file);
     if (!name) continue;
-    let bytes;
-    try { bytes = store.bytes(`audio/${c.sheet}/${name}`); } catch { continue; }
+    const sourcePath = `audio/${c.sheet}/${name}`;
     const ext = cueExtension(name);
+    cues[String(soundId)] = {
+      file: `${soundId}.${ext}`, cue: c.cue, sheet: c.sheet,
+      sampleRate: meta.sampleRate || 48000, samples: meta.samples || 0, channels: meta.channels || 1,
+      categories: meta.categories || [], loopStart: meta.loopStart ?? null, loopEnd: meta.loopEnd ?? null,
+    };
+    descriptors.push({ soundId: String(soundId), ext, sourcePath, name, c, meta });
+  }
+  const needUpload = hostCueResolve
+    ? await prepareHostCues(jobId, descriptors)
+    : new Set(descriptors.map((d) => d.soundId));
+  const toUpload = descriptors.filter((d) => needUpload.has(d.soundId));
+  await mapLimit(toUpload, 4, async ({ soundId, ext, sourcePath, name, c, meta }) => {
+    let bytes;
+    try { bytes = store.bytes(sourcePath); } catch { delete cues[soundId]; return; }
     await post(`/job/${jobId}/cue`, bytes, {
-      "x-sound-id": String(soundId), "x-ext": ext, "x-cue-name": c.cue,
+      "x-sound-id": soundId, "x-ext": ext, "x-cue-name": c.cue,
       "x-sheet": c.sheet, "x-sample-rate": String(meta.sampleRate || 48000),
       "x-samples": String(meta.samples || 0), "x-channels": String(meta.channels || 1),
       "x-categories": JSON.stringify(meta.categories || []),
       "x-loop-start": meta.loopStart == null ? "" : String(meta.loopStart),
       "x-loop-end": meta.loopEnd == null ? "" : String(meta.loopEnd),
     }, { label: `cue ${soundId} ${name}` });
-    cues[String(soundId)] = {
-      file: `${soundId}.${ext}`, cue: c.cue, sheet: c.sheet,
-      sampleRate: meta.sampleRate || 48000, samples: meta.samples || 0, channels: meta.channels || 1,
-      categories: meta.categories || [], loopStart: meta.loopStart ?? null, loopEnd: meta.loopEnd ?? null,
-    };
-  }
+  });
   return cues;
 };
 
 const blobOf = (canvas, quality) => new Promise((resolve, reject) =>
   canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("the canvas returned no JPEG"))), "image/jpeg", quality));
+
+const MAX_IN_FLIGHT = 3;
+
+const getGlRenderer = (gl) => {
+  if (!gl) return "";
+  try {
+    const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+    return dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || "") : "";
+  } catch {
+    return "";
+  }
+};
+
+const probeWebCodecs = async ({ width, height, fps, captureMode, gpu, gl, watermark }) => {
+  const mode = String(captureMode || "auto").toLowerCase();
+  if (mode === "pipe" || watermark) return { useWebCodecs: false };
+  if (typeof VideoEncoder !== "function" || typeof VideoFrame !== "function") return { useWebCodecs: false };
+  const glRenderer = getGlRenderer(gl);
+  const ua = `${navigator.platform || ""} ${navigator.userAgent || ""}`;
+  const isLinux = /linux/i.test(ua);
+  const isSoftwareGl = /swiftshader|llvmpipe|softpipe/i.test(glRenderer);
+  if (mode === "auto") {
+    if (isSoftwareGl) return { useWebCodecs: false };
+    // Linux + NVIDIA (e.g. CMP 40HX without NVENC) or non-GPU hosts fall back to software OpenH264.
+    if (isLinux && (!gpu || /nvidia/i.test(glRenderer))) return { useWebCodecs: false };
+  }
+  const bitrate = Math.max(1_500_000, Math.round(width * height * fps * 0.18));
+  const codecs = ["avc1.640028", "avc1.4d4028", "avc1.42e028"];
+  for (const codec of codecs) {
+    try {
+      const support = await VideoEncoder.isConfigSupported({
+        codec, width, height, bitrate, framerate: fps, hardwareAcceleration: "prefer-hardware",
+      });
+      if (!support?.supported || support.config?.hardwareAcceleration !== "prefer-hardware") continue;
+      // Speed & hardware verification probe on 5 synthetic frames.
+      const probeCanvas = Object.assign(document.createElement("canvas"), { width, height });
+      const ctx = probeCanvas.getContext("2d", { alpha: false });
+      let chunks = 0;
+      let err = null;
+      const enc = new VideoEncoder({
+        output: () => { chunks++; },
+        error: (e) => { err = e; },
+      });
+      enc.configure({
+        codec, width, height, bitrate, framerate: fps,
+        hardwareAcceleration: "prefer-hardware", latencyMode: "quality",
+      });
+      const t0 = performance.now();
+      for (let i = 0; i < 5; i++) {
+        ctx.fillStyle = `rgb(${i * 40}, 64, 128)`;
+        ctx.fillRect(0, 0, width, height);
+        const vf = new VideoFrame(probeCanvas, { timestamp: Math.round((i * 1_000_000) / fps) });
+        enc.encode(vf, { keyFrame: i === 0 });
+        vf.close();
+      }
+      await enc.flush();
+      const elapsed = performance.now() - t0;
+      enc.close();
+      if (err || chunks < 5) continue;
+      if (mode === "auto" && elapsed > 150) {
+        console.log(`WebCodecs probe too slow (${elapsed.toFixed(1)} ms for 5 frames); keeping image2pipe`);
+        return { useWebCodecs: false };
+      }
+      return { useWebCodecs: true, codec, bitrate };
+    } catch { /* try next codec */ }
+  }
+  if (mode === "webcodecs") {
+    console.warn("video.captureMode=webcodecs requested, but hardware VideoEncoder is unavailable; falling back to image2pipe");
+  }
+  return { useWebCodecs: false };
+};
+
+const createPipeCapture = ({ jobId, canvas, width, height, quality }) => {
+  // Pool of MAX_IN_FLIGHT 2D snapshot canvases prevents tearing: frame N is synchronously blitted out of the
+  // live WebGL canvas before s.render() runs for frame N+1, while JPEG encoding & HTTP upload overlap in flight.
+  const freeSnapshots = Array.from({ length: MAX_IN_FLIGHT }, () => {
+    const c = Object.assign(document.createElement("canvas"), { width, height });
+    return { canvas: c, ctx: c.getContext("2d", { alpha: false }) };
+  });
+  const inFlight = new Set();
+  let uploadError = null;
+
+  return {
+    mode: "pipe",
+    async capture(index) {
+      if (uploadError) throw uploadError;
+      while (inFlight.size >= MAX_IN_FLIGHT) {
+        await Promise.race(inFlight);
+        if (uploadError) throw uploadError;
+      }
+      const snap = freeSnapshots.pop();
+      snap.ctx.drawImage(canvas, 0, 0);
+      const task = uploadCanvasBytes(jobId, snap.canvas, quality, index)
+        .catch((e) => { if (!uploadError) uploadError = e; })
+        .finally(() => {
+          freeSnapshots.push(snap);
+          inFlight.delete(task);
+        });
+      inFlight.add(task);
+    },
+    async finish() {
+      await Promise.allSettled(inFlight);
+      if (uploadError) throw uploadError;
+    },
+    abort() {},
+  };
+};
+
+const createWebCodecsCapture = async ({ jobId, canvas, width, height, fps, codec, bitrate }) => {
+  const muxer = new StreamingMp4Muxer({ width, height, fps });
+  await post(`/job/${encodeURIComponent(jobId)}/mp4start`, muxer.headerBytes(),
+             { "content-type": "application/octet-stream" }, { label: "mp4start", attempts: 3 });
+  let chunkChain = Promise.resolve();
+  let encError = null;
+  let queuedChunks = 0;
+
+  const encoder = new VideoEncoder({
+    output: (chunk, meta) => {
+      const raw = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(raw);
+      const sampleBytes = muxer.addSample({
+        data: raw,
+        isKey: chunk.type === "key",
+        decoderConfig: meta?.decoderConfig || null,
+      });
+      queuedChunks++;
+      const sendOp = chunkChain.then(() =>
+        post(`/job/${encodeURIComponent(jobId)}/mp4chunk`, sampleBytes,
+             { "content-type": "application/octet-stream" }, { label: "mp4chunk", attempts: 3 })
+      ).catch((e) => {
+        if (!encError) encError = e;
+      }).finally(() => {
+        queuedChunks--;
+      });
+      chunkChain = sendOp;
+    },
+    error: (e) => { if (!encError) encError = e; },
+  });
+  encoder.configure({
+    codec, width, height, bitrate, framerate: fps,
+    hardwareAcceleration: "prefer-hardware", latencyMode: "quality",
+  });
+  const gop = Math.max(1, fps * 2);
+
+  return {
+    mode: "webcodecs",
+    async capture(index) {
+      if (encError) throw encError;
+      while (encoder.encodeQueueSize >= MAX_IN_FLIGHT || queuedChunks >= MAX_IN_FLIGHT * 2) {
+        await new Promise((r) => setTimeout(r, 2));
+        if (encError) throw encError;
+      }
+      const vf = new VideoFrame(canvas, { timestamp: Math.round((index * 1_000_000) / fps) });
+      try {
+        encoder.encode(vf, { keyFrame: index % gop === 0 });
+      } finally {
+        vf.close();
+      }
+    },
+    async finish() {
+      await encoder.flush();
+      if (encoder.state !== "closed") encoder.close();
+      await chunkChain;
+      if (encError) throw encError;
+      const { moov, mdatSizeOffset, mdatSizeBytes } = muxer.finish();
+      const payload = new Uint8Array(8 + moov.length);
+      payload.set(mdatSizeBytes, 0);
+      payload.set(moov, 8);
+      await post(`/job/${encodeURIComponent(jobId)}/mp4finish`, payload,
+        { "content-type": "application/octet-stream", "x-mdat-size-offset": String(mdatSizeOffset) },
+        { label: "mp4finish", attempts: 3 });
+    },
+    abort() {
+      try { if (encoder.state !== "closed") encoder.close(); } catch { /* ignore */ }
+    },
+  };
+};
+
+const createCapturePipeline = async ({ jobId, canvas, width, height, fps, quality, captureMode, gpu, gl, watermark }) => {
+  const probe = await probeWebCodecs({ width, height, fps, captureMode, gpu, gl, watermark });
+  if (probe.useWebCodecs) {
+    try {
+      return await createWebCodecsCapture({ jobId, canvas, width, height, fps, codec: probe.codec, bitrate: probe.bitrate });
+    } catch (e) {
+      console.warn(`WebCodecs init failed (${e.message}); falling back to image2pipe`);
+    }
+  }
+  return createPipeCapture({ jobId, canvas, width, height, quality });
+};
 
 // A dependency-free smoke job: draws a moving gradient and posts frames. It checks the browser, the job server, the
 // JPEG upload path and ffmpeg without needing a game site. Used by the host's tests and by `--smoke`.
@@ -248,6 +485,7 @@ const runSmoke = async (job) => {
   const canvas = Object.assign(document.createElement("canvas"), { width, height });
   document.body.append(canvas);
   const ctx = canvas.getContext("2d");
+  const capture = createPipeCapture({ jobId: job.jobId, canvas, width, height, quality: 0.85 });
   for (let n = 0; n < count; n++) {
     const g = ctx.createLinearGradient(0, 0, width, height);
     const p = n / Math.max(1, count - 1);
@@ -260,10 +498,11 @@ const runSmoke = async (job) => {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(`ournotes smoke ${n + 1}/${count}`, width / 2, height / 2);
-    await uploadFrame(job.jobId, canvas, 0.85, n);
+    await capture.capture(n);
   }
+  await capture.finish();
   return { frames: count, fps, width, height, ended: true, storySeconds: count / fps, events: [], cues: {}, lines: [],
-           seconds: Math.round((performance.now() - t0) / 100) / 10 };
+           captureMode: capture.mode, seconds: Math.round((performance.now() - t0) / 100) / 10 };
 };
 
 const preloadBrowserFonts = async (store) => {
@@ -324,8 +563,9 @@ export const run = async (job) => {
     ? await engine.assets.loadStoryStore(job.manifest, { lang: job.lang || undefined })
     : await loadStoryStore(job.manifest, { lang: job.lang || undefined });
   await preloadBrowserFonts(store);
+  const hostCueResolve = job.hostCueResolve !== false;
   let cues = {};
-  if (!siteEngine) cues = await uploadCues(job.jobId, store, new StoryData(store));
+  if (!siteEngine) cues = await uploadCues(job.jobId, store, new StoryData(store), { hostCueResolve });
   const canvas = Object.assign(document.createElement("canvas"), { width, height });
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
@@ -488,8 +728,12 @@ export const run = async (job) => {
     }
   }
   const audio = s.audio;
-  if (siteEngine) cues = await uploadCuesSite(job.jobId, store, audio);
+  if (siteEngine) cues = await uploadCuesSite(job.jobId, store, audio, { hostCueResolve });
   const quality = Math.max(0.3, Math.min(1, (job.jpegQuality || 98) / 100));
+  const capture = await createCapturePipeline({
+    jobId: job.jobId, canvas, width, height, fps: outFps, quality,
+    captureMode: job.captureMode || "auto", gpu: !!job.gpu, gl, watermark: job.watermark || "",
+  });
   let frames = 0, steps = 0, ended = false, storySeconds = 0, videoStart = null;
   try {
     while (!s.ended && frames < maxFrames) {
@@ -499,7 +743,7 @@ export const run = async (job) => {
       for (let i = 0; i < settle; i++) await s.step({ draw: false });
       if (frames === 0) videoStart = s.time;                 // the story clock at the first encoded frame
       s.render();
-      await uploadFrame(job.jobId, canvas, quality, frames);
+      await capture.capture(frames);
       frames++;
       if (frames % 60 === 0) reportProgress(job.jobId, frames, s.time);
       if (frames % 300 === 0) console.log(`job ${job.jobId}: ${frames} frames, ${s.time.toFixed(1)} s of story`);
@@ -509,9 +753,13 @@ export const run = async (job) => {
     if (!frames) {
       if (videoStart == null) videoStart = s.time;
       s.render();
-      await uploadFrame(job.jobId, canvas, quality, 0);
+      await capture.capture(0);
       frames = 1;
     }
+    await capture.finish();
+  } catch (e) {
+    capture.abort();
+    throw e;
   } finally {
     if (cancelHostActions) cancelHostActions();
     await s.dispose();
@@ -536,5 +784,6 @@ export const run = async (job) => {
   const seconds = Math.round((performance.now() - t0) / 100) / 10;
   console.log(`job ${job.jobId}: ${frames} frames, ${ended ? "ended" : "stopped at the limit"}, ${events.length} audio events`);
   return { frames, fps: outFps, width, height, ended, storySeconds: Math.round(storySeconds * 1000) / 1000,
-           videoStart: Math.round(start * 1000) / 1000, events, cues, lines, timeline, seconds };
+           videoStart: Math.round(start * 1000) / 1000, events, cues, lines, timeline,
+           captureMode: capture.mode, seconds };
 };

@@ -24,7 +24,8 @@ const makeSite = () => {
 };
 
 test("a site-format site lists its stories and picks a safe base", () => {
-  const catalog = new SiteFormatCatalog({ dir: makeSite(), language: "ja", logger: quietLogger() });
+  const dir = makeSite();
+  const catalog = new SiteFormatCatalog({ dir, language: "ja", logger: quietLogger() });
   assert.equal(catalog.kind, "site-format");
   assert.deepEqual(catalog.bases(), [
     { manifest: "stories/1.json", id: "1", title: "第一篇", languages: ["ja", "en", "zh-Hans"] },
@@ -32,6 +33,15 @@ test("a site-format site lists its stories and picks a safe base", () => {
   assert.equal(catalog.pickBase(), "stories/1.json");
   assert.equal(catalog.pickBase("1"), "stories/1.json");
   assert.throws(() => catalog.pickBase("missing"), /not a story/);
+
+  // Updating stories.json on disk invalidates the cached bases list automatically.
+  fs.writeFileSync(path.join(dir, "stories", "3.json"), "{}");
+  const idx = JSON.parse(fs.readFileSync(path.join(dir, "stories.json"), "utf8"));
+  idx.stories.push({ id: "3", advId: 3, manifest: "stories/3.json", titles: { ja: "第三篇" }, languages: ["ja"] });
+  fs.writeFileSync(path.join(dir, "stories.json"), JSON.stringify(idx));
+  const nowTime = new Date(Date.now() + 2000);
+  fs.utimesSync(path.join(dir, "stories.json"), nowTime, nowTime);
+  assert.deepEqual(catalog.bases().map((b) => b.id), ["1", "3"]);
 });
 
 test("a story with a missing asset is skipped and cannot be picked", () => {

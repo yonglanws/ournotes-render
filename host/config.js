@@ -48,6 +48,7 @@ const DEFAULTS = {
     emotion: { enabled: false, labels: [], presets: [] },
   },
   video: { width: 1300, height: 600, fps: 30, jpegQuality: 98, crf: 20, preset: "veryfast", encoder: "auto",
+           captureMode: "auto",
            audioBitrate: "192k", maxDurationSec: 600, audioSampleRate: 48000, watermark: "", ffmpegPath: "" },
   render: { preset: "standard", gpu: false, chrome: "", chromeArgs: [], core: "", motionsync: "", taskTimeoutMs: 1800000,
             settleFrames: 0 },
@@ -180,7 +181,7 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
     ["llm", "baseUrl"], ["llm", "model"], ["llm", "apiKeyEnv"], ["llm", "reasoningEffort"],
     ["tts", "provider"], ["tts", "baseUrl"], ["tts", "apiKeyEnv"], ["tts", "textLang"], ["tts", "promptLang"],
     ["tts", "voicesFile"], ["tts", "mediaType"], ["video", "ffmpegPath"], ["video", "preset"], ["video", "encoder"],
-    ["video", "audioBitrate"], ["video", "watermark"], ["render", "preset"], ["render", "chrome"], ["render", "core"],
+    ["video", "captureMode"], ["video", "audioBitrate"], ["video", "watermark"], ["render", "preset"], ["render", "chrome"], ["render", "core"],
     ["render", "motionsync"],
   ]) {
     const obj = disk[section];
@@ -256,6 +257,7 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   set(cfg.render, "core", env("OURNOTES_CORE"));
   set(cfg, "logLevel", env("OURNOTES_LOG_LEVEL"));
   if (env("OURNOTES_FFMPEG")) cfg.video.ffmpegPath = env("OURNOTES_FFMPEG");
+  if (env("OURNOTES_CAPTURE_MODE") !== undefined) cfg.video.captureMode = env("OURNOTES_CAPTURE_MODE");
 
   // resolve relative paths against the repository root
   const abs = (p) => (p ? path.resolve(ROOT, String(p)) : "");
@@ -295,6 +297,14 @@ export const loadConfig = ({ file = env("OURNOTES_CONFIG") || path.join(ROOT, "c
   cfg.video.fps = Math.max(1, Math.min(30, Math.round(num(cfg.video.fps, 30))));
   cfg.video.jpegQuality = Math.max(30, Math.min(100, Math.round(num(cfg.video.jpegQuality, 98))));
   cfg.video.crf = Math.max(0, Math.min(51, Math.round(num(cfg.video.crf, 20))));
+  const captureMode = String(cfg.video.captureMode || "auto").trim().toLowerCase();
+  if (!["auto", "webcodecs", "pipe"].includes(captureMode)) {
+    warnings.push({ path: "video.captureMode",
+                    message: `unknown captureMode ${JSON.stringify(cfg.video.captureMode)}; use auto, webcodecs or pipe` });
+    cfg.video.captureMode = "auto";
+  } else {
+    cfg.video.captureMode = captureMode;
+  }
   cfg.video.maxDurationSec = Math.max(1, num(cfg.video.maxDurationSec, 600));
   cfg.video.audioSampleRate = Math.max(8000, Math.round(num(cfg.video.audioSampleRate, 48000)));
   cfg.llm.concurrency = Math.max(1, Math.min(16, Math.round(num(cfg.llm.concurrency, 2))));

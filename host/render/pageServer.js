@@ -94,7 +94,12 @@ const scanFontDir = (dir, { explicit = false, depth = 0, maxDepth = 2, out = [] 
   return out;
 };
 
+const fontRoutesCache = new Map();
+export const clearFontRoutesCache = () => fontRoutesCache.clear();
+
 const buildFontRoutes = ({ site = "", fontsDir = "" } = {}) => {
+  const cacheKey = `${site ? path.resolve(site) : ""}\0${fontsDir ? path.resolve(fontsDir) : ""}`;
+  if (fontRoutesCache.has(cacheKey)) return fontRoutesCache.get(cacheKey);
   const localDirs = [
     fontsDir ? path.resolve(fontsDir) : "",
     site ? path.join(site, "fonts") : "",
@@ -138,7 +143,9 @@ const buildFontRoutes = ({ site = "", fontsDir = "" } = {}) => {
       `format("${item.format}"); font-weight: ${weightOfFont(item.name)}; font-style: normal; font-display: block; }`
     );
   }
-  return { files, css: rules.join("\n") };
+  const result = { files, css: rules.join("\n") };
+  fontRoutesCache.set(cacheKey, result);
+  return result;
 };
 
 const below = (dir, rel) => {
@@ -159,15 +166,17 @@ const readBody = (req, limit) => new Promise((resolve, reject) => {
   req.on("error", reject);
 });
 
-const send = (res, code, body, type = "text/plain", extra = {}) => {
-  res.writeHead(code, { "content-type": type, "cache-control": "no-store", ...extra });
+const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
+
+const send = (res, code, body, type = "text/plain", extra = {}, cacheControl = "no-store") => {
+  res.writeHead(code, { "content-type": type, "cache-control": cacheControl, ...extra });
   res.end(body);
 };
 
-const sendFile = (res, file, type = null) => {
+const sendFile = (res, file, type = null, cacheControl = "no-store") => {
   fs.stat(file, (e, st) => {
     if (e || !st.isFile()) return send(res, 404, "not found");
-    const headers = { "content-type": type || typeOf(file), "content-length": st.size, "cache-control": "no-store" };
+    const headers = { "content-type": type || typeOf(file), "content-length": st.size, "cache-control": cacheControl };
     const enc = encOf(file);
     if (enc) headers["content-encoding"] = enc;
     res.writeHead(200, headers);
@@ -207,7 +216,7 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
     const p = u.pathname;
     try {
       // ---- job endpoints -----------------------------------------------------------------------------------
-      const jobMatch = p.match(/^\/job\/([a-z0-9-]+)(\/[a-z]+)?(?:\.json)?$/);
+      const jobMatch = p.match(/^\/job\/([a-z0-9-]+)(\/[a-z0-9-]+)?(?:\.json)?$/);
       if (jobMatch) {
         const [, jobId, what] = jobMatch;
         const job = jobs.get(jobId);
@@ -218,8 +227,69 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
           if (!Number.isInteger(n) || n < 0 || n > 2_000_000) return send(res, 400, "bad frame number");
           const body = await readBody(req, 16 * 1024 * 1024);
           if (!body.length || body[0] !== 0xff || body[1] !== 0xd8) return send(res, 400, "not a JPEG");
-          fs.writeFileSync(path.join(job.framesDir, `${String(n).padStart(6, "0")}.jpg`), body);
+          if (job.onFrame) {
+            await job.onFrame(n, body);
+            if (job.keepFrames) {
+              await fs.promises.writeFile(path.join(job.framesDir, `${String(n).padStart(6, "0")}.jpg`), body);
+            }
+          } else {
+            fs.writeFileSync(path.join(job.framesDir, `${String(n).padStart(6, "0")}.jpg`), body);
+          }
           job.frames = Math.max(job.frames, n + 1);
+          return send(res, 200, "ok");
+        }
+        if (what === "/cues-prepare" && req.method === "POST") {
+          const body = await readBody(req, 4 * 1024 * 1024);
+          let data;
+          try { data = JSON.parse(body.toString("utf8")); } catch { return send(res, 400, "bad JSON"); }
+          const cuesList = Array.isArray(data?.cues) ? data.cues : [];
+          const missing = job.onPrepareCues
+            ? await job.onPrepareCues(cuesList)
+            : cuesList.map((c) => String(c?.soundId ?? ""));
+          return send(res, 200, JSON.stringify({ ok: true, missing }), "application/json");
+        }
+        if (what === "/mp4start" && req.method === "POST") {
+          const body = await readBody(req, 1024 * 1024);
+          if (job.mp4Handle) { try { await job.mp4Handle.close(); } catch { /* ignore */ } }
+          job.mp4Handle = await fs.promises.open(job.mp4File, "w");
+          job.mp4Pos = 0;
+          job.mp4Ready = false;
+          job.mp4WriteChain = Promise.resolve();
+          await job.mp4Handle.write(body, 0, body.length, 0);
+          job.mp4Pos = body.length;
+          return send(res, 200, "ok");
+        }
+        if (what === "/mp4chunk" && req.method === "POST") {
+          if (!job.mp4Handle) return send(res, 409, "mp4 not started");
+          const body = await readBody(req, 64 * 1024 * 1024);
+          const writeOp = job.mp4WriteChain.then(async () => {
+            if (!job.mp4Handle) throw new Error("mp4 closed");
+            await job.mp4Handle.write(body, 0, body.length, job.mp4Pos);
+            job.mp4Pos += body.length;
+          });
+          job.mp4WriteChain = writeOp.catch(() => {});
+          await writeOp;
+          return send(res, 200, "ok");
+        }
+        if (what === "/mp4finish" && req.method === "POST") {
+          if (!job.mp4Handle) return send(res, 409, "mp4 not started");
+          const mdatSizeOffset = Number(req.headers["x-mdat-size-offset"]);
+          if (!Number.isInteger(mdatSizeOffset) || mdatSizeOffset < 8) return send(res, 400, "bad mdat offset");
+          const body = await readBody(req, 32 * 1024 * 1024);
+          if (body.length < 16) return send(res, 400, "bad finish payload");
+          const mdatSizeBytes = body.subarray(0, 8);
+          const moovBytes = body.subarray(8);
+          const finishOp = job.mp4WriteChain.then(async () => {
+            if (!job.mp4Handle) throw new Error("mp4 closed");
+            await job.mp4Handle.write(moovBytes, 0, moovBytes.length, job.mp4Pos);
+            job.mp4Pos += moovBytes.length;
+            await job.mp4Handle.write(mdatSizeBytes, 0, 8, mdatSizeOffset);
+            await job.mp4Handle.close();
+            job.mp4Handle = null;
+            job.mp4Ready = true;
+          });
+          job.mp4WriteChain = finishOp.catch(() => {});
+          await finishOp;
           return send(res, 200, "ok");
         }
         if (what === "/cue" && req.method === "POST") {
@@ -259,27 +329,28 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
       }
 
       if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, "method not allowed");
-      if (p === "/page.html") return send(res, 200, page, "text/html");
-      if (p === "/fonts.css") return send(res, 200, fontRoutes.css, "text/css; charset=utf-8");
+      if (p === "/page.html" || p === "/render.html") return send(res, 200, page, "text/html", {}, "no-store");
+      if (p === "/fonts.css") return send(res, 200, fontRoutes.css, "text/css; charset=utf-8", {}, "public, max-age=3600");
       if (p.startsWith("/fonts/")) {
         const name = decodeURIComponent(p.slice(7));
         if (!name || name.includes("/") || name.includes("\\") || name.includes("..") || name.includes("\0"))
           return send(res, 403, "forbidden");
         const f = fontRoutes.files.get(name);
-        return f ? sendFile(res, f) : send(res, 404, "font not found");
+        return f ? sendFile(res, f, null, IMMUTABLE_CACHE) : send(res, 404, "font not found");
       }
-      if (p === "/core.js" && coreFile) return sendFile(res, coreFile);
-      if (p === "/motionsync.js" && motionFile) return sendFile(res, motionFile);
+      if (p === "/core.js" && coreFile) return sendFile(res, coreFile, null, IMMUTABLE_CACHE);
+      if (p === "/motionsync.js" && motionFile) return sendFile(res, motionFile, null, IMMUTABLE_CACHE);
 
       // ---- the site: overlay first, then the base site -------------------------------------------------------
       if (p.startsWith("/site/")) {
         const rel = decodeURIComponent(p.slice(6));
         if (files.has(rel)) {
           const body = files.get(rel);
-          return send(res, 200, body, typeOf(rel));
+          return send(res, 200, body, typeOf(rel), {}, "no-store");
         }
         const f = site ? below(site, rel) : null;
-        return f ? sendFile(res, f) : send(res, 404, "not found");
+        const siteCache = rel.startsWith("assets/") ? IMMUTABLE_CACHE : "no-store";
+        return f ? sendFile(res, f, null, siteCache) : send(res, 404, "not found");
       }
 
       // ---- the published site-format engine, wherever the package manager put it -----------------------------
@@ -287,10 +358,10 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
         const rel = decodeURIComponent(p.slice(SITE_ENGINE_PREFIX.length));
         if (!SITE_ENGINE_DIR) return send(res, 404, "site engine is not installed");
         if (rel === "src/story/browser-font.js") {
-          return sendFile(res, path.join(PACKAGE_DIR, "src", "story", "browser-font.js"));
+          return sendFile(res, path.join(PACKAGE_DIR, "src", "story", "browser-font.js"), null, IMMUTABLE_CACHE);
         }
         const f = below(SITE_ENGINE_DIR, rel);
-        return f ? sendFile(res, f) : send(res, 404, "site engine is not installed");
+        return f ? sendFile(res, f, null, IMMUTABLE_CACHE) : send(res, 404, "site engine is not installed");
       }
 
       // ---- package files: the player sources, the page module and the site-format engine only ---------------
@@ -299,7 +370,7 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
       if (!/^(src\/|host\/render\/|tests\/unit\/)/.test(rel))
         return send(res, 403, "forbidden");
       const f = below(PACKAGE_DIR, rel);
-      return f ? sendFile(res, f) : send(res, 403, "forbidden");
+      return f ? sendFile(res, f, null, IMMUTABLE_CACHE) : send(res, 403, "forbidden");
     } catch (e) {
       logger.warn?.(`render page server: ${e.message}`);
       if (!res.headersSent) send(res, 500, e.message);
@@ -317,21 +388,35 @@ export const createPageServer = ({ site = "", files = new Map(), core = CUBISM_C
     const url = `http://127.0.0.1:${server.address().port}`;
     resolve({
       url, jobsDir,
-      createJob(config) {
+      createJob(config, hooks = {}) {
         const id = config.jobId || `job-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
         if (!JW.test(id)) throw new Error(`bad job id ${id}`);
         const dir = path.join(jobsDir, id);
         const framesDir = path.join(dir, "frames"), cuesDir = path.join(dir, "cues");
-        fs.mkdirSync(framesDir, { recursive: true });
+        const mp4File = path.join(dir, "video.mp4");
+        if (!hooks.onFrame || hooks.keepFrames) fs.mkdirSync(framesDir, { recursive: true });
         fs.mkdirSync(cuesDir, { recursive: true });
         let resolveResult, rejectResult;
         const result = new Promise((r, j) => { resolveResult = r; rejectResult = j; });
-        const job = { id, dir, framesDir, cuesDir, config: { ...config, jobId: id }, frames: 0, progress: null,
-                      settled: false, result, resolve: resolveResult, reject: rejectResult };
+        const job = {
+          id, dir, framesDir, cuesDir, mp4File,
+          config: { ...config, jobId: id }, frames: 0, progress: null,
+          onFrame: hooks.onFrame || null,
+          keepFrames: !!hooks.keepFrames,
+          onPrepareCues: hooks.onPrepareCues || null,
+          mp4Handle: null, mp4Pos: 0, mp4Ready: false, mp4WriteChain: Promise.resolve(),
+          settled: false, result, resolve: resolveResult, reject: rejectResult,
+        };
         jobs.set(id, job);
         return job;
       },
-      removeJob(job) { jobs.delete(job.id); },
+      removeJob(job) {
+        if (job?.mp4Handle) {
+          try { void job.mp4Handle.close().catch(() => {}); } catch { /* ignore */ }
+          job.mp4Handle = null;
+        }
+        jobs.delete(job.id);
+      },
       close() {
         return new Promise((r) => { server.closeAllConnections(); server.close(() => r()); });
       },

@@ -1,5 +1,6 @@
 // The HTTP API. Pure JSON in/out: the AstrBot plugin (or any client) submits a prompt or a script, polls a task, and
 // downloads the MP4. Queue, AI writing and TTS all live behind these endpoints.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -78,7 +79,11 @@ export class ApiServer {
   _authorized(req) {
     const key = this.config.secrets.apiKey;
     if (!key) return true;
-    return (req.headers.authorization || "") === `Bearer ${key}`;
+    const header = String(req.headers.authorization || "");
+    const expected = `Bearer ${key}`;
+    const a = crypto.createHash("sha256").update(header).digest();
+    const b = crypto.createHash("sha256").update(expected).digest();
+    return crypto.timingSafeEqual(a, b);
   }
 
   async _handle(req, res) {
@@ -86,7 +91,7 @@ export class ApiServer {
     if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
     const u = new URL(req.url, "http://localhost");
     const p = u.pathname.replace(/\/+$/, "") || "/";
-    if (p === "/api/v1/health") return this._health(res);
+    if (p === "/api/v1/health") return this._health(req, res);
     if (!this._authorized(req)) return sendJson(res, 401, { success: false, message: "unauthorized" });
     if (req.method === "GET" && p === "/api/v1/status") return this._status(res);
     if (req.method === "GET" && p === "/api/v1/resources") return this._resources(res, u.searchParams);
@@ -112,16 +117,27 @@ export class ApiServer {
     return sendJson(res, 404, { success: false, message: "not found" });
   }
 
-  _health(res) {
+  _health(req, res) {
+    const authed = !!this.config.secrets.apiKey && this._authorized(req);
     let ffmpeg = null, browser = null;
-    try { ffmpeg = validateFfmpeg(this.config.video.ffmpegPath || ""); } catch (e) { ffmpeg = { error: e.message }; }
-    try { browser = findBrowser(this.config.render.chrome || ""); } catch (e) { browser = { error: e.message }; }
+    try {
+      const p = validateFfmpeg(this.config.video.ffmpegPath || "");
+      ffmpeg = authed ? p : { available: true };
+    } catch (e) {
+      ffmpeg = authed ? { error: e.message } : { available: false };
+    }
+    try {
+      const p = findBrowser(this.config.render.chrome || "");
+      browser = authed ? p : { available: true };
+    } catch (e) {
+      browser = authed ? { error: e.message } : { available: false };
+    }
     sendJson(res, 200, {
       success: true, service: "ournotes-player-host", version, uptimeSeconds: Math.round((Date.now() - this.startedAt) / 1000),
       site: this.config.paths.site
-        ? { configured: true, kind: "product", dir: this.config.paths.site }
+        ? { configured: true, kind: "product", ...(authed ? { dir: this.config.paths.site } : {}) }
         : this.config.paths.siteFormat
-          ? { configured: true, kind: "site-format", dir: this.config.paths.siteFormat }
+          ? { configured: true, kind: "site-format", ...(authed ? { dir: this.config.paths.siteFormat } : {}) }
           : { configured: false },
       queue: this.queue.summary(),
       render: { concurrency: this.config.queue.concurrency, gpu: this.config.render.gpu },
@@ -284,17 +300,38 @@ export class ApiServer {
     sendJson(res, 200, { success: true, data, pagination: { page, limit, total, totalPages } });
   }
 
-  _download(res, raw) {
+  async _download(res, raw) {
     let name;
     try { name = decodeURIComponent(raw); } catch { return sendJson(res, 400, { error: "Invalid filename" }); }
-    if (!safeName(name)) return sendJson(res, 400, { error: "Invalid filename" });
-    // look the name up in the directory listing rather than joining a caller string onto a path
-    const entry = this._listOutputs().find((x) => x.filename === name);
-    if (!entry) return sendJson(res, 404, { error: "File not found" });
-    res.writeHead(200, { "content-type": name.endsWith(".mp4") ? "video/mp4" : "application/json",
-      "content-length": entry.size, "content-disposition": "attachment", "cache-control": "no-cache",
-      "x-content-type-options": "nosniff" });
-    fs.createReadStream(entry.path).pipe(res);
+    if (!safeName(name) || !/\.(mp4|json)$/i.test(name)) return sendJson(res, 400, { error: "Invalid filename" });
+    const outputDir = path.resolve(this.config.paths.output);
+    const target = path.resolve(outputDir, name);
+    if (path.dirname(target) !== outputDir || path.basename(target) !== name) {
+      return sendJson(res, 400, { error: "Invalid filename" });
+    }
+    let st;
+    try {
+      const [realOut, realTarget] = await Promise.all([
+        fs.promises.realpath(outputDir),
+        fs.promises.realpath(target),
+      ]);
+      const rel = path.relative(realOut, realTarget);
+      if (!rel || rel.startsWith("..") || path.isAbsolute(rel) || rel.includes(path.sep)) {
+        return sendJson(res, 404, { error: "File not found" });
+      }
+      st = await fs.promises.stat(realTarget);
+      if (!st.isFile()) return sendJson(res, 404, { error: "File not found" });
+      res.writeHead(200, {
+        "content-type": name.toLowerCase().endsWith(".mp4") ? "video/mp4" : "application/json",
+        "content-length": st.size,
+        "content-disposition": "attachment",
+        "cache-control": "no-cache",
+        "x-content-type-options": "nosniff",
+      });
+      fs.createReadStream(realTarget).pipe(res);
+    } catch {
+      return sendJson(res, 404, { error: "File not found" });
+    }
   }
 
   async _cleanup(res) {

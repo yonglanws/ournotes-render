@@ -131,3 +131,23 @@ test("LLM requests wait in a FIFO window instead of all leaving at once", async 
     globalThis.fetch = realFetch;
   }
 });
+
+test("LLMClient timeout covers stalled response.text() body reads", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, opts) => ({
+    ok: true,
+    status: 200,
+    text: () => new Promise((_, reject) => {
+      opts.signal.addEventListener("abort", () => reject(opts.signal.reason || new Error("aborted")), { once: true });
+    }),
+  });
+  try {
+    const client = new LLMClient({
+      enabled: true, baseUrl: "https://api.example.com/v1", model: "test", apiKey: "k",
+      timeoutMs: 1000, retries: 0,
+    }, { logger: quietLogger() });
+    await assert.rejects(() => client.chat([{ role: "user", content: "hi" }]), /timed out/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

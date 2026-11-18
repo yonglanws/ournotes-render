@@ -193,9 +193,40 @@ test("the API requires a bearer token when one is configured", async () => {
   const s = await makeServer({ apiKey: "secret-token" });
   try {
     assert.equal((await fetch(`${s.base}/api/v1/status`)).status, 401);
+    assert.equal((await fetch(`${s.base}/api/v1/status`, { headers: { authorization: "Bearer secret" } })).status, 401);
     assert.equal((await fetch(`${s.base}/api/v1/status`, { headers: { authorization: "Bearer secret-token" } })).status, 200);
-    // health stays public
-    assert.equal((await fetch(`${s.base}/api/v1/health`)).status, 200);
+    // health stays public, but unauthenticated requests must redact filesystem paths
+    const unauthHealth = await json(await fetch(`${s.base}/api/v1/health`));
+    assert.equal(unauthHealth.status, 200);
+    assert.equal(unauthHealth.body.site.dir, undefined);
+    assert.equal(typeof unauthHealth.body.ffmpeg, "object");
+    assert.equal(typeof unauthHealth.body.ffmpeg.available, "boolean");
+    assert.equal(typeof unauthHealth.body.browser, "object");
+    assert.equal(typeof unauthHealth.body.browser.available, "boolean");
+    const authHealth = await json(await fetch(`${s.base}/api/v1/health`, {
+      headers: { authorization: "Bearer secret-token" },
+    }));
+    assert.equal(authHealth.status, 200);
+    assert.ok(typeof authHealth.body.ffmpeg === "string" || authHealth.body.ffmpeg?.error);
+  } finally {
+    await stop(s);
+  }
+});
+
+test("download serves valid mp4/json directly without scanning outputDir and blocks traversal", async () => {
+  const output = tmpDir();
+  fs.writeFileSync(path.join(output, "good.mp4"), "MP4DATA");
+  fs.writeFileSync(path.join(output, "secret.txt"), "NOPE");
+  const s = await makeServer({ output });
+  try {
+    const ok = await fetch(`${s.base}/api/v1/download/good.mp4`);
+    assert.equal(ok.status, 200);
+    assert.equal(ok.headers.get("content-type"), "video/mp4");
+    assert.equal(await ok.text(), "MP4DATA");
+
+    assert.equal((await fetch(`${s.base}/api/v1/download/missing.mp4`)).status, 404);
+    assert.equal((await fetch(`${s.base}/api/v1/download/secret.txt`)).status, 400);
+    assert.equal((await fetch(`${s.base}/api/v1/download/..%2fpackage.json`)).status, 400);
   } finally {
     await stop(s);
   }

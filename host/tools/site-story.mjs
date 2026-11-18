@@ -1106,7 +1106,8 @@ export const bundleSiteEpisodeAssets = ({
 
 // The rows and texts of `script` as a new story of `site`; `advId` names it, `outRel` is its manifest path.
 export const buildSiteStory = ({ site, baseRel, script, advId, language = "", title = "", outRel = "",
-                                  voices = null, guide = null, pool = true }) => {
+                                  voices = null, guide = null, pool = true,
+                                  writeManifest = true, updateIndex = true }) => {
   const parsed = parseScript(script);
   if (parsed.errors.length) return { errors: parsed.errors, warnings: [] };
   const requested = language || parsed.script.language || "";
@@ -1179,19 +1180,23 @@ export const buildSiteStory = ({ site, baseRel, script, advId, language = "", ti
     commandCount: episode.commandCount, commands, groups: [], language: lang, languages: [lang], playbackMode: 0,
     titles: { [lang]: title || script.title || id } };
   const out = outRel || `stories/${id}.json`;
-  fs.mkdirSync(path.dirname(path.join(site, out)), { recursive: true });
-  writeAtomic(path.join(site, out), JSON.stringify(manifest, null, 2));
-  // the site's index, so the new story is listed next to the base
-  const indexPath = path.join(site, "stories.json");
-  if (fs.existsSync(indexPath)) {
-    const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
-    if (Array.isArray(index.stories)) {
-      const entry = { id, advId: manifest.advId, manifest: out, playbackMode: 0, language: lang, languages: [lang],
-        titles: manifest.story.titles, audio: !!(baseManifest.audio || (voices && voices.size)),
-        audioFormat: manifest.audioFormat || baseManifest.audioFormat };
-      const at = index.stories.findIndex((s) => String(s.id) === id || s.manifest === out);
-      if (at >= 0) index.stories[at] = entry; else index.stories.push(entry);
-      writeAtomic(indexPath, JSON.stringify(index, null, 2));
+  if (writeManifest) {
+    fs.mkdirSync(path.dirname(path.join(site, out)), { recursive: true });
+    writeAtomic(path.join(site, out), JSON.stringify(manifest, null, 2));
+    // the site's index, so the new story is listed next to the base
+    if (updateIndex) {
+      const indexPath = path.join(site, "stories.json");
+      if (fs.existsSync(indexPath)) {
+        const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+        if (Array.isArray(index.stories)) {
+          const entry = { id, advId: manifest.advId, manifest: out, playbackMode: 0, language: lang, languages: [lang],
+            titles: manifest.story.titles, audio: !!(baseManifest.audio || (voices && voices.size)),
+            audioFormat: manifest.audioFormat || baseManifest.audioFormat };
+          const at = index.stories.findIndex((s) => String(s.id) === id || s.manifest === out);
+          if (at >= 0) index.stories[at] = entry; else index.stories.push(entry);
+          writeAtomic(indexPath, JSON.stringify(index, null, 2));
+        }
+      }
     }
   }
   return { manifest, manifestPath: out, episode, compiled, warnings: checked.warnings, language: lang,

@@ -116,8 +116,12 @@ const main = async () => {
   const pipeline = new Pipeline({ config, catalog, llm, tts, renderer, logger: logger.child("job") });
 
   if (args.includes("--smoke")) {
-    const result = await renderer.renderSmoke({ jobId: `smoke-${Date.now().toString(36)}`, frames: 12 });
-    logger.info(`smoke video: ${result.output} (${result.report.frames} frames)`);
+    try {
+      const result = await renderer.renderSmoke({ jobId: `smoke-${Date.now().toString(36)}`, frames: 12 });
+      logger.info(`smoke video: ${result.output} (${result.report.frames} frames)`);
+    } finally {
+      await renderer.close();
+    }
     return;
   }
   const queue = new TaskQueue({
@@ -131,6 +135,7 @@ const main = async () => {
     logger.info(`${sig}: shutting down`);
     try { await api.close(); } catch { /* already closed */ }
     try { await queue.close(); } catch { /* already closed */ }
+    try { await renderer.close(); } catch { /* already closed */ }
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));

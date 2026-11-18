@@ -362,3 +362,30 @@ test("Irodori accepts kanji-only Japanese lines but still skips untranslated Chi
   assert.equal(voices.size, 1);
   assert.equal(voices.report.nonJapaneseLines, 0);
 });
+
+test("TTS clients enforce timeout while reading a stalled response.arrayBuffer() body", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, opts) => ({
+    ok: true,
+    status: 200,
+    headers: new Headers({ "content-type": "audio/wav" }),
+    arrayBuffer: () => new Promise((_, reject) => {
+      opts.signal.addEventListener("abort", () => reject(opts.signal.reason || new Error("aborted")), { once: true });
+    }),
+  });
+  try {
+    const gsv = createTtsClient({
+      enabled: true, provider: "gpt-sovits", baseUrl: "http://127.0.0.1:9880",
+      textLang: "ja", promptLang: "ja", timeoutMs: 1000, retries: 0,
+    }, { logger: quietLogger() });
+    const irodori = createTtsClient({
+      enabled: true, provider: "irodori", baseUrl: "http://127.0.0.1:8088",
+      textLang: "ja", promptLang: "ja", timeoutMs: 1000, retries: 0,
+    }, { logger: quietLogger() });
+    const voice = { name: "灯", refAudioPath: "/ref.wav", promptText: "hi", promptLang: "ja", key: "tomori" };
+    await assert.rejects(() => gsv.synthesize("こんにちは", voice), /timed out/);
+    await assert.rejects(() => irodori.synthesize("こんにちは", voice), /timed out/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

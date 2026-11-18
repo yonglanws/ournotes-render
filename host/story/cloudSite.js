@@ -32,6 +32,32 @@ export const CUBISM_CORE_CDN_URL = "https://cubism.live2d.com/sdk-web/cubismcore
 
 const cleanBaseUrl = (u) => String(u || "").replace(/\/+$/, "");
 
+// Per-asset in-flight download lock so concurrent renders share one network download instead of duplicating it,
+// and per-site serialized index updates so cloud-pool.json / models.json / official-bundles.json never lose entries.
+const inFlightAssetLocks = new Map();
+const withAssetLock = (key, fn) => {
+  const existing = inFlightAssetLocks.get(key);
+  if (existing) return existing;
+  const run = Promise.resolve().then(fn).finally(() => {
+    if (inFlightAssetLocks.get(key) === run) inFlightAssetLocks.delete(key);
+  });
+  inFlightAssetLocks.set(key, run);
+  return run;
+};
+
+const siteIndexLocks = new Map();
+const withSiteIndexLock = (site, fn) => {
+  const key = path.resolve(site);
+  const prev = siteIndexLocks.get(key) || Promise.resolve();
+  const run = prev.then(fn, fn);
+  const tail = run.catch(() => {});
+  siteIndexLocks.set(key, tail);
+  tail.finally(() => {
+    if (siteIndexLocks.get(key) === tail) siteIndexLocks.delete(key);
+  });
+  return run;
+};
+
 const writeSafeRelFile = (dir, rel, bytes) => {
   if (!isSafeRelPath(rel)) throw new Error(`unsafe relative path: ${rel}`);
   const dest = path.join(dir, ...rel.split("/"));
@@ -44,18 +70,21 @@ const ensureRemoteBlob = async (dir, baseUrl, relAsset, fetchOpts, fallbackBaseU
   if (!relAsset || !isSafeRelPath(relAsset)) return false;
   const dest = path.join(dir, ...relAsset.split("/"));
   if (fs.existsSync(dest)) return true;
-  try {
-    const raw = await fetchRemoteBytes(`${cleanBaseUrl(baseUrl)}/${relAsset}`, fetchOpts);
-    writeSafeRelFile(dir, relAsset, raw);
-    return true;
-  } catch (err) {
-    if (fallbackBaseUrl && fallbackBaseUrl !== baseUrl) {
-      const raw = await fetchRemoteBytes(`${cleanBaseUrl(fallbackBaseUrl)}/${relAsset}`, fetchOpts);
+  return withAssetLock(`blob:${path.resolve(dest)}`, async () => {
+    if (fs.existsSync(dest)) return true;
+    try {
+      const raw = await fetchRemoteBytes(`${cleanBaseUrl(baseUrl)}/${relAsset}`, fetchOpts);
       writeSafeRelFile(dir, relAsset, raw);
       return true;
+    } catch (err) {
+      if (fallbackBaseUrl && fallbackBaseUrl !== baseUrl) {
+        const raw = await fetchRemoteBytes(`${cleanBaseUrl(fallbackBaseUrl)}/${relAsset}`, fetchOpts);
+        writeSafeRelFile(dir, relAsset, raw);
+        return true;
+      }
+      throw err;
     }
-    throw err;
-  }
+  });
 };
 
 const collectEntryAssetRels = (entry) => {
@@ -399,117 +428,121 @@ export const materializeSiteStoryAssets = async ({
     }
   };
 
+  const pendingStages = {};
+  const pendingAudio = {};
+
   // 1. Live2D Models
   for (const modelId of req.models) {
     if (modelAssetsPresent(site, modelId)) continue;
-    const meta = cc.modelMap.get(modelId);
-    const candidates = meta?.region === "jp"
-      ? [{ manifest: meta.manifest, remoteBase: `${cleanStorage}/jp` }, { manifest: `models/${modelId}.json`, remoteBase: cleanStorage }]
-      : [{ manifest: meta?.manifest || `models/${modelId}.json`, remoteBase: cleanStorage },
-         { manifest: `jp/models/${modelId}.json`, remoteBase: `${cleanStorage}/jp` }];
-    let mm = null;
-    let usedRemote = cleanStorage;
-    for (const c of candidates) {
-      try {
-        const bytes = await fetchRemoteBytes(`${cleanStorage}/${c.manifest}`, fetchOpts);
-        mm = JSON.parse(bytes.toString("utf8"));
-        usedRemote = c.remoteBase;
-        break;
-      } catch { /* try fallback region */ }
-    }
-    if (!mm?.files) {
-      logger.warn?.(`cloud-site: could not fetch model manifest for ${modelId}`);
-      continue;
-    }
-    for (const entry of Object.values(mm.files)) {
-      await mirrorManifestEntry(modelId, entry, usedRemote);
-    }
-    writeSafeRelFile(site, `models/${modelId}.json`, Buffer.from(JSON.stringify(mm, null, 2)));
-    const modelsIndexPath = path.join(site, "models.json");
-    if (fs.existsSync(modelsIndexPath)) {
-      try {
-        const idx = JSON.parse(fs.readFileSync(modelsIndexPath, "utf8"));
-        if (Array.isArray(idx.models)) {
-          const hit = idx.models.find((m) => m?.id === modelId);
-          if (!hit) {
-            idx.models.push({ id: modelId, manifest: `models/${modelId}.json` });
-            writeAtomic(modelsIndexPath, JSON.stringify(idx, null, 2));
-          } else if (hit.manifest !== `models/${modelId}.json`) {
-            hit.manifest = `models/${modelId}.json`;
-            writeAtomic(modelsIndexPath, JSON.stringify(idx, null, 2));
-          }
+    const didMaterialize = await withAssetLock(`model:${path.resolve(site)}:${modelId}`, async () => {
+      if (modelAssetsPresent(site, modelId)) return false;
+      const meta = cc.modelMap.get(modelId);
+      const candidates = meta?.region === "jp"
+        ? [{ manifest: meta.manifest, remoteBase: `${cleanStorage}/jp` }, { manifest: `models/${modelId}.json`, remoteBase: cleanStorage }]
+        : [{ manifest: meta?.manifest || `models/${modelId}.json`, remoteBase: cleanStorage },
+           { manifest: `jp/models/${modelId}.json`, remoteBase: `${cleanStorage}/jp` }];
+      let mm = null;
+      let usedRemote = cleanStorage;
+      for (const c of candidates) {
+        try {
+          const bytes = await fetchRemoteBytes(`${cleanStorage}/${c.manifest}`, fetchOpts);
+          mm = JSON.parse(bytes.toString("utf8"));
+          usedRemote = c.remoteBase;
+          break;
+        } catch { /* try fallback region */ }
+      }
+      if (!mm?.files) {
+        logger.warn?.(`cloud-site: could not fetch model manifest for ${modelId}`);
+        return false;
+      }
+      for (const entry of Object.values(mm.files)) {
+        await mirrorManifestEntry(modelId, entry, usedRemote);
+      }
+      writeSafeRelFile(site, `models/${modelId}.json`, Buffer.from(JSON.stringify(mm, null, 2)));
+      await withSiteIndexLock(site, () => {
+        const modelsIndexPath = path.join(site, "models.json");
+        if (fs.existsSync(modelsIndexPath)) {
+          try {
+            const idx = JSON.parse(fs.readFileSync(modelsIndexPath, "utf8"));
+            if (Array.isArray(idx.models)) {
+              const hit = idx.models.find((m) => m?.id === modelId);
+              if (!hit) {
+                idx.models.push({ id: modelId, manifest: `models/${modelId}.json` });
+                writeAtomic(modelsIndexPath, JSON.stringify(idx, null, 2));
+              } else if (hit.manifest !== `models/${modelId}.json`) {
+                hit.manifest = `models/${modelId}.json`;
+                writeAtomic(modelsIndexPath, JSON.stringify(idx, null, 2));
+              }
+            }
+          } catch { /* ignore */ }
         }
-      } catch { /* ignore */ }
-    }
-    materialized.push(modelId);
+      });
+      return true;
+    });
+    if (didMaterialize) materialized.push(modelId);
   }
 
   // 2. Stages
   for (const stageId of req.stages) {
     if (localStages.has(stageId)) continue;
-    const stageMeta = cc.stageMap.get(stageId);
-    let resolved = false;
-    if (stageMeta?.donorAdvId != null) {
-      const dm = await getDonorManifest(stageMeta.donorAdvId);
-      if (dm?.files?.["scene.json"]) {
-        try {
-          for (const assetRel of collectEntryAssetRels(dm.files["scene.json"])) {
-            await ensureRemoteBlob(site, cleanStorage, assetRel, fetchOpts);
-          }
-          const sc = readSceneStages(site, dm);
-          const stageKey = Object.keys(sc.stages || {}).find((k) => k === stageId || k.endsWith(`/${stageId}`));
-          if (stageKey && sc.stages[stageKey]) {
-            const prefab = structuredClone(sc.stages[stageKey]);
-            // Ensure volume profiles referenced only by name are hydrated from donor stage prefabs
-            const vp = new Map();
-            for (const other of Object.values(sc.stages)) collectStageVolumeProfiles(other, vp);
-            const advComp = prefab.nodes?.flatMap((n) => n.components || []).find((c) => c?.class === "AdvStage");
-            const profs = advComp?._allVolumeProfileCollection?._profiles;
-            if (Array.isArray(profs)) {
-              for (let i = 0; i < profs.length; i++) {
-                if (profs[i]?.name && !Array.isArray(profs[i].components) && vp.has(profs[i].name)) {
-                  profs[i] = structuredClone(vp.get(profs[i].name));
+    const stageEntry = await withAssetLock(`stage:${path.resolve(site)}:${stageId}`, async () => {
+      const stageMeta = cc.stageMap.get(stageId);
+      if (stageMeta?.donorAdvId != null) {
+        const dm = await getDonorManifest(stageMeta.donorAdvId);
+        if (dm?.files?.["scene.json"]) {
+          try {
+            for (const assetRel of collectEntryAssetRels(dm.files["scene.json"])) {
+              await ensureRemoteBlob(site, cleanStorage, assetRel, fetchOpts);
+            }
+            const sc = readSceneStages(site, dm);
+            const stageKey = Object.keys(sc.stages || {}).find((k) => k === stageId || k.endsWith(`/${stageId}`));
+            if (stageKey && sc.stages[stageKey]) {
+              const prefab = structuredClone(sc.stages[stageKey]);
+              // Ensure volume profiles referenced only by name are hydrated from donor stage prefabs
+              const vp = new Map();
+              for (const other of Object.values(sc.stages)) collectStageVolumeProfiles(other, vp);
+              const advComp = prefab.nodes?.flatMap((n) => n.components || []).find((c) => c?.class === "AdvStage");
+              const profs = advComp?._allVolumeProfileCollection?._profiles;
+              if (Array.isArray(profs)) {
+                for (let i = 0; i < profs.length; i++) {
+                  if (profs[i]?.name && !Array.isArray(profs[i].components) && vp.has(profs[i].name)) {
+                    profs[i] = structuredClone(vp.get(profs[i].name));
+                  }
                 }
               }
-            }
-            const texFiles = textureEntries(dm, stageId);
-            for (const [tRel, tEntry] of Object.entries(texFiles)) {
-              await mirrorManifestEntry(tRel, tEntry);
-            }
-            if (dm.files["shaders/shaders.json"]) {
-              for (const ar of collectEntryAssetRels(dm.files["shaders/shaders.json"])) {
-                await ensureRemoteBlob(site, cleanStorage, ar, fetchOpts);
+              const texFiles = textureEntries(dm, stageId);
+              for (const [tRel, tEntry] of Object.entries(texFiles)) {
+                await mirrorManifestEntry(tRel, tEntry);
               }
-            }
-            const donorShaders = readShadersMap(site, dm);
-            const deps = collectDeps(prefab, dm.files || {}, donorShaders);
-            for (const [dRel, dEntry] of Object.entries(deps.files || {})) {
-              await mirrorManifestEntry(dRel, dEntry);
-            }
-            const stageShaderEntries = [];
-            for (const [sName, sInfo] of deps.shaders || []) {
-              for (const [sfRel, sfEntry] of Object.entries(sInfo.files || {})) {
-                await mirrorManifestEntry(sfRel, sfEntry);
+              if (dm.files["shaders/shaders.json"]) {
+                for (const ar of collectEntryAssetRels(dm.files["shaders/shaders.json"])) {
+                  await ensureRemoteBlob(site, cleanStorage, ar, fetchOpts);
+                }
               }
-              stageShaderEntries.push([sName, sInfo]);
+              const donorShaders = readShadersMap(site, dm);
+              const deps = collectDeps(prefab, dm.files || {}, donorShaders);
+              for (const [dRel, dEntry] of Object.entries(deps.files || {})) {
+                await mirrorManifestEntry(dRel, dEntry);
+              }
+              const stageShaderEntries = [];
+              for (const [sName, sInfo] of deps.shaders || []) {
+                for (const [sfRel, sfEntry] of Object.entries(sInfo.files || {})) {
+                  await mirrorManifestEntry(sfRel, sfEntry);
+                }
+                stageShaderEntries.push([sName, sInfo]);
+              }
+              return {
+                key: stageKey,
+                prefab,
+                shaders: stageShaderEntries,
+                files: { ...texFiles, ...(deps.files || {}) },
+              };
             }
-            cloudPool.stages[stageId] = {
-              key: stageKey,
-              prefab,
-              shaders: stageShaderEntries,
-              files: { ...texFiles, ...(deps.files || {}) },
-            };
-            localStages.add(stageId);
-            materialized.push(stageId);
-            poolDirty = true;
-            resolved = true;
+          } catch (e) {
+            logger.warn?.(`cloud-site: donor stage ${stageId} fallback (${e.message})`);
           }
-        } catch (e) {
-          logger.warn?.(`cloud-site: donor stage ${stageId} fallback (${e.message})`);
         }
       }
-    }
-    if (!resolved) {
       try {
         const webpUrl = `${cleanAssets}/${encodeURIComponent(lang)}/Adv/Stage/${stageId}/data/${stageId}/${stageId}.webp`;
         const webpBytes = await fetchRemoteBytes(webpUrl, fetchOpts);
@@ -517,18 +550,22 @@ export const materializeSiteStoryAssets = async ({
         const texEntry = writeAsset(site, webpBytes, "webp");
         const texRel = `textures/${stageId}-${stageId}.webp`;
         const prefab = synthesizeStagePrefab(stageId, width, height, texRel);
-        cloudPool.stages[stageId] = {
+        return {
           key: `Adv/Stage/${stageId}/${stageId}`,
           prefab,
           shaders: [],
           files: { [texRel]: texEntry },
         };
-        localStages.add(stageId);
-        materialized.push(stageId);
-        poolDirty = true;
       } catch (e) {
         logger.warn?.(`cloud-site: could not materialize stage ${stageId}: ${e.message}`);
+        return null;
       }
+    });
+    if (stageEntry) {
+      pendingStages[stageId] = stageEntry;
+      localStages.add(stageId);
+      materialized.push(stageId);
+      poolDirty = true;
     }
   }
 
@@ -539,78 +576,96 @@ export const materializeSiteStoryAssets = async ({
   ];
   for (const { cue, isBgm, meta, sheet } of audioTargets) {
     if (localCues.has(cue)) continue;
-    let resolved = false;
-    if (meta?.donorAdvId != null) {
-      const dm = await getDonorManifest(meta.donorAdvId);
-      if (dm?.files) {
-        try {
-          const cuesRel = `audio/${sheet}/cues.json`;
-          const prefix = `audio/${sheet}/${cue}.`;
-          const matchingAudio = Object.entries(dm.files).filter(([rel]) => rel.startsWith(prefix));
-          if (dm.files[cuesRel] && matchingAudio.length) {
-            await mirrorManifestEntry(cuesRel, dm.files[cuesRel]);
-            const cuesDoc = readEntry(site, dm.files[cuesRel]);
-            const filesObj = {};
-            for (const [aRel, aEntry] of matchingAudio) {
-              await mirrorManifestEntry(aRel, aEntry);
-              filesObj[aRel] = aEntry;
-            }
-            let row = null, cuesheet = null;
-            if (dm.files["episode.json"]) {
-              await mirrorManifestEntry("episode.json", dm.files["episode.json"]);
-              const depEp = readEntry(site, dm.files["episode.json"]);
-              const sEntry = Object.values(depEp.sounds || {}).find((r) => r?._cueName === cue);
-              if (sEntry) {
-                row = sEntry;
-                cuesheet = depEp.cuesheets?.[sEntry._soundCueSheetID] || null;
+    const audioEntry = await withAssetLock(`audio:${path.resolve(site)}:${cue}`, async () => {
+      if (meta?.donorAdvId != null) {
+        const dm = await getDonorManifest(meta.donorAdvId);
+        if (dm?.files) {
+          try {
+            const cuesRel = `audio/${sheet}/cues.json`;
+            const prefix = `audio/${sheet}/${cue}.`;
+            const matchingAudio = Object.entries(dm.files).filter(([rel]) => rel.startsWith(prefix));
+            if (dm.files[cuesRel] && matchingAudio.length) {
+              await mirrorManifestEntry(cuesRel, dm.files[cuesRel]);
+              const cuesDoc = readEntry(site, dm.files[cuesRel]);
+              const filesObj = {};
+              for (const [aRel, aEntry] of matchingAudio) {
+                await mirrorManifestEntry(aRel, aEntry);
+                filesObj[aRel] = aEntry;
               }
+              let row = null, cuesheet = null;
+              if (dm.files["episode.json"]) {
+                await mirrorManifestEntry("episode.json", dm.files["episode.json"]);
+                const depEp = readEntry(site, dm.files["episode.json"]);
+                const sEntry = Object.values(depEp.sounds || {}).find((r) => r?._cueName === cue);
+                if (sEntry) {
+                  row = sEntry;
+                  cuesheet = depEp.cuesheets?.[sEntry._soundCueSheetID] || null;
+                }
+              }
+              return {
+                sheet,
+                cue,
+                kind: isBgm ? "bgm" : "se",
+                soundId: row?._id,
+                sheetId: cuesheet?._id || row?._soundCueSheetID,
+                row,
+                cuesheet,
+                cueEntry: cuesDoc[cue] || null,
+                files: filesObj,
+              };
             }
-            cloudPool.audio[cue] = {
-              sheet,
-              cue,
-              kind: isBgm ? "bgm" : "se",
-              soundId: row?._id,
-              sheetId: cuesheet?._id || row?._soundCueSheetID,
-              row,
-              cuesheet,
-              cueEntry: cuesDoc[cue] || null,
-              files: filesObj,
-            };
-            localCues.set(cue, sheet);
-            materialized.push(cue);
-            poolDirty = true;
-            resolved = true;
+          } catch (e) {
+            logger.warn?.(`cloud-site: donor audio ${cue} fallback (${e.message})`);
           }
-        } catch (e) {
-          logger.warn?.(`cloud-site: donor audio ${cue} fallback (${e.message})`);
         }
       }
-    }
-    if (!resolved) {
       try {
         const audioUrl = `${cleanAssets}/${encodeURIComponent(lang)}/Cri/Sound/${sheet}/${cue}.m4a`;
         const m4aBytes = await fetchRemoteBytes(audioUrl, fetchOpts);
         const m4aEntry = writeAsset(site, m4aBytes, "m4a");
         const cueEntry = probeM4aCue(m4aBytes, cue, isBgm);
-        cloudPool.audio[cue] = {
+        return {
           sheet,
           cue,
           kind: isBgm ? "bgm" : "se",
           cueEntry,
           files: { [`audio/${sheet}/${cue}.m4a`]: m4aEntry },
         };
-        localCues.set(cue, sheet);
-        materialized.push(cue);
-        poolDirty = true;
       } catch (e) {
         logger.warn?.(`cloud-site: could not materialize audio ${cue}: ${e.message}`);
+        return null;
       }
+    });
+    if (audioEntry) {
+      pendingAudio[cue] = audioEntry;
+      localCues.set(cue, sheet);
+      materialized.push(cue);
+      poolDirty = true;
     }
   }
 
   if (poolDirty) {
-    cloudPool.updatedAt = new Date().toISOString();
-    writeSafeRelFile(site, "cloud-pool.json", Buffer.from(JSON.stringify(cloudPool, null, 2)));
+    await withSiteIndexLock(site, () => {
+      const poolPath = path.join(site, "cloud-pool.json");
+      let latest = cloudPool;
+      if (fs.existsSync(poolPath)) {
+        try {
+          const prev = JSON.parse(fs.readFileSync(poolPath, "utf8"));
+          if (prev && typeof prev === "object") {
+            latest = {
+              format: "ournotes.cloud-pool/1",
+              updatedAt: prev.updatedAt || "",
+              stages: { ...(prev.stages || {}) },
+              audio: { ...(prev.audio || {}) },
+            };
+          }
+        } catch { /* merge into current */ }
+      }
+      Object.assign(latest.stages, pendingStages);
+      Object.assign(latest.audio, pendingAudio);
+      latest.updatedAt = new Date().toISOString();
+      writeSafeRelFile(site, "cloud-pool.json", Buffer.from(JSON.stringify(latest, null, 2)));
+    });
   }
 
   // 4. Frames / PostEffects / Effects / Stills / Transitions via targeted donors
@@ -629,7 +684,7 @@ export const materializeSiteStoryAssets = async ({
     collectDonors(req.effects, cc.donors?.effects);
     collectDonors(req.stills, cc.donors?.stills);
     collectDonors(req.transitions, cc.donors?.transitions);
-    const fxRes = await ensureOfficialAssetBundles({
+    const fxRes = await withSiteIndexLock(site, () => ensureOfficialAssetBundles({
       site,
       baseUrl: cleanStorage,
       targets: {
@@ -644,7 +699,7 @@ export const materializeSiteStoryAssets = async ({
       timeoutMs,
       allowPrivateUrl,
       proxyUrl,
-    });
+    }));
     if (fxRes?.cached?.length) materialized.push(...fxRes.cached);
   }
 

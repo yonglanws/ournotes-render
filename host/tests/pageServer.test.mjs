@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { sdfTexels } from "../../src/story/browser-font.js";
-import { createPageServer } from "../render/pageServer.js";
+import { clearFontRoutesCache, createPageServer } from "../render/pageServer.js";
 import { quietLogger, tmpDir } from "./helpers.mjs";
 
 test("the page server serves the base site, the overlay, and package modules only", async () => {
@@ -112,6 +112,64 @@ test("pageServer serves bundled webfonts cleanly, blocks traversal, and override
     const soft = sdfTexels(new Uint8Array([0, 192, 255]), 3, 1, 1, 2);
     assert.ok(soft[1] < solid[1] && soft[1] > 128, "partial alpha refines SDF ramp smoothly");
   } finally {
+    await server.close();
+  }
+});
+
+test("pageServer caches font routes, sets immutable cache headers on static assets, and streams frames via onFrame", async () => {
+  clearFontRoutesCache();
+  const site = tmpDir("ournotes-page-cache-site-");
+  const fontsDir = tmpDir("ournotes-page-cache-fonts-");
+  const output = tmpDir("ournotes-page-cache-out-");
+  fs.mkdirSync(path.join(site, "assets"), { recursive: true });
+  fs.writeFileSync(path.join(site, "assets", "abc.json"), '{"cached":true}');
+  fs.writeFileSync(path.join(fontsDir, "NotoSansCJKsc-Regular.woff2"), Buffer.from("wOF2v1"));
+  const server = await createPageServer({ site, files: new Map(), core: "", fontsDir, outputDir: output,
+                                          logger: quietLogger() });
+  try {
+    // Delete the font file on disk and spin up a second server for the same site+fontsDir: fontRoutes cache is reused.
+    fs.unlinkSync(path.join(fontsDir, "NotoSansCJKsc-Regular.woff2"));
+    const server2 = await createPageServer({ site, files: new Map(), core: "", fontsDir, outputDir: output,
+                                             logger: quietLogger() });
+    try {
+      const css2 = await fetch(`${server2.url}/fonts.css`);
+      assert.match(await css2.text(), /NotoSansCJKsc-Regular\.woff2/);
+    } finally {
+      await server2.close();
+    }
+
+    const pageRes = await fetch(`${server.url}/page.html`);
+    assert.equal(pageRes.headers.get("cache-control"), "no-store");
+    const renderRes = await fetch(`${server.url}/render.html`);
+    assert.equal(renderRes.headers.get("cache-control"), "no-store");
+    const srcRes = await fetch(`${server.url}/src/story/session.js`);
+    assert.match(srcRes.headers.get("cache-control") || "", /immutable/);
+    const assetRes = await fetch(`${server.url}/site/assets/abc.json`);
+    assert.match(assetRes.headers.get("cache-control") || "", /immutable/);
+
+    const streamed = [];
+    const job = server.createJob({ jobId: "job-pipe-hook" }, {
+      onFrame: async (n, buf) => { streamed.push([n, buf.length]); },
+      onPrepareCues: async (cues) => cues.filter((c) => c.soundId !== "1").map((c) => c.soundId),
+    });
+    const jobJsonRes = await fetch(`${server.url}/job/job-pipe-hook.json`);
+    assert.equal(jobJsonRes.headers.get("cache-control"), "no-store");
+
+    const frame = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+    const postFrame = await fetch(`${server.url}/job/job-pipe-hook/frame`, {
+      method: "POST", headers: { "content-type": "image/jpeg", "x-frame": "0" }, body: frame,
+    });
+    assert.equal(postFrame.status, 200);
+    assert.deepEqual(streamed, [[0, frame.length]]);
+    assert.equal(fs.existsSync(job.framesDir), false, "zero frame JPEG disk writes when onFrame is active");
+
+    const prep = await (await fetch(`${server.url}/job/job-pipe-hook/cues-prepare`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cues: [{ soundId: "1", ext: "m4a", sourcePath: "audio/a.m4a" }, { soundId: "2", ext: "wav", sourcePath: "audio/b.wav" }] }),
+    })).json();
+    assert.deepEqual(prep.missing, ["2"]);
+  } finally {
+    clearFontRoutesCache();
     await server.close();
   }
 });

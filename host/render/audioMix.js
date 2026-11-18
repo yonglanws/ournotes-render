@@ -30,7 +30,22 @@ const loopPoints = (cue, duration) => {
   return end > start && start >= 0 ? { start, end: Math.min(end, duration) } : { start: 0, end: duration };
 };
 
-export const mixAudio = async ({ report, cuesDir, sampleRate = 48000, signal = null, logger = console }) => {
+const mapLimit = async (items, limit, fn, signal) => {
+  if (!items.length) return [];
+  let next = 0;
+  const count = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: count }, async () => {
+    for (;;) {
+      if (signal?.aborted) throw signal.reason || new Error("aborted");
+      const idx = next++;
+      if (idx >= items.length) return;
+      await fn(items[idx]);
+    }
+  }));
+};
+
+export const mixAudio = async ({ report, cuesDir, predecoded = null, sampleRate = 48000, signal = null,
+                                 logger = console }) => {
   const events = report.events || [];
   const plays = events.filter((e) => e.type === "play");
   if (!plays.length) return null;
@@ -41,21 +56,40 @@ export const mixAudio = async ({ report, cuesDir, sampleRate = 48000, signal = n
   const decoded = new Map();
 
   const load = async (soundId) => {
-    const cue = report.cues?.[String(soundId)];
-    if (!cue) return null;
-    if (decoded.has(soundId)) return decoded.get(soundId);
-    const file = path.join(cuesDir, cue.file);
-    if (!fs.existsSync(file)) { decoded.set(soundId, null); return null; }
+    const key = String(soundId);
+    if (decoded.has(key)) return decoded.get(key);
+    const cue = report.cues?.[key];
+    if (!cue) { decoded.set(key, null); return null; }
+    if (predecoded && predecoded.has(key)) {
+      try {
+        const pcm = await predecoded.get(key);
+        const val = pcm ? { ...pcm, cue } : null;
+        decoded.set(key, val);
+        return val;
+      } catch (e) {
+        logger.warn?.(`audio: cannot decode ${cue.file}: ${e.message}`);
+        decoded.set(key, null);
+        return null;
+      }
+    }
+    const file = cue.hostFile && fs.existsSync(cue.hostFile) ? cue.hostFile : path.join(cuesDir, cue.file);
+    if (!fs.existsSync(file)) { decoded.set(key, null); return null; }
     try {
       const pcm = await decodePcm(file, { sampleRate, signal });
-      decoded.set(soundId, { ...pcm, cue });
-      return decoded.get(soundId);
+      const val = { ...pcm, cue };
+      decoded.set(key, val);
+      return val;
     } catch (e) {
+      if (signal?.aborted) throw signal.reason || e;
       logger.warn?.(`audio: cannot decode ${cue.file}: ${e.message}`);
-      decoded.set(soundId, null);
+      decoded.set(key, null);
       return null;
     }
   };
+
+  // Decode unique cue waveforms upfront with bounded concurrency (4) instead of serially inside the mix loop.
+  const uniqueIds = [...new Set(plays.map((p) => String(p.soundId)))];
+  await mapLimit(uniqueIds, 4, (id) => load(id), signal);
 
   let mixed = 0;
   for (const play of plays) {
@@ -71,7 +105,8 @@ export const mixAudio = async ({ report, cuesDir, sampleRate = 48000, signal = n
     const stop = stopOf(events, play.id, play.t);
     const startFrame = Math.round(playT * sampleRate);
     if (startFrame >= total) continue;
-    const gain = (Number(play.volume) || 1) * busGain(play);
+    const rawVol = play.volume === undefined || play.volume === null || play.volume === "" ? 1 : Number(play.volume);
+    const gain = (Number.isFinite(rawVol) ? Math.max(0, rawVol) : 1) * busGain(play);
     const fadeIn = play.isAutoCrossFade || play.forceFadeIn ? Math.max(0, Number(play.crossFade) || 0) : 0;
     const stopOffset = stop ? Math.max(0, Number(stop.offsetSeconds) || 0) : 0;
     const fadeOut = stop && stop.fadeOut ? Math.max(0, Number(stop.dur) || 0) : 0;

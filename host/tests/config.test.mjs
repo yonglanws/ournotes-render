@@ -194,3 +194,22 @@ test("an unknown tts.provider is reported and falls back to gpt-sovits", () => {
   assert.equal(cfg.tts.provider, "gpt-sovits");
   assert.ok(cfg.issues.warnings.some((w) => w.path === "tts.provider" && /irodori/.test(w.message)));
 });
+
+test("video.captureMode defaults to auto, accepts webcodecs/pipe, and warns on unknown values", () => {
+  const def = loadConfig({ file: path.join(tmpDir(), "missing.yaml") });
+  assert.equal(def.video.captureMode, "auto");
+
+  for (const mode of ["pipe", "webcodecs", "auto"]) {
+    const file = path.join(tmpDir(), "config.yaml");
+    fs.writeFileSync(file, `video: { captureMode: ${mode} }`);
+    const cfg = loadConfig({ file });
+    assert.equal(cfg.video.captureMode, mode);
+    assert.equal(cfg.issues.warnings.some((w) => w.path === "video.captureMode"), false);
+  }
+
+  const badFile = path.join(tmpDir(), "config.yaml");
+  fs.writeFileSync(badFile, "video: { captureMode: raw }");
+  const badCfg = loadConfig({ file: badFile });
+  assert.equal(badCfg.video.captureMode, "auto");
+  assert.ok(badCfg.issues.warnings.some((w) => w.path === "video.captureMode"));
+});

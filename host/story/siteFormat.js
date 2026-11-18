@@ -150,10 +150,32 @@ export class SiteFormatCatalog {
     this.logger = logger;
     this.kind = "site-format";
     this._bases = null;
+    this._basesSig = "";
   }
 
-  bases() {
-    if (this._bases) return this._bases;
+  invalidate() {
+    this._bases = null;
+    this._basesSig = "";
+  }
+
+  _currentBasesSig() {
+    const indexPath = path.join(this.dir, "stories.json");
+    let indexSig = "missing";
+    try {
+      const st = fs.statSync(indexPath);
+      indexSig = `${st.mtimeMs}:${st.size}`;
+    } catch { /* no stories.json */ }
+    let dirSig = "missing";
+    try {
+      const st = fs.statSync(path.join(this.dir, "stories"));
+      dirSig = `${st.mtimeMs}`;
+    } catch { /* no stories dir */ }
+    return `${indexSig}|${dirSig}`;
+  }
+
+  bases({ refresh = false } = {}) {
+    const sig = this._currentBasesSig();
+    if (!refresh && this._bases && this._basesSig === sig) return this._bases;
     let index = null;
     try {
       index = JSON.parse(fs.readFileSync(path.join(this.dir, "stories.json"), "utf8"));
@@ -178,11 +200,12 @@ export class SiteFormatCatalog {
         languages: Array.isArray(entry.languages) ? entry.languages : [],
       }))
       .sort((a, b) => String(a.manifest).localeCompare(String(b.manifest), "en", { numeric: true }));
+    this._basesSig = sig;
     return this._bases;
   }
 
-  pickBase(requested = "") {
-    const bases = this.bases();
+  pickBase(requested = "", { refresh = false } = {}) {
+    const bases = this.bases({ refresh });
     if (!bases.length) throw new Error("the site-format site has no complete story manifest");
     if (requested) {
       const found = bases.find((b) => b.manifest === requested || b.id === requested ||
@@ -203,8 +226,8 @@ export class SiteFormatCatalog {
     return bases[0].manifest;
   }
 
-  async catalog({ manifest = "" } = {}) {
-    const baseRel = this.pickBase(manifest);
+  async catalog({ manifest = "", refresh = false } = {}) {
+    const baseRel = this.pickBase(manifest, { refresh });
     return catalogFromSite(this.dir, baseRel, this.language, { personas: this.personas });
   }
 

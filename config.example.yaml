@@ -185,6 +185,7 @@ video:
   crf: 20                    # x264 CRF（越小越清晰）
   preset: veryfast
   encoder: auto              # auto | nvidia | amd | intel | libx264
+  captureMode: auto          # auto | webcodecs | pipe（auto 仅在验证硬件编码快速可用时启用 WebCodecs，否则走 image2pipe）
   audioBitrate: 192k
   maxDurationSec: 600        # 单条视频最大游戏时长
   audioSampleRate: 48000

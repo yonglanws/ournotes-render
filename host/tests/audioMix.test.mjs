@@ -157,3 +157,64 @@ test("ffmpeg buildEncodeTail sets BT.709 color tags and config render presets ch
   assert.equal(bestCfg.video.height, 886);
   assert.equal(bestCfg.video.jpegQuality, 98);
 });
+
+test("mixAudio respects volume=0 muted cues instead of falling back to volume 1", async () => {
+  const dir = tmpDir(), cues = path.join(dir, "cues");
+  fs.mkdirSync(cues);
+  cue(path.join(cues, "1.wav"), { freq: 440, seconds: 1 });
+  const mutedOnly = {
+    frames: 30, fps: 30,
+    events: [
+      { type: "play", t: 0, id: 1, soundId: 1, startSec: 0, loop: false, speed: 1, category: 2,
+        cueCategories: ["Voice"], volume: 0 },
+    ],
+    cues: { "1": { file: "1.wav", sampleRate: 48000, samples: 48000, channels: 1, categories: ["Voice"] } },
+  };
+  const outMuted = await mixAudio({ report: mutedOnly, cuesDir: cues, sampleRate: 48000, logger: quietLogger() });
+  assert.equal(outMuted, null, "lone volume: 0 cue produces no audio track instead of playing at full volume");
+
+  // Mix a muted loud cue alongside a silent audible cue to confirm 0 sample contribution.
+  sineWav(path.join(cues, "2.wav"), { freq: 0, amp: 0, seconds: 1 });
+  const mixed = {
+    frames: 30, fps: 30,
+    events: [
+      { type: "play", t: 0, id: 1, soundId: 1, startSec: 0, loop: false, speed: 1, category: 2,
+        cueCategories: ["Voice"], volume: 0 },
+      { type: "play", t: 0, id: 2, soundId: 2, startSec: 0, loop: false, speed: 1, category: 2,
+        cueCategories: ["Voice"], volume: 1 },
+    ],
+    cues: {
+      "1": { file: "1.wav", sampleRate: 48000, samples: 48000, channels: 1, categories: ["Voice"] },
+      "2": { file: "2.wav", sampleRate: 48000, samples: 48000, channels: 1, categories: ["Voice"] },
+    },
+  };
+  const out = await mixAudio({ report: mixed, cuesDir: cues, sampleRate: 48000, logger: quietLogger() });
+  assert.ok(out);
+  assert.equal(out.mixed, 1);
+  const b = fs.readFileSync(out.file);
+  let maxSample = 0;
+  for (let i = 44; i + 1 < b.length; i += 2) {
+    maxSample = Math.max(maxSample, Math.abs(b.readInt16LE(i)));
+  }
+  assert.equal(maxSample, 0, "volume: 0 cue must contribute zero amplitude");
+});
+
+test("mixAudio reuses predecoded PCM promises without re-reading missing disk files", async () => {
+  const dir = tmpDir(), cues = path.join(dir, "cues");
+  fs.mkdirSync(cues);
+  const predecoded = new Map([
+    ["9", Promise.resolve({ samples: new Float32Array(48000 * 2).fill(0.25), frames: 48000, sampleRate: 48000, channels: 2 })],
+  ]);
+  const report = {
+    frames: 30, fps: 30,
+    events: [
+      { type: "play", t: 0, id: 1, soundId: 9, startSec: 0, loop: false, speed: 1, category: 2,
+        cueCategories: ["Voice"], volume: 1 },
+    ],
+    cues: { "9": { file: "nonexistent.wav", sampleRate: 48000, samples: 48000, channels: 2, categories: ["Voice"] } },
+  };
+  const out = await mixAudio({ report, cuesDir: cues, predecoded, sampleRate: 48000, logger: quietLogger() });
+  assert.ok(out && out.mixed === 1);
+  const b = fs.readFileSync(out.file);
+  assert.ok(b.readInt16LE(44) > 7000);
+});

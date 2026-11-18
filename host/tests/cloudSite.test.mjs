@@ -491,3 +491,38 @@ test("assertOfficialRemoteUrl allows Clash TUN Fake-IP for trusted official host
   await assert.doesNotReject(() =>
     assertOfficialRemoteUrl("http://127.0.0.1:8080/models.json", { allowPrivateUrl: true }));
 });
+
+test("materializeSiteStoryAssets coalesces concurrent downloads via per-asset lock and preserves cloud-pool entries", async () => {
+  const stage42 = tinyVp8lWebp(640, 360);
+  const stage43 = tinyVp8lWebp(800, 450);
+  const hits = new Map();
+  const srv = http.createServer(async (req, res) => {
+    const clean = req.url.split("?")[0];
+    hits.set(clean, (hits.get(clean) || 0) + 1);
+    await new Promise((r) => setTimeout(r, 30));
+    if (clean.includes("adv_bkg_stage_000042")) { res.writeHead(200); res.end(stage42); return; }
+    if (clean.includes("adv_bkg_stage_000043")) { res.writeHead(200); res.end(stage43); return; }
+    res.writeHead(404);
+    res.end("not found");
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const { port } = srv.address();
+  const site = tmpDir("ournotes-cloud-lock-");
+  fs.mkdirSync(path.join(site, "stories"), { recursive: true });
+  fs.mkdirSync(path.join(site, "assets"), { recursive: true });
+  const baseUrl = `http://127.0.0.1:${port}/assets`;
+  try {
+    const scriptA = { beats: [{ scene: "adv_bkg_stage_000042" }] };
+    const scriptB = { beats: [{ scene: "adv_bkg_stage_000042" }, { scene: "adv_bkg_stage_000043" }] };
+    await Promise.all([
+      materializeSiteStoryAssets({ site, script: scriptA, language: "zh-Hans", storageBaseUrl: baseUrl, assetBaseUrl: baseUrl, allowPrivateUrl: true, logger: quietLogger() }),
+      materializeSiteStoryAssets({ site, script: scriptB, language: "zh-Hans", storageBaseUrl: baseUrl, assetBaseUrl: baseUrl, allowPrivateUrl: true, logger: quietLogger() }),
+    ]);
+    const hit42 = [...hits.entries()].find(([k]) => k.includes("adv_bkg_stage_000042"))?.[1] || 0;
+    assert.equal(hit42, 1, "concurrent requests for the same asset coalesce to one download");
+    const pool = JSON.parse(fs.readFileSync(path.join(site, "cloud-pool.json"), "utf8"));
+    assert.ok(pool.stages.adv_bkg_stage_000042 && pool.stages.adv_bkg_stage_000043, "serialized pool merge preserves all concurrent additions");
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+});

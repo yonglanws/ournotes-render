@@ -132,9 +132,10 @@ export class LLMClient {
     if (effort) body.reasoning_effort = effort;
     const headers = { "content-type": "application/json", accept: "application/json" };
     if (this.config.apiKey) headers.authorization = `Bearer ${this.config.apiKey}`;
-    let response;
+    let response, text;
     try {
       response = await fetch(this.url, { method: "POST", headers, body: JSON.stringify(body), signal: controller.signal });
+      text = await response.text();
     } catch (e) {
       if (controller.signal.aborted) throw controller.signal.reason || e;
       throw new LLMError(`LLM connection failed: ${e.message}`, { retryable: true });
@@ -142,7 +143,6 @@ export class LLMClient {
       clearTimeout(timer);
       opts.signal?.removeEventListener?.("abort", onAbort);
     }
-    const text = await response.text();
     if (!response.ok) {
       // Some gateways reject response_format; one retry without it is done by the caller's json fallback.
       const retryable = response.status === 408 || response.status === 409 || response.status === 429 || response.status >= 500;

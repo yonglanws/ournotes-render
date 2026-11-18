@@ -81,6 +81,7 @@ export class Pipeline {
     // Serialize that short step even when queue.concurrency > 1, so two renders cannot lose one story or pick the
     // same advId. TTS and rendering still overlap across jobs.
     this._siteWrite = Promise.resolve();
+    this._ephemeralAdvSeq = 0;
     this.logger = logger;
   }
 
@@ -133,8 +134,7 @@ export class Pipeline {
       history: historyOf(request),
       pipeline: pipelineOf(request),
       targetMinutes: targetMinutesOf(request, this.config, mode),
-      maxLines: request.maxLines != null
-        ? Math.max(1, Math.min(300, Math.round(Number(request.maxLines) || 120))) : undefined,
+      maxLines: maxLinesOf(request, this.config.story?.maxLines),
       tts: request.tts !== false,
     };
     if (!req.prompt && !req.script) throw new PipelineError("prompt or script is required", { status: 400, code: "bad_request" });
@@ -185,16 +185,16 @@ export class Pipeline {
 
     progress("compiling", 0.57, "把剧本编译到站点");
     const siteDir = this.catalog.dir || this.config.paths.siteFormat;
+    if (this.catalog.materializeAssets) {
+      await this.catalog.materializeAssets({
+        script: doc || script,
+        language: script.language || catalog.language,
+        allowPrivateUrl: this.config.security?.allowPrivateServiceEndpoints === true,
+        logger: this.logger,
+      });
+    }
     let advId = 0;
     const built = await this._withSiteWrite(async () => {
-      if (this.catalog.materializeAssets) {
-        await this.catalog.materializeAssets({
-          script: doc || script,
-          language: script.language || catalog.language,
-          allowPrivateUrl: this.config.security.allowPrivateServiceEndpoints === true,
-          logger: this.logger,
-        });
-      }
       // `catalog.bases()` is language-filtered and cached for the process lifetime, so it cannot be the only source
       // of used ids: a story written earlier by this process (or one in another language) would be overwritten.
       const used = new Set();
@@ -211,7 +211,8 @@ export class Pipeline {
           if (m) used.add(m[1]);
         }
       } catch { /* no index or a partial one */ }
-      advId = 900000 + (Date.now() % 100000);
+      this._ephemeralAdvSeq = (this._ephemeralAdvSeq + 1) % 100000;
+      advId = 900000 + ((Date.now() + this._ephemeralAdvSeq) % 100000);
       while (used.has(String(advId)) || fs.existsSync(path.join(siteDir, "stories", `${advId}.json`))) advId++;
       return buildSiteStory({
         site: siteDir,
@@ -221,6 +222,8 @@ export class Pipeline {
         language: script.language || catalog.language,
         title: script.title || req.title,
         voices,
+        writeManifest: false,
+        updateIndex: false,
       });
     });
     if (built.errors?.length)

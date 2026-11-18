@@ -246,3 +246,101 @@ test("site index writes are serialized across concurrent jobs", async () => {
   assert.deepEqual(await Promise.all([first, second]), ["a", "b"]);
   assert.deepEqual(order, ["a:start", "a:end", "b:start", "b:end"]);
 });
+
+test("site-format pipeline validates maxLines >= 2, runs materializeAssets outside _withSiteWrite, and does not pollute stories.json", async () => {
+  const output = tmpDir();
+  const siteDir = tmpDir("ournotes-site-nopollute-");
+  fs.mkdirSync(path.join(siteDir, "stories"), { recursive: true });
+  fs.mkdirSync(path.join(siteDir, "models"), { recursive: true });
+  const zlib = await import("node:zlib");
+  const crypto = await import("node:crypto");
+  const putGz = (data) => {
+    const bytes = Buffer.from(JSON.stringify(data));
+    const sha = crypto.createHash("sha256").update(bytes).digest("hex");
+    const gz = zlib.gzipSync(bytes);
+    fs.mkdirSync(path.join(siteDir, "assets"), { recursive: true });
+    const rel = `assets/${sha}.json.gz`;
+    fs.writeFileSync(path.join(siteDir, rel), gz);
+    return { asset: rel, size: bytes.length, stored: gz.length };
+  };
+  const sceneE = putGz({ stages: { "adv_bkg_stage_000010": { nodes: [] } } });
+  const storyE = putGz({ models: { tomori: "adv_live2d_tomori_001_live_01" } });
+  const epE = putGz({ advId: 100, commands: [{ cmd: "Stage", TargetAssetName: "adv_bkg_stage_000010" }], text: {}, sounds: {}, cuesheets: {} });
+  const fontsE = putGz({ texts: {}, textures: {}, materials: {}, materialKeywords: {} });
+  const uiE = putGz({ transitions: {}, textures: {} });
+  fs.writeFileSync(path.join(siteDir, "stories", "100.json"), JSON.stringify({
+    format: "ournotes.story-manifest/2", advId: 100, language: "ja",
+    files: { "scene.json": sceneE, "story.json": storyE, "episode.json": epE },
+    languages: { ja: { files: { "ui/fonts.json": fontsE, "ui/ui.json": uiE } } },
+  }));
+  const initialIndex = JSON.stringify({
+    format: "ournotes.stories/1",
+    stories: [{ id: "100", advId: 100, manifest: "stories/100.json", languages: ["ja"], titles: { ja: "Base" } }],
+  });
+  fs.writeFileSync(path.join(siteDir, "stories.json"), initialIndex);
+  const modelPrefab = putGz({ nodes: [{ components: [{ class: "Live2DCharacter", _motionList: ["idle01_C"], _expressionList: ["idle01"], DefaultMotionName: "idle01_C", DefaultExpressionName: "idle01" }] }] });
+  fs.writeFileSync(path.join(siteDir, "models", "adv_live2d_tomori_001_live_01.json"), JSON.stringify({
+    key: "tomori", files: { "tomori.prefab.json": modelPrefab },
+  }));
+
+  let materializeEntered = false;
+  let siteWriteRanDuringMaterialize = false;
+  let releaseMaterialize;
+  const materializeGate = new Promise((r) => { releaseMaterialize = r; });
+
+  const siteCatalog = {
+    kind: "site-format",
+    dir: siteDir,
+    async catalog() {
+      return {
+        manifest: "stories/100.json", language: "ja", languages: ["ja"],
+        stages: [{ id: "adv_bkg_stage_000010", caption: "" }], music: [], sounds: [],
+        models: [{ id: "adv_live2d_tomori_001_live_01", name: "高松灯", character: "高松灯", key: "tomori",
+                   motions: ["idle01_C"], expressions: ["idle01"], defaultMotion: "idle01_C", defaultExpression: "idle01", actionsKnown: true }],
+      };
+    },
+    async materializeAssets() {
+      materializeEntered = true;
+      await materializeGate;
+    },
+  };
+  const pipeline = new Pipeline({
+    config: configFor(output),
+    catalog: siteCatalog,
+    llm: null, tts: null,
+    renderer: {
+      async render({ story }) {
+        assert.ok(story.manifest && story.manifestPath);
+        const file = path.join(output, "site-job.mp4");
+        fs.writeFileSync(file, "video");
+        return { output: file, report: { frames: 30, ended: true, seconds: 1 }, duration: 1, audio: null, pageErrors: [] };
+      },
+    },
+    logger: quietLogger(),
+  });
+
+  await assert.rejects(
+    () => pipeline.run({ prompt: "hi", maxLines: 1 }, { signal: null, jobId: "bad-site-max", progress: () => {} }),
+    (e) => e.status === 400 && e.code === "bad_request" && /at least 2/.test(e.message));
+
+  const siteScript = {
+    format: "ournotes.story-script/1", base: "stories/100.json", language: "ja", title: "NoPollute",
+    cast: { a: { model: "adv_live2d_tomori_001_live_01", name: "高松灯" } },
+    beats: [{ scene: "adv_bkg_stage_000010", positions: { a: "center" } }, { say: "a", text: "こんにちは。" }],
+  };
+  const jobPromise = pipeline.run({ script: siteScript, tts: false }, { signal: null, jobId: "site-job", progress: () => {} });
+  let earlyErr = null;
+  jobPromise.catch((e) => { earlyErr = e; });
+  while (!materializeEntered && !earlyErr) await new Promise((r) => setTimeout(r, 5));
+  if (earlyErr) throw earlyErr;
+  try {
+    await pipeline._withSiteWrite(async () => { siteWriteRanDuringMaterialize = true; });
+    assert.equal(siteWriteRanDuringMaterialize, true, "materializeAssets must not hold _withSiteWrite lock");
+  } finally {
+    releaseMaterialize();
+  }
+  const res = await jobPromise;
+  assert.equal(res.success, true);
+  assert.equal(fs.readFileSync(path.join(siteDir, "stories.json"), "utf8"), initialIndex, "stories.json must remain unpolluted");
+  assert.deepEqual(fs.readdirSync(path.join(siteDir, "stories")), ["100.json"], "ephemeral manifest not left in stories/");
+});

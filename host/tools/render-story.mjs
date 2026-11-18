@@ -118,14 +118,19 @@ const main = async () => {
   console.log(`video ${cfg.video.width}x${cfg.video.height} @ ${cfg.video.fps} fps, core ${cfg.render.core || "(none)"}` +
               (cfg.render.motionsync ? `, motionsync ${cfg.render.motionsync}` : ""));
   const started = Date.now();
-  const result = await renderer.render({
-    story: { manifest, manifestPath: o.story.replace(/\\/g, "/"), files: new Map(), language, siteEngine: true },
-    jobId,
-    signal: null,
-    onProgress: (stage, progress, message) => {
-      if (message) console.log(`  [${stage}] ${message}${progress != null ? ` (${Math.round(progress * 100)}%)` : ""}`);
-    },
-  });
+  let result;
+  try {
+    result = await renderer.render({
+      story: { manifest, manifestPath: o.story.replace(/\\/g, "/"), files: new Map(), language, siteEngine: true },
+      jobId,
+      signal: null,
+      onProgress: (stage, progress, message) => {
+        if (message) console.log(`  [${stage}] ${message}${progress != null ? ` (${Math.round(progress * 100)}%)` : ""}`);
+      },
+    });
+  } finally {
+    await renderer.close();
+  }
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
   console.log("");
   console.log(`video: ${result.output}`);
