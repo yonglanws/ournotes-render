@@ -6,7 +6,7 @@ import { StoryData } from "/src/story/data.js";
 import { MISSING_CUE } from "/src/engine/audio.js";
 import { RecordingAudio } from "./recording-audio.js";
 import { StorySession } from "/src/story/session.js";
-import { collectDiscreteLayerParams, fadeCharacterMotion } from "/src/live2d/motion.js";
+import { applyRenderSessionPatches } from "./sitePatches.js";
 import { postWithRetry } from "/host/render/fetchRetry.js";
 import { StreamingMp4Muxer } from "/host/render/mp4Muxer.js";
 
@@ -594,19 +594,6 @@ const createGlContext = (width, height, warmState = null) => {
   return { canvas, gl };
 };
 
-const makePcmRmsAnalyzer = (src) => ({
-  isAvailable: true,
-  getOpenInfo() {
-    const sr = src.sampleRate || 48000;
-    const buf = src.latest(Math.max(1, Math.round(sr * 0.04)));
-    if (!buf || !buf.length) return { openY: 0 };
-    let sum = 0;
-    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
-    const rms = Math.sqrt(sum / buf.length);
-    return { openY: rms > 0.004 ? Math.min(1, rms * 4) : 0 };
-  },
-});
-
 export const run = async (job, warmState = null) => {
   if (job.kind === "smoke") return runSmoke(job);
   const t0 = performance.now();
@@ -657,6 +644,7 @@ export const run = async (job, warmState = null) => {
     : (resolve, loop, { assets }) => new RecordingAudio(resolve, loop, { assets, sounds: true });
   const Session = engine ? engine.session.StorySession : StorySession;
   let sessionRef = null;
+  let sitePatchSession = null;
   let currentTalkLength = 12;
   let cancelHostActions = null;
   // The site engine (0.1.8) has no HostActions of its own: the host runs a line's timed actions on its clock here.
@@ -736,10 +724,11 @@ export const run = async (job, warmState = null) => {
     run().catch(() => { /* the session ended or a model went away */ });
   };
   const s = await Session.create(gl, store, {
-    lang: job.lang || undefined, auto: true, autoplay: true, voice: true, sound: true, seed: job.seed || 1,
+    lang: job.lang || undefined, auto: true, autoplay: !siteEngine, voice: true, sound: true, seed: job.seed || 1,
     hideAutoIcon: true,
     width, height, audio: audioFactory, ...(uiFactory ? { ui: uiFactory } : {}),
     onCommand: (c) => {
+      sitePatchSession?.onCommand?.(c);
       // The player calls this when the row actually starts, with the story clock at that moment. This is the
       // timeline the frame audit cuts against: no host-side duration model, only what the player did.
       if (c && Number.isInteger(c.i) && c.i >= 0) {
@@ -764,88 +753,17 @@ export const run = async (job, warmState = null) => {
                                 speaker: e.speaker, text: e.text }),
   });
   sessionRef = s;
-  if (s.characters) {
-    for (const ch of s.characters.values()) {
-      if (!ch || ch.discreteLayerParams) continue;
-      ch.discreteLayerParams = collectDiscreteLayerParams(ch.params);
-      ch._fade = function _fadePatched() { return fadeCharacterMotion(this, this.discreteLayerParams); };
-    }
-  }
-  if (siteEngine && s.ui) {
-    // siteEngine (ournotes-player-site) does not read hideAutoIcon or defer opening ShowTitle past FadeIn.
-    for (const w of s.ui.windows || []) {
-      const talk = w?.talk;
-      if (!talk) continue;
-      if (talk.p?.autoIcon) s.ui.setActive(talk.p.autoIcon, false);
-      if (typeof talk._showAutoIcon === "function") {
-        talk._showAutoIcon = () => {
-          if (talk.p?.autoIcon) s.ui.setActive(talk.p.autoIcon, false);
-          talk._setAutoModeFlag(true);
-        };
-      }
-    }
-    let activeInitFade = null;
-    if (typeof s.ui.fadeIn === "function" && typeof s.ui.showTitle === "function") {
-      const origFadeIn = s.ui.fadeIn.bind(s.ui);
-      const origShowTitle = s.ui.showTitle.bind(s.ui);
-      let firstTitle = true;
-      s.ui.fadeIn = (...args) => {
-        const p = origFadeIn(...args);
-        activeInitFade = p;
-        return p;
-      };
-      s.ui.showTitle = async (...args) => {
-        if (firstTitle) {
-          firstTitle = false;
-          await Promise.resolve();
-          if (activeInitFade) {
-            try { await activeInitFade; } finally { activeInitFade = null; }
-          }
-        }
-        return origShowTitle(...args);
-      };
-    }
-  }
-  const crilips = s.ctx?.story?.crilips ?? s.story?.crilips;
-  if (siteEngine && s.characters && !crilips) {
-    for (const ch of s.characters.values()) {
-      if (!ch || ch.isMotionSyncEnabled !== false) continue;
-      const origSetAnalyzer = ch.setLipsAnalyzer.bind(ch);
-      const origSetEnabled = ch.setLipSyncEnabled.bind(ch);
-      let needsPseudo = false;
-      ch.setLipsAnalyzer = (analyzer) => {
-        if (!analyzer) {
-          needsPseudo = false;
-          return origSetAnalyzer(null);
-        }
-        if (typeof analyzer.getOpenInfo === "function") {
-          needsPseudo = false;
-          return origSetAnalyzer(analyzer);
-        }
-        if (analyzer.hasPcm && typeof analyzer.latest === "function") {
-          needsPseudo = false;
-          return origSetAnalyzer(makePcmRmsAnalyzer(analyzer));
-        }
-        needsPseudo = true;
-        origSetAnalyzer(null);
-        if (ch.isLipSyncEnabled) ch.startTimedPseudoLipSync(currentTalkLength, s.speed ? s.speed / 10 : 1, 1);
-      };
-      ch.setLipSyncEnabled = (flag, usePseudo = false) => {
-        origSetEnabled(flag, usePseudo);
-        if (flag && !usePseudo && needsPseudo) {
-          ch.startTimedPseudoLipSync(currentTalkLength, s.speed ? s.speed / 10 : 1, 1);
-        } else if (!flag) {
-          needsPseudo = false;
-          ch.stopTimedPseudoLipSync();
-        }
-      };
-    }
-  }
+  sitePatchSession = applyRenderSessionPatches(s, {
+    siteEngine,
+    getTalkLength: () => currentTalkLength,
+  });
+  if (!s.started && typeof s.play === "function") s.play();
   const audio = s.audio;
   let cues;
   try {
     cues = await cuesPromise;
   } catch (e) {
+    sitePatchSession?.cancel?.();
     try { await s.dispose(); } catch { /* ignore */ }
     if (audio && typeof audio.close === "function") { try { await audio.close(); } catch { /* already closed */ } }
     throw e;
@@ -887,6 +805,7 @@ export const run = async (job, warmState = null) => {
     throw e;
   } finally {
     if (cancelHostActions) cancelHostActions();
+    sitePatchSession?.cancel?.();
     await s.dispose();
     if (audio && typeof audio.close === "function") { try { await audio.close(); } catch { /* already closed */ } }
   }
