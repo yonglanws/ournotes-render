@@ -355,10 +355,31 @@ export class StoryPlayerCore {
     await ctx.ui.fadeInLetterBox();
     if (this.cancelled) return this._stop(this.stopReason);
     this._observeCharacterMotions();
-    if (ctx.titleTextId) ctx.ui.showTitle(ctx.localize(ctx.titleTextId)).catch((e) => this.fail(e));   // ShowTitle
     this.execute({ i: -1, cmd: "TalkWindow", TargetName: "UIDefaultTalkWindow" });   // PlayInitialCommands
-    // PlayCommands
-    for (const [i, r] of P._initializeEpisodes.entries()) await this.execute(advRow(r, `init${i}`));
+    // PlayCommands: sync opening title display with any initial FadeIn curtain so the title does not hover over black.
+    let initFade = null;
+    const origFadeIn = ctx.ui.fadeIn;
+    if (typeof origFadeIn === "function") {
+      ctx.ui.fadeIn = (...args) => {
+        const p = origFadeIn.apply(ctx.ui, args);
+        initFade = p;
+        return p;
+      };
+    }
+    try {
+      for (const [i, r] of P._initializeEpisodes.entries()) await this.execute(advRow(r, `init${i}`));
+    } finally {
+      if (typeof origFadeIn === "function") ctx.ui.fadeIn = origFadeIn;
+    }
+    if (ctx.titleTextId) {
+      const showTitle = () => {
+        if (!this.cancelled && this.stopReason === null) {
+          ctx.ui.showTitle(ctx.localize(ctx.titleTextId)).catch((e) => this.fail(e));   // ShowTitle
+        }
+      };
+      if (initFade) Promise.resolve(initFade).then(showTitle, () => {});
+      else showTitle();
+    }
     const rows = this.episode.commands;
     this.setCurrentEpisodeListIndex(0);
     while (this.currentEpisodeListIndex < rows.length) {

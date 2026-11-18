@@ -4,7 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { buildTtsProduct, injectVoices } from "../render/compile.js";
 import {
-  GptSovitsClient, IrodoriClient, VoiceBook, createTtsClient, isJapaneseSpeechText, synthesizeStory,
+  GptSovitsClient, IrodoriClient, VoiceBook, createTtsClient, isJapaneseSpeechText, smoothEmotions, synthesizeStory,
 } from "../tts/tts.js";
 import { quietLogger, sineWav, tmpDir } from "./helpers.mjs";
 
@@ -388,4 +388,22 @@ test("TTS clients enforce timeout while reading a stalled response.arrayBuffer()
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("smoothEmotions damps A-B-A single-beat timbre jitter while keeping genuine emotional peaks", () => {
+  const lines = [
+    { castId: "a", voiceName: "灯", speakerName: "灯", text: "……そうだね。" },
+    { castId: "b", voiceName: "爱音", speakerName: "爱音", text: "うん！" },
+    { castId: "a", voiceName: "灯", speakerName: "灯", text: "練習を続けよう。" },
+    { castId: "a", voiceName: "灯", speakerName: "灯", text: "明日は大丈夫。" },
+    { castId: "a", voiceName: "灯", speakerName: "灯", text: "えっ、本当に！？" },
+    { castId: "a", voiceName: "灯", speakerName: "灯", text: "……よかった。" },
+  ];
+  const raw = ["日常平静", "开心喜悦", "开心喜悦", "日常平静", "焦急紧张", "低落犹豫"];
+  const smoothed = smoothEmotions(lines, raw);
+  // Line 2 ("練習を続けよう。") has no !/? and sits between two "日常平静" beats from speaker a -> smoothed.
+  assert.equal(smoothed[2], "日常平静");
+  // Line 4 ("えっ、本当に！？") has sharp !/? and line 5 transitions to another emotion -> preserved.
+  assert.equal(smoothed[4], "焦急紧张");
+  assert.equal(smoothed[5], "低落犹豫");
 });

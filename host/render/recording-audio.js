@@ -1,7 +1,6 @@
 // The story session's audio manager for a visual-only render: SilentAudio keeps the game-time timing (a line waits
 // for its voice's cue length, a BGM loops until stopped) and this subclass records every play/stop so the host can
 // rebuild the real audio track later. No WebAudio is used, so the render is not tied to wall-clock playback.
-import { SOUND_CATEGORY } from "../../src/engine/audio.js";
 import { SilentAudio } from "../../src/story/silent-audio.js";
 
 export class RecordingAudio extends SilentAudio {
@@ -9,6 +8,25 @@ export class RecordingAudio extends SilentAudio {
     super(resolve, loop, opts);
     this.events = [];
     this._meta = new Map();
+    this._lastVolumes = new Map();
+  }
+
+  _recordVolume(name) {
+    const key = String(name || "");
+    const volume = this.getVolume(name);
+    if (this._lastVolumes.get(key) === volume) return;
+    this._lastVolumes.set(key, volume);
+    this.events.push({ type: "volume", t: this.loop.time, category: key, volume });
+  }
+
+  changeVolume(name, v) {
+    super.changeVolume(name, v);
+    this._recordVolume(name);
+  }
+
+  restoreVolume(name) {
+    super.restoreVolume(name);
+    this._recordVolume(name);
   }
 
   _cue(soundId) {
@@ -38,18 +56,12 @@ export class RecordingAudio extends SilentAudio {
     return id;
   }
 
-  stop(id, fadeOut = false, dur = 0.3) {
-    const info = this.playing.get(id);
-    if (info) this.events.push({ type: "stop", t: this.loop.time, id, soundId: info.soundId, fadeOut: !!fadeOut, dur });
-    return super.stop(id, fadeOut, dur);
-  }
-
-  stopAll(category, fadeOut = false, dur = 0.3) {
-    for (const info of [...this.playing.values()]) {
-      if (category !== SOUND_CATEGORY.All && info.category !== category) continue;
-      this.events.push({ type: "stop", t: this.loop.time, id: info.id, soundId: info.soundId, fadeOut: !!fadeOut, dur, all: true });
+  // Route stop, stopAll, and SilentAudio.play(isAutoCrossFade) through _stopInfo so automatic BGM swaps record "stop".
+  _stopInfo(info, fadeOut = false, dur = 0.3) {
+    if (info && !info.stopped) {
+      this.events.push({ type: "stop", t: this.loop.time, id: info.id, soundId: info.soundId, fadeOut: !!fadeOut, dur });
     }
-    return super.stopAll(category, fadeOut, dur);
+    return super._stopInfo(info, fadeOut, dur);
   }
 
   _kill(info) {

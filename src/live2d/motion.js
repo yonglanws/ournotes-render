@@ -1,4 +1,72 @@
 import { F } from "../engine/core.js";
+import { clampF, easeSine, hermite } from "./math.js";
+
+// Mutually-exclusive arm-layer and hand-pose visibility parameters must snap discretely on motion transitions
+// instead of cross-fading through 50%/50% semi-transparent double-arm states.
+export const DISCRETE_LAYER_PARAM_RE =
+  /^(?:paramArm[LR]_layer(?:_?\d+)?|hand_[LR]_?\d+|paramArm[LR]Line|ParamRarmGJ|ParamStallON[LR]|ParamJaket[LR]B\d*)$/i;
+
+export const isDiscreteLayerParam = (id) => DISCRETE_LAYER_PARAM_RE.test(String(id || ""));
+
+export const collectDiscreteLayerParams = (params) => {
+  const out = new Set();
+  const ids = params?.ids || [];
+  for (let i = 0; i < ids.length; i++) {
+    if (isDiscreteLayerParam(ids[i])) out.add(i);
+  }
+  return out;
+};
+
+// Shared CubismFadeController.OnLateUpdate (order 100) blend with discrete layer-switch snapping.
+export const fadeCharacterMotion = (ch, discreteParams = ch.discreteLayerParams) => {
+  const t = ch.loop.time, L = ch.layer.list;
+  if (!L.length) return;
+  const last = L[L.length - 1];
+  const e = (x) => F(F(t - x.fadeInStartTime) * x.speed);
+  const el = e(last);
+  let fading = false;
+  if (L.length > 1) {
+    const M = last.motion;
+    for (let j = 0; j < M.pfit.length && !fading; j++)
+      fading = el <= last.fadeInTime || (M.pfit[j] >= 0 && el <= M.pfit[j]);
+  }
+  if (!fading) {
+    for (let j = L.length - 2; j >= 0; j--) if (L[j].endTime < t) L.splice(j, 1);
+    return;
+  }
+  ch.store.restore();
+  const P = ch.params;
+  const discrete = discreteParams || collectDiscreteLayerParams(P);
+  for (const pm of L) {
+    const M = pm.motion;
+    const ep = e(pm);
+    const fi = pm.fadeInTime > 0 ? easeSine(F(ep / pm.fadeInTime)) : 1;
+    const fo = (M.fadeOutTime > 0 && pm.endTime >= 0) ? easeSine(F(F(pm.endTime - t) / M.fadeOutTime)) : 1;
+    const w = F(1 * F(fi * fo));
+    const endArg = F(pm.endTime - ep);
+    for (const [i, c] of M.curveOf) {
+      if (discrete.has(i)) {
+        if (pm === last) {
+          const v = clampF(hermite(c.keys, ep), P.min[i], P.max[i]);
+          P.override(i, v, 1);
+        } else if (!last.motion.curveOf.has(i)) {
+          // A fading-out motion must not leave an extra hand/arm layer active if the incoming motion omits that curve.
+          P.override(i, P.def[i], 1);
+        }
+        continue;
+      }
+      const v = clampF(hermite(c.keys, ep), P.min[i], P.max[i]);
+      const pfit = M.pfit[c.k], pfot = M.pfot[c.k];
+      let wp = w;
+      if (!(pfit < 0 && pfot < 0)) {
+        const wi = pfit >= 0 ? (pfit >= 1.4e-45 ? easeSine(F(ep / pfit)) : 1) : fi;
+        const wo = pfot >= 0 ? ((endArg >= 0 && pfot >= 1.4e-45) ? easeSine(F(endArg / pfot)) : 1) : fo;
+        wp = F(wi * wo);
+      }
+      P.override(i, F(F(F(v - P.value[i]) * wp) + P.value[i]), 1);
+    }
+  }
+};
 
 // Motion data of a model: the Mecanim clips of Live2DCharacter._motionList (what the Animator writes) and the
 // CubismFadeMotionData of CubismFadeController (what the fade blends with).

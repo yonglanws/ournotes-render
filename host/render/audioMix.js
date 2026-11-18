@@ -6,18 +6,32 @@ import { decodePcm, writeWav } from "./ffmpeg.js";
 
 const rateOf = (event) => (Number.isFinite(event.speed) && event.speed > 0 ? event.speed : 1);
 
-const busGain = (event) => {
+const categoryNameOf = (event) => {
   const cats = (event.cueCategories || []).map((c) => String(c));
-  if (cats.includes("Bgm")) return 0.7;
-  if (cats.includes("Se") || cats.includes("Voice")) return 1;
-  return event.category === 0 ? 0.7 : 1;                 // the game's default BGM bus is 0.7
+  if (cats.includes("Bgm")) return "Bgm";
+  if (cats.includes("Se")) return "Se";
+  if (cats.includes("Voice")) return "Voice";
+  return event.category === 0 ? "Bgm" : event.category === 1 ? "Se" : "Voice";
 };
 
-// the stop event that ends play `id`, if any
+const busGain = (event) => (categoryNameOf(event) === "Bgm" ? 0.7 : 1); // the game's default BGM bus is 0.7
+
+const stopEndAt = (e) => e.t + (e.fadeOut ? Math.max(0, Number(e.dur) || 0) : 0) - Math.max(0, Number(e.offsetSeconds) || 0);
+
+// the stop event that ends play `id`, if any (picks the earliest effective cutoff when both fade and hard stop exist)
 const stopOf = (events, id, from) => {
   let best = null;
   for (const e of events) {
     if (e.type !== "stop" || e.id !== id || e.t < from) continue;
+    if (!best || stopEndAt(e) < stopEndAt(best)) best = e;
+  }
+  return best;
+};
+
+const endOf = (events, id, from) => {
+  let best = null;
+  for (const e of events) {
+    if (e.type !== "end" || e.id !== id || e.t < from) continue;
     if (!best || e.t < best.t) best = e;
   }
   return best;
@@ -103,6 +117,15 @@ export const mixAudio = async ({ report, cuesDir, predecoded = null, sampleRate 
     const offsetSec = Math.max(0, Number(play.offsetSeconds) || 0) + (rawT < 0 ? -rawT : 0);
     const startSec = Math.max(0, Number(play.startSec) || 0) + offsetSec * speed;
     const stop = stopOf(events, play.id, play.t);
+    const endEv = !stop && play.loop ? endOf(events, play.id, play.t) : null;
+    const catName = categoryNameOf(play);
+    const volEvents = events.filter((e) => e.type === "volume" && e.category === catName).sort((a, b) => a.t - b.t);
+    let vi = -1;
+    let catVol = 1;
+    while (vi + 1 < volEvents.length && volEvents[vi + 1].t <= playT) {
+      vi++;
+      catVol = Number.isFinite(Number(volEvents[vi].volume)) ? Math.max(0, Number(volEvents[vi].volume)) : 1;
+    }
     const startFrame = Math.round(playT * sampleRate);
     if (startFrame >= total) continue;
     const rawVol = play.volume === undefined || play.volume === null || play.volume === "" ? 1 : Number(play.volume);
@@ -113,6 +136,7 @@ export const mixAudio = async ({ report, cuesDir, predecoded = null, sampleRate 
     const stopAt = stop ? Math.max(0, stop.t + fadeOut - stopOffset) : null;
     let endSec;
     if (stopAt != null) endSec = stopAt;
+    else if (endEv) endSec = Math.max(0, endEv.t - Math.max(0, Number(endEv.offsetSeconds) || 0));
     else if (play.loop) endSec = duration;
     else endSec = Math.min(duration, playT + Math.max(0, cueDuration - startSec) / speed);
     endSec = Math.min(duration, endSec);
@@ -121,6 +145,10 @@ export const mixAudio = async ({ report, cuesDir, predecoded = null, sampleRate 
     let wrote = false;
     for (let i = 0; startFrame + i < endFrame; i++) {
       const t = playT + i / sampleRate;
+      while (vi + 1 < volEvents.length && volEvents[vi + 1].t <= t) {
+        vi++;
+        catVol = Number.isFinite(Number(volEvents[vi].volume)) ? Math.max(0, Number(volEvents[vi].volume)) : 1;
+      }
       let pos = startSec + (i / sampleRate) * speed;
       if (play.loop) {
         if (pos >= loop.end) {
@@ -129,7 +157,7 @@ export const mixAudio = async ({ report, cuesDir, predecoded = null, sampleRate 
           pos = loop.start + ((pos - loop.start) % span);
         }
       } else if (pos >= cueDuration) break;
-      let g = gain;
+      let g = gain * catVol;
       const elapsed = (t - playT) + offsetSec;
       if (fadeIn > 0 && elapsed < fadeIn) g *= elapsed / fadeIn;
       if (fadeOut > 0 && stop) {

@@ -23,6 +23,16 @@ export const CAMERAS = Object.freeze({
   macro: 6,
 });
 
+export const DIST_ZOOM_RATES = Object.freeze([1.0, 1.2, 1.4, 1.8, 2.8, 4.0, 6.0]);
+
+// Extra clearance outside the camera edge so adjacent characters' hair/sleeves (~0.75 world units) do not clip in close-ups.
+export const CLOSE_SAFE_NEIGHBOR_MARGIN = 0.95;
+
+export const closeSafeHalfWidth = (distZoom, zoomMul = 1, zOffset = 0) => {
+  const fov = 39.6 / (distZoom * (zoomMul > 0 ? zoomMul : 1));
+  return (5.5 + zOffset) * Math.tan((fov * Math.PI) / 360) * (13 / 6);
+};
+
 export const FADE_DIRECTIONS = Object.freeze({ out: "FadeOut", in: "FadeIn" });
 export const FADE_RULES = Object.freeze(["0001", "0002", "0003", "0004", "0005"]);
 export const FADE_COLORS = Object.freeze(["#000000", "#FFFFFF"]);

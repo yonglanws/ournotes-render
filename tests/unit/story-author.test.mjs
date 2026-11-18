@@ -296,7 +296,7 @@ test("a scene compiles to the game's rows: stage, music, entrances, focus, capti
     { cmd: "In", TargetName: "b", PositionType: 7, IsNoWait: 1 },
     { cmd: "Focus", PositionType: 5, CameraDistance: 1 },
     { cmd: "Location", AdvTextID: "custom_location_0" },
-    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: -1, ExpressionName: "exp_smile01" },
+    { cmd: "Motion", TargetName: "a", MotionName: "mtn_smile01_L", MotionFadeIn: -1, ExpressionName: "exp_idle01" },
     { cmd: "Talk", AdvTextID: "custom_line_1", TargetName: "a", TargetTextIDs: ["custom_name_a"], TargetTextColors: ["#FFFFFF"] },
     { cmd: "Talk", AdvTextID: "custom_line_2" },
     { cmd: "Expression", TargetName: "a", ExpressionName: "exp_idle01", MotionFadeIn: -1 },
@@ -1378,4 +1378,39 @@ test("left slots compile motions with _L, right slots with _R, and center with _
     ["anon", "mtn_kime01_L"],
     ["soyo", "mtn_serious01_R"],
   ]);
+});
+
+test("omitted expression on later beats resets to defaultExpression instead of leaking a prior expression", () => {
+  const c = compiled(script([
+    { scene: "garden", positions: { a: "left", b: "right" } },
+    { say: "a", text: "One.", motion: "mtn_smile01", expression: "exp_smile01" },
+    { say: "a", text: "Two.", motion: "mtn_nod01" },
+  ]));
+  const rows = strip(c.episode.commands).filter((r) => r.cmd === "Motion" && r.TargetName === "a");
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].ExpressionName, "exp_smile01");
+  assert.equal(rows[1].ExpressionName, "exp_idle01", "omitted expression must reset to defaultExpression");
+});
+
+test("close-up framing nudges nearby neighbors safely outside zoomed edges and restores them on pull-back", () => {
+  const twoShot = compiled(script([
+    { scene: "garden", camera: "middle", positions: { a: "left", b: "right" } },
+    { say: "a", text: "Close.", focus: "a", camera: "close" },
+    { say: "b", text: "Back.", focus: 5, camera: "middle" },
+  ]));
+  const twoMoves = strip(twoShot.episode.commands).filter((r) => r.cmd === "MoveToDirection" && r.TargetName === "b");
+  assert.equal(twoMoves.length, 2);
+  assert.ok(Number(twoMoves[0].Parameter1) > 0.3, `expected outward right nudge, got ${twoMoves[0].Parameter1}`);
+  assert.equal(Number(twoMoves[1].Parameter1), -Number(twoMoves[0].Parameter1), "pull-back restores original slot offset");
+
+  const threeShot = compiled(script([
+    { scene: "garden", camera: "middle", positions: { a: "far-left", c: "center", b: "far-right" } },
+    { say: "c", text: "Center close.", focus: "c", camera: "close" },
+  ], { cast: { a: { model: "m_a", name: "Ann" }, b: { model: "m_b", name: "Bea" }, c: { model: "m_a", name: "Cat" } } }));
+  const threeMoves = strip(threeShot.episode.commands).filter((r) => r.cmd === "MoveToDirection");
+  assert.deepEqual(
+    threeMoves.map((r) => [r.TargetName, Math.sign(Number(r.Parameter1))]),
+    [["a", -1], ["b", 1]],
+    "3-person center close-up nudges both side neighbors outward symmetrically",
+  );
 });

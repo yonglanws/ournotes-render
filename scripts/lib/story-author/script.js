@@ -15,23 +15,26 @@ import { componentClass } from "../../../src/engine/prefab.js";
 import { ADV_COMMAND } from "../../../src/story/interfaces.js";
 import { STORY_LANGUAGES } from "../../../src/story/params.js";
 import {
-  ANGLE_MAX, ANGLE_MIN, BEAT_KEYS, CAMERAS, DEFAULT_OFFICIAL_DURATION, DISSOLVE_DEFAULT, DISSOLVE_MAX,
+  ANGLE_MAX, ANGLE_MIN, BEAT_KEYS, CAMERAS, CLOSE_SAFE_NEIGHBOR_MARGIN, DEFAULT_OFFICIAL_DURATION,
+  DIST_ZOOM_RATES, DISSOLVE_DEFAULT, DISSOLVE_MAX,
   DISSOLVE_MIN, EASES, EASE_MAP, FADE_COLORS, FADE_DIRECTIONS, FADE_RULES, FOCUS_POINT_MAX, FOCUS_POINT_MIN,
   FONT_PRESETS, FRAME_ACTIONS, FRAME_PATTERN, HIDE_TALK_PAUSE_THRESHOLD, KINDS, LOOK_MAX, LOOK_MIN, LOOK_STOP,
-  MAX_ACTIONS, MAX_ACTION_PAUSE, MAX_CAMERA_DURATION, MAX_PAUSE, MOVE_DIRECTIONS, MUSIC_STOP, OFFICIAL_DURATION_MAX,
+  MAX_ACTIONS, MAX_ACTION_PAUSE, MAX_CAMERA_DURATION, MAX_PAUSE, MOVE_DIRECTIONS, OFFICIAL_DURATION_MAX,
+  MUSIC_STOP,
   PAN_MAX, PAN_MIN, PEDESTAL_MAX, PEDESTAL_MIN, POSITIONS, POST_EFFECT_PATTERN, ROLE_MAX, ROLE_MIN,
   SCENE_TRANSITIONS, SCRIPT_FORMAT, SHAKE_POWER_MAX, SHAKE_POWER_MIN, SIDE, SLOT_WORLD_X, STAGE_ENV_TYPES,
   TALK_WINDOWS, TILT_MAX, TILT_MIN, TRACK_MAX, TRACK_MIN, ZOOM_MAX, ZOOM_MIN,
-  clampTrack, easeFor, hasSpokenContent, transitionAssetName,
+  clampTrack, closeSafeHalfWidth, easeFor, hasSpokenContent, transitionAssetName,
 } from "./grammar.js";
 
 export {
-  ANGLE_MAX, ANGLE_MIN, CAMERAS, DEFAULT_OFFICIAL_DURATION, EASES, FADE_COLORS, FADE_DIRECTIONS, FADE_RULES,
+  ANGLE_MAX, ANGLE_MIN, CAMERAS, CLOSE_SAFE_NEIGHBOR_MARGIN, DEFAULT_OFFICIAL_DURATION, DIST_ZOOM_RATES,
+  EASES, FADE_COLORS, FADE_DIRECTIONS, FADE_RULES,
   FOCUS_POINT_MAX, FOCUS_POINT_MIN, FONT_PRESETS, LOOK_MAX, LOOK_MIN, LOOK_STOP, MAX_ACTIONS, MOVE_DIRECTIONS,
   MUSIC_STOP, OFFICIAL_DURATION_MAX, PAN_MAX, PAN_MIN, PEDESTAL_MAX, PEDESTAL_MIN, POSITIONS, ROLE_MAX, ROLE_MIN,
   SCENE_TRANSITIONS, SCRIPT_FORMAT, SHAKE_POWER_MAX, SHAKE_POWER_MIN, SLOT_WORLD_X, STAGE_ENV_TYPES, TALK_WINDOWS,
   TILT_MAX, TILT_MIN, TRACK_MAX, TRACK_MIN, ZOOM_MAX, ZOOM_MIN,
-  clampTrack, easeFor, hasSpokenContent, transitionAssetName,
+  clampTrack, closeSafeHalfWidth, easeFor, hasSpokenContent, transitionAssetName,
 };
 
 // The name of the position nearest `slot` that `occupied` (a set of position values) does not hold, or null when every
@@ -53,7 +56,6 @@ const FOCUS_MOVE = 0.5;                                        // seconds the ca
 const FOCUS_RETURN = 0.5;
 const FOCUS_PAN = 0.5;
 const FOCUS_WORLD_X = Object.freeze({ 1: -2.1, 2: -1.58, 3: -1.05, 4: -0.53, 5: 0, 6: 0.53, 7: 1.05, 8: 1.58, 9: 2.1 });
-const DIST_ZOOM_RATES = Object.freeze([1.0, 1.2, 1.4, 1.8, 2.8, 4.0, 6.0]);
 const BGM_FADE = "1.5";
 const TITLE_ID = "custom_title";
 const CAST_ID = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -1451,7 +1453,6 @@ export const compileScript = (script, site, language) => {
   const motionsOf = (id) => actions[cast.get(id).model].motions;
   const resolvedExpression = (id, explicit = "") => {
     if (explicit) return explicit;
-    if (expression.get(id)) return expression.get(id);
     const a = actions[cast.get(id).model];
     return (a && (a.defaultExpression || a.expressions?.[0])) || "";
   };
@@ -1485,9 +1486,10 @@ export const compileScript = (script, site, language) => {
     row("Character", { TargetName: c.id, TargetAssetName: key.replace(/^Character\/Live2D\//, "") });
   }
 
-  let on = new Map();                                           // cast id -> {cast, slot, stageSlot, offset:{x,y,z}}
+  let on = new Map();                                           // cast id -> {cast, slot, stageSlot, offset:{x,y,z}, closeSafeOffset}
   let scenes = 0, bgm = 0, camera = CAMERAS.middle;
   let lastShot = null;                                          // the distance and focus of the last Focus row
+  let lastCameraMoveDur = 0;
   let talkOpen = false;
   let activeDof = null;
   let activeRole = 0;
@@ -1503,7 +1505,6 @@ export const compileScript = (script, site, language) => {
   const activeGaze = new Map();                                 // cast id -> "Look" | "LookTarget"
   const activeAngles = new Map();                               // cast id -> { z, x }
   const charBrightness = new Map();                             // cast id -> value
-  const expression = new Map();                                 // cast id -> current expression
 
   const closeTalk = (force = false) => {
     if (!talkOpen && !force) return;
@@ -1629,7 +1630,7 @@ export const compileScript = (script, site, language) => {
     if (headTarget && (b.focusTargetHead === true || (b.focusTargetHead !== false && distance >= CAMERAS.close))) {
       fields.TargetName = headTarget;
     }
-    return fields;
+    return { fields, focusCast: headTarget || "" };
   };
   const stagePositionOf = (target, staged) => {
     if (typeof target === "number") return memberAtLogicalSlot(staged, target)?.stageSlot ?? target;
@@ -1644,8 +1645,7 @@ export const compileScript = (script, site, language) => {
     const m = staged.get(id);
     const charX = (SLOT_WORLD_X[m.slot] ?? 0) + m.offset.x;
     const distZoom = DIST_ZOOM_RATES[shot.distance] ?? 1.4;
-    const fov = 39.6 / (distZoom * (shot.zoomMul || 1));
-    const halfWidth = (5.5 + m.offset.z) * Math.tan((fov * Math.PI) / 360) * (13 / 6);
+    const halfWidth = closeSafeHalfWidth(distZoom, shot.zoomMul || 1, m.offset.z);
     return Math.abs(charX - shot.camX) <= 0.7 * halfWidth;
   };
   const camExtras = (b, dur, cmd) => {
@@ -1657,6 +1657,7 @@ export const compileScript = (script, site, language) => {
   };
   const cameraRows = (b, staged, distance, { duration = 0, noWait = false, focusAlways = false, auto = false } = {}) => {
     let move = duration, hasFocusRow = false;
+    lastCameraMoveDur = 0;
     const hasSameBeatTweenOp = b.zoom !== undefined || b.pan !== undefined || b.pedestal !== undefined ||
       (b.track !== undefined && b.trackDuration !== undefined);
     const speakerVisible = b.kind === "say" && b.speaker ? isInFrame(b.speaker, lastShot, staged) : true;
@@ -1674,7 +1675,7 @@ export const compileScript = (script, site, language) => {
     };
     let focusNoWait = noWait;
     if (b.focus || b.camera !== undefined || b.track === undefined || focusAlways) {
-      const fields = focusFields(b, staged, distance);
+      const { fields, focusCast } = focusFields(b, staged, distance);
       if (b.focusDuration !== undefined) move = b.focusDuration;
       else if (b.cameraDuration !== undefined) move = b.cameraDuration;
       else if (auto) move = autoDuration(fields);
@@ -1695,9 +1696,10 @@ export const compileScript = (script, site, language) => {
       const posX = FOCUS_WORLD_X[fields.PositionType] ?? 0;
       const trackX = b.track !== undefined ? clampTrack(b.track, distance) : 0;
       lastShot = {
-        distance, pos: fields.PositionType ?? 0, name: fields.TargetName || "",
+        distance, pos: fields.PositionType ?? 0, name: fields.TargetName || "", focusCast,
         camX: posX + trackX, zoomMul: 1,
       };
+      lastCameraMoveDur = move;
       hasFocusRow = true;
     }
     if (b.track !== undefined) {
@@ -1714,6 +1716,7 @@ export const compileScript = (script, site, language) => {
       });
       if (!hasFocusRow && lastShot) {
         lastShot = { ...lastShot, camX: (FOCUS_WORLD_X[lastShot.pos] ?? 0) + clamped };
+        lastCameraMoveDur = trackMove;
       }
     }
   };
@@ -1865,12 +1868,10 @@ export const compileScript = (script, site, language) => {
         ...extra,
         ...(exp ? { ExpressionName: exp } : {}),
       });
-      expression.set(id, exp);
       return true;
     }
     if (explicitExp) {
       row("Expression", { TargetName: id, ExpressionName: explicitExp, MotionFadeIn: fade });
-      expression.set(id, explicitExp);
     }
     return false;
   };
@@ -1906,6 +1907,34 @@ export const compileScript = (script, site, language) => {
     m.offset.z = roundCoord(m.offset.z + rz);
   };
 
+  // During single-character close-ups (distance >= close), nudge adjacent non-focused characters safely outside
+  // the zoomed viewport edge so their hair and sleeves never clip at frame borders; restore once pulling out.
+  const syncCloseSafeFraming = (staged, shot, dur = 0) => {
+    const focusedId = shot && shot.distance >= CAMERAS.close && shot.focusCast && staged.has(shot.focusCast)
+      ? shot.focusCast : "";
+    const distZoom = shot ? (DIST_ZOOM_RATES[shot.distance] ?? 1.4) : 1.4;
+    const safeZoom = shot ? Math.min(1, shot.zoomMul || 1) : 1;
+    for (const m of staged.values()) {
+      const prevSafe = m.closeSafeOffset || 0;
+      let desired = 0;
+      if (focusedId && m.cast !== focusedId) {
+        const baseX = (SLOT_WORLD_X[m.stageSlot] ?? 0) + m.offset.x - prevSafe;
+        const dx = baseX - shot.camX;
+        const halfW = closeSafeHalfWidth(distZoom, safeZoom, m.offset.z);
+        const minClearance = roundCoord(halfW + CLOSE_SAFE_NEIGHBOR_MARGIN);
+        if (Math.abs(dx) < minClearance) {
+          const dir = dx !== 0 ? Math.sign(dx) : (m.slot >= 5 ? 1 : -1);
+          desired = roundCoord(dir * (minClearance - Math.abs(dx)));
+        }
+      }
+      const delta = roundCoord(desired - prevSafe);
+      if (delta) {
+        emitOffsetMove(m, delta, 0, 0, dur);
+        m.closeSafeOffset = desired;
+      }
+    }
+  };
+
   const emitMove = (mv, fallbackDur = undefined) => {
     if (!mv) return;
     const m = on.get(mv.cast);
@@ -1923,6 +1952,7 @@ export const compileScript = (script, site, language) => {
       });
       m.offset.x = roundCoord(m.offset.x + dx);
       m.slot = mv.to;
+      m.closeSafeOffset = 0;
       return;
     }
     if (mv.dir) {
@@ -1937,6 +1967,7 @@ export const compileScript = (script, site, language) => {
         ...(wait ? {} : { IsNoWait: 1 }),
       });
       m.offset[spec.axis] = roundCoord(m.offset[spec.axis] + spec.sign * amount);
+      if (spec.axis === "x") m.closeSafeOffset = 0;
       return;
     }
     const rx = roundCoord(mv.dx ?? 0), ry = roundCoord(mv.dy ?? 0), rz = roundCoord(mv.dz ?? 0);
@@ -1952,6 +1983,7 @@ export const compileScript = (script, site, language) => {
     m.offset.x = roundCoord(m.offset.x + rx);
     m.offset.y = roundCoord(m.offset.y + ry);
     m.offset.z = roundCoord(m.offset.z + rz);
+    m.closeSafeOffset = 0;
   };
 
   const emitAngle = (ag, fallbackDur = undefined) => {
@@ -2168,8 +2200,7 @@ export const compileScript = (script, site, language) => {
       ...(p.expression ? { ExpressionName: p.expression } : {}),
       ...(b && b.motionFadeIn !== undefined ? { MotionFadeIn: b.motionFadeIn } : {}),
     });
-    expression.set(p.cast, p.expression || "");
-    const member = { cast: p.cast, slot: p.slot, stageSlot: p.slot, offset: { x: 0, y: 0, z: 0 } };
+    const member = { cast: p.cast, slot: p.slot, stageSlot: p.slot, offset: { x: 0, y: 0, z: 0 }, closeSafeOffset: 0 };
     if (p.dx || p.dy || p.dz) emitOffsetMove(member, p.dx ?? 0, p.dy ?? 0, p.dz ?? 0, 0);
     return member;
   };
@@ -2228,7 +2259,9 @@ export const compileScript = (script, site, language) => {
       emitBgm(b);
       for (const p of b.positions) {
         if (dissolve && scenes && on.has(p.cast) && on.get(p.cast).slot === p.slot) {
-          const kept = { ...on.get(p.cast), offset: { x: 0, y: 0, z: 0 } };
+          const prevMember = on.get(p.cast);
+          if (prevMember.closeSafeOffset) emitOffsetMove(prevMember, -prevMember.closeSafeOffset, 0, 0, 0);
+          const kept = { ...prevMember, offset: { x: 0, y: 0, z: 0 }, closeSafeOffset: 0 };
           if (p.motion || p.expression) {
             emitMotionRow(p.cast, p.slot, p.motion, p.expression, motionFade(b), motionWait(b));
           }
@@ -2242,6 +2275,7 @@ export const compileScript = (script, site, language) => {
       lastShot = null;
       cameraRows(b, next, camera, { focusAlways: true });
       officialRows(b, "", dofTargetOf(b, next));
+      syncCloseSafeFraming(next, lastShot, 0);
       emitEffects(b);
       if (scenes && !dissolve) row("FadeIn", { Duration: fadeDur, ...fadeExtras });
       if (b.location.trim()) row("Location", { AdvTextID: textId(`custom_location_${b.index}`, plainText(b.location)) });
@@ -2274,7 +2308,7 @@ export const compileScript = (script, site, language) => {
           next.set(p.cast, enter(p, CAST_FADE, b));
           continue;
         }
-        const cur = { ...on.get(p.cast), offset: { ...on.get(p.cast).offset } };
+        const cur = { ...on.get(p.cast), offset: { ...on.get(p.cast).offset }, closeSafeOffset: 0 };
         const targetDx = roundCoord((SLOT_WORLD_X[p.slot] + (p.dx ?? 0)) - (SLOT_WORLD_X[cur.stageSlot] + cur.offset.x));
         const targetDy = roundCoord((p.dy ?? 0) - cur.offset.y);
         const targetDz = roundCoord((p.dz ?? 0) - cur.offset.z);
@@ -2288,14 +2322,21 @@ export const compileScript = (script, site, language) => {
       if (b.camera !== undefined) camera = b.camera;
       cameraRows(b, next, camera, { duration: FOCUS_MOVE, noWait: true, focusAlways: true });
       officialRows(b, "", dofTargetOf(b, next));
+      syncCloseSafeFraming(next, lastShot, lastCameraMoveDur);
       on = next;
     } else if (b.kind === "say" || b.kind === "narrate") {
       const speaker = b.speaker ? cast.get(b.speaker) : null;
       if (b.camera !== undefined) camera = b.camera;
-      if (b.focus || b.camera !== undefined || b.track !== undefined)
-        cameraRows(b, on, camera, { auto: true, noWait: true });
+      const hasShotAdjust = b.focus || b.camera !== undefined || b.track !== undefined;
+      if (hasShotAdjust) cameraRows(b, on, camera, { auto: true, noWait: true });
       const lookTarget = speaker && on.has(speaker.id) ? speaker.id : "";
       officialRows(b, lookTarget, dofTargetOf(b, on));
+      if (hasShotAdjust || b.zoom !== undefined) {
+        const closeSafeDur = hasShotAdjust
+          ? lastCameraMoveDur
+          : (b.zoomDuration ?? b.cameraDuration ?? b.duration ?? DEFAULT_OFFICIAL_DURATION);
+        syncCloseSafeFraming(on, lastShot, closeSafeDur);
+      }
       emitBgm(b);
       emitEffects(b);
       if (b.move) emitMove(b.move);
@@ -2327,7 +2368,6 @@ export const compileScript = (script, site, language) => {
         } else if (a.expression) {
           action.ExpressionName = a.expression;
         }
-        if (action.ExpressionName) expression.set(id, action.ExpressionName);
         if (a.lookAt && a.lookAt !== LOOK_STOP) {
           const pos = stagePositionOf(a.lookAt, on);
           if (pos) {
@@ -2360,9 +2400,15 @@ export const compileScript = (script, site, language) => {
     } else if (b.kind === "camera") {
       closeTalk();
       if (b.camera !== undefined) camera = b.camera;
-      if (b.camera !== undefined || b.focus || b.track !== undefined)
-        cameraRows(b, on, camera, { auto: true, noWait: true });
+      const hasShotAdjust = b.camera !== undefined || b.focus || b.track !== undefined;
+      if (hasShotAdjust) cameraRows(b, on, camera, { auto: true, noWait: true });
       officialRows(b, "", dofTargetOf(b, on));
+      if (hasShotAdjust || b.zoom !== undefined) {
+        const closeSafeDur = hasShotAdjust
+          ? lastCameraMoveDur
+          : (b.zoomDuration ?? b.cameraDuration ?? b.duration ?? DEFAULT_OFFICIAL_DURATION);
+        syncCloseSafeFraming(on, lastShot, closeSafeDur);
+      }
     } else if (b.kind === "fade") {
       closeTalk();
       const ruleName = transitionAssetName(b.fadeRule);

@@ -160,7 +160,8 @@ export class StorySession {
 
     // the UI; its talk windows and every text the episode shows are checked before the rest loads
     const uiDoc = data.ui;
-    const parts = { assets: store, data, objects, dir: data.fontDir, lang, fonts: data.fonts, language: langDoc };
+    const parts = { assets: store, data, objects, dir: data.fontDir, lang, fonts: data.fonts, language: langDoc,
+                    hideAutoIcon: !!opts.hideAutoIcon };
     const ui = this.ui = checkStoryUI(opts.ui ? opts.ui(gl, loop, parts) : new StoryUI(gl, loop, uiDoc, parts));
     if (Array.isArray(ui.talkWindows)) {
       const names = episode.commands.filter((c) => c.cmd === "TalkWindow" && !c.IgnoreData).map((c) => c.TargetAssetName);

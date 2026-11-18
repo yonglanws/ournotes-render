@@ -246,10 +246,10 @@ const fontsDoc = (koAdjust = null) => ({
   },
   coverage: { characters: CHARS.length, missing: [] },
 });
-const create = ({ mode = 2, lang = "zh-Hant", koAdjust = null, doc = uiDoc(), fonts = fontsDoc(koAdjust), attach = true } = {}) => {
+const create = ({ mode = 2, lang = "zh-Hant", koAdjust = null, doc = uiDoc(), fonts = fontsDoc(koAdjust), attach = true, hideAutoIcon = false } = {}) => {
   const loop = new PlayerLoop(30);
   const resources = uiResources(doc, fonts, { code: lang, mode, lineSpacing: 5 });
-  const ui = new StoryUI(null, loop, resources.doc, resources);
+  const ui = new StoryUI(null, loop, resources.doc, { ...resources, hideAutoIcon });
   if (attach) ui.setTalkWindow("UIDefaultTalkWindow");                  // AdvPlayer PlayInitialCommands
   return { loop, ui, step: async (n = 1) => { for (let i = 0; i < n; i++) await loop.step(); } };
 };
@@ -804,4 +804,16 @@ test("centre talk window: the blur pass runs on the render target while the blur
   ui.hideTalk();
   ui._renderBlur(null, target, 1170, 540);
   assert.equal(calls.length, 1);
+});
+
+test("hideAutoIcon suppresses the spinning autoIcon during export while keeping nextIndicator hidden in auto mode", () => {
+  const normal = create();
+  normal.ui.setAutoMode(true);
+  assert.equal(normal.ui.talk.p.autoIcon.activeSelf, true);
+
+  const exported = create({ hideAutoIcon: true });
+  exported.ui.talk._showTalkNextIndicator();
+  exported.ui.setAutoMode(true);
+  assert.equal(exported.ui.talk.p.autoIcon.activeSelf, false, "autoIcon hidden in headless export");
+  assert.equal(exported.ui.talk.p.nextIndicator.activeSelf, false, "nextIndicator still suppressed in auto mode");
 });

@@ -6,6 +6,7 @@ import { StoryData } from "/src/story/data.js";
 import { MISSING_CUE } from "/src/engine/audio.js";
 import { RecordingAudio } from "./recording-audio.js";
 import { StorySession } from "/src/story/session.js";
+import { collectDiscreteLayerParams, fadeCharacterMotion } from "/src/live2d/motion.js";
 import { postWithRetry } from "/host/render/fetchRetry.js";
 import { StreamingMp4Muxer } from "/host/render/mp4Muxer.js";
 
@@ -736,6 +737,7 @@ export const run = async (job, warmState = null) => {
   };
   const s = await Session.create(gl, store, {
     lang: job.lang || undefined, auto: true, autoplay: true, voice: true, sound: true, seed: job.seed || 1,
+    hideAutoIcon: true,
     width, height, audio: audioFactory, ...(uiFactory ? { ui: uiFactory } : {}),
     onCommand: (c) => {
       // The player calls this when the row actually starts, with the story clock at that moment. This is the
@@ -762,6 +764,48 @@ export const run = async (job, warmState = null) => {
                                 speaker: e.speaker, text: e.text }),
   });
   sessionRef = s;
+  if (s.characters) {
+    for (const ch of s.characters.values()) {
+      if (!ch || ch.discreteLayerParams) continue;
+      ch.discreteLayerParams = collectDiscreteLayerParams(ch.params);
+      ch._fade = function _fadePatched() { return fadeCharacterMotion(this, this.discreteLayerParams); };
+    }
+  }
+  if (siteEngine && s.ui) {
+    // siteEngine (ournotes-player-site) does not read hideAutoIcon or defer opening ShowTitle past FadeIn.
+    for (const w of s.ui.windows || []) {
+      const talk = w?.talk;
+      if (!talk) continue;
+      if (talk.p?.autoIcon) s.ui.setActive(talk.p.autoIcon, false);
+      if (typeof talk._showAutoIcon === "function") {
+        talk._showAutoIcon = () => {
+          if (talk.p?.autoIcon) s.ui.setActive(talk.p.autoIcon, false);
+          talk._setAutoModeFlag(true);
+        };
+      }
+    }
+    let activeInitFade = null;
+    if (typeof s.ui.fadeIn === "function" && typeof s.ui.showTitle === "function") {
+      const origFadeIn = s.ui.fadeIn.bind(s.ui);
+      const origShowTitle = s.ui.showTitle.bind(s.ui);
+      let firstTitle = true;
+      s.ui.fadeIn = (...args) => {
+        const p = origFadeIn(...args);
+        activeInitFade = p;
+        return p;
+      };
+      s.ui.showTitle = async (...args) => {
+        if (firstTitle) {
+          firstTitle = false;
+          await Promise.resolve();
+          if (activeInitFade) {
+            try { await activeInitFade; } finally { activeInitFade = null; }
+          }
+        }
+        return origShowTitle(...args);
+      };
+    }
+  }
   const crilips = s.ctx?.story?.crilips ?? s.story?.crilips;
   if (siteEngine && s.characters && !crilips) {
     for (const ch of s.characters.values()) {

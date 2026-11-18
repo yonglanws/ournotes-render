@@ -175,8 +175,11 @@ export class StoryTalkWindow {
     if (v) this.hideTalkNextIndicator();
     else if (this.p.nextIndicator) this.ui.setActive(this.p.nextIndicator, this._isActiveIndicator);
   }
-  // UIAdvTalkWindow.ShowAutoIcon / HideAutoIcon: the icon (when set), then SetAutoMode
-  _showAutoIcon() { if (this.p.autoIcon) this.ui.setActive(this.p.autoIcon, true); this._setAutoModeFlag(true); }
+  // UIAdvTalkWindow.ShowAutoIcon / HideAutoIcon: the icon (when set and not hidden for export), then SetAutoMode
+  _showAutoIcon() {
+    if (this.p.autoIcon) this.ui.setActive(this.p.autoIcon, !this.ui.hideAutoIcon);
+    this._setAutoModeFlag(true);
+  }
   _hideAutoIcon() { if (this.p.autoIcon) this.ui.setActive(this.p.autoIcon, false); this._setAutoModeFlag(false); }
 
   // AdvTalkView auto-icon flag -> UpdateWindowStatus: ShowAutoIcon / HideAutoIcon

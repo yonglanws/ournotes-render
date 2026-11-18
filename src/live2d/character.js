@@ -5,8 +5,8 @@ import { UnityRandom } from "../engine/random.js";
 import { EASE } from "../engine/tween.js";
 import { CUBISM, CubismModel } from "./cubism.js";
 import { Live2DLipSyncController, lipSyncProfile } from "./lipsync.js";
-import { Live2DParameterStore, Live2DParameters, clampF, easeSine, hermite } from "./math.js";
-import { Live2DClip, Live2DFadeMotion } from "./motion.js";
+import { Live2DParameterStore, Live2DParameters, clampF, easeSine } from "./math.js";
+import { Live2DClip, Live2DFadeMotion, collectDiscreteLayerParams, fadeCharacterMotion } from "./motion.js";
 import { CubismMotionSyncController } from "./motionsync.js";
 import { Live2DParameterLoopController } from "./paramloop.js";
 import { Live2DPhysics } from "./physics.js";
@@ -161,6 +161,7 @@ export class Live2DCharacter {
                              frequency: 0.5 };
 
     this.model = { ignore: false, wasJustEnabled: false, lastTick: -1, didExecute: false, dyn: null };
+    this.discreteLayerParams = collectDiscreteLayerParams(this.params);
     this._initRender(assets, comp("CubismRenderController"));
     this._initMasks();
     this._initGameLayer(rootPath, tagged, fades, ch);
@@ -597,44 +598,9 @@ export class Live2DCharacter {
   }
 
   // CubismFadeController.OnLateUpdate (order 100): while the newest motion fades in, every motion's curves are
-  // blended onto the values restored from the order-150 snapshot of the previous frame
+  // blended onto the values restored from the order-150 snapshot of the previous frame (with discrete layer snap).
   _fade() {
-    const t = this.loop.time, L = this.layer.list;
-    if (!L.length) return;
-    const last = L[L.length - 1];
-    const e = (x) => F(F(t - x.fadeInStartTime) * x.speed);
-    const el = e(last);
-    let fading = false;
-    if (L.length > 1) {
-      const M = last.motion;
-      for (let j = 0; j < M.pfit.length && !fading; j++)
-        fading = el <= last.fadeInTime || (M.pfit[j] >= 0 && el <= M.pfit[j]);
-    }
-    if (!fading) {
-      for (let j = L.length - 2; j >= 0; j--) if (L[j].endTime < t) L.splice(j, 1);
-      return;
-    }
-    this.store.restore();
-    const P = this.params;
-    for (const pm of L) {
-      const M = pm.motion;
-      const ep = e(pm);
-      const fi = pm.fadeInTime > 0 ? easeSine(F(ep / pm.fadeInTime)) : 1;
-      const fo = (M.fadeOutTime > 0 && pm.endTime >= 0) ? easeSine(F(F(pm.endTime - t) / M.fadeOutTime)) : 1;
-      const w = F(1 * F(fi * fo));
-      const endArg = F(pm.endTime - ep);
-      for (const [i, c] of M.curveOf) {
-        const v = clampF(hermite(c.keys, ep), P.min[i], P.max[i]);
-        const pfit = M.pfit[c.k], pfot = M.pfot[c.k];
-        let wp = w;
-        if (!(pfit < 0 && pfot < 0)) {
-          const wi = pfit >= 0 ? (pfit >= 1.4e-45 ? easeSine(F(ep / pfit)) : 1) : fi;
-          const wo = pfot >= 0 ? ((endArg >= 0 && pfot >= 1.4e-45) ? easeSine(F(endArg / pfot)) : 1) : fo;
-          wp = F(wi * wo);
-        }
-        P.override(i, F(F(F(v - P.value[i]) * wp) + P.value[i]), 1);
-      }
-    }
+    fadeCharacterMotion(this, this.discreteLayerParams);
   }
 
   // -------------------------------------------------------------------------------------------------- expressions

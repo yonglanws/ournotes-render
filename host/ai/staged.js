@@ -1418,6 +1418,33 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
   const allowedLineFocus = Math.max(0, cameraBudget.focusChanges - structuralFocus);
   let focusPruned = 0;
   if (lineFocus.length > allowedLineFocus) {
+    const redundantIndices = new Set();
+    let prevShot = { camera: CAMERA_NUMBER.middle, focus: undefined, track: 0 };
+    for (const beat of merged) {
+      const isText = "say" in beat || "narrate" in beat;
+      const effCam = cameraNumber(beat.camera) ?? prevShot.camera;
+      const effFocus = beat.focus !== undefined ? beat.focus : prevShot.focus;
+      const effTrack = beat.track ?? 0;
+      if (!isText) {
+        if (beat.scene !== undefined || beat.positions !== undefined || hasCamera(beat)) {
+          prevShot = {
+            camera: cameraNumber(beat.camera) ?? (beat.scene !== undefined ? CAMERA_NUMBER.middle : prevShot.camera),
+            focus: beat.focus !== undefined ? beat.focus : (beat.scene !== undefined || beat.positions !== undefined ? undefined : prevShot.focus),
+            track: beat.track ?? 0,
+          };
+        }
+        continue;
+      }
+      const idx = lineIndexMap.get(beat);
+      if (idx === undefined) continue;
+      if (effCam === prevShot.camera && effFocus === prevShot.focus && effTrack === prevShot.track &&
+          beat.zoom === undefined && beat.pan === undefined && beat.dof === undefined) {
+        redundantIndices.add(idx);
+      } else {
+        prevShot = { camera: effCam, focus: effFocus, track: effTrack };
+      }
+    }
+
     const units = [];
     const claimed = new Set();
     let openCloses = [];
@@ -1451,25 +1478,41 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
     units.sort((a, b) => a.indices[0] - b.indices[0]);
 
     const keepIndices = new Set();
-    const tryAddUnit = (u) => {
-      const added = u.indices.filter((i) => !keepIndices.has(i));
-      if (keepIndices.size + added.length > allowedLineFocus) return false;
-      for (const i of added) keepIndices.add(i);
-      return true;
-    };
-    const closedUnits = units.filter((u) => !u.unclosed);
-    const seedUnits = evenlySpaced(closedUnits, Math.min(closedUnits.length, allowedLineFocus));
-    for (const u of seedUnits) tryAddUnit(u);
-    if (keepIndices.size < allowedLineFocus) {
-      for (const u of closedUnits) {
-        if (keepIndices.size >= allowedLineFocus) break;
+    const hasPairedCloseUp = units.some((u) => u.isPair);
+    if (lineFocus.length === allowedLineFocus + 1 && hasPairedCloseUp) {
+      if (redundantIndices.size > 0) {
+        const pairedMember = new Set(units.filter((u) => u.isPair).flatMap((u) => u.indices));
+        const dropIdx = [...redundantIndices].find((i) => !pairedMember.has(i)) ?? [...redundantIndices][0];
+        for (let i = 0; i < lineFocus.length; i++) if (i !== dropIdx) keepIndices.add(i);
+      } else {
+        for (let i = 0; i < lineFocus.length; i++) keepIndices.add(i);
+      }
+    } else {
+      const tryAddUnit = (u) => {
+        const added = u.indices.filter((i) => !keepIndices.has(i));
+        if (keepIndices.size + added.length > allowedLineFocus) return false;
+        for (const i of added) keepIndices.add(i);
+        return true;
+      };
+      const isRedundantUnit = (u) => u.indices.every((i) => redundantIndices.has(i));
+      const pairedUnits = units.filter((u) => u.isPair && !isRedundantUnit(u));
+      const singleUnits = units.filter((u) => !u.isPair && !u.unclosed && !isRedundantUnit(u));
+      const unclosedUnits = units.filter((u) => u.unclosed && !isRedundantUnit(u));
+      const fallbackUnits = units.filter(isRedundantUnit);
+
+      for (const u of evenlySpaced(pairedUnits, Math.min(pairedUnits.length, Math.floor(allowedLineFocus / 2) || allowedLineFocus))) {
         tryAddUnit(u);
       }
-    }
-    if (keepIndices.size < allowedLineFocus) {
-      for (const u of units.filter((u) => u.unclosed)) {
+      const remaining = allowedLineFocus - keepIndices.size;
+      if (remaining > 0) {
+        for (const u of evenlySpaced(singleUnits, Math.min(singleUnits.length, remaining))) tryAddUnit(u);
+      }
+      for (const pool of [pairedUnits, singleUnits, unclosedUnits, fallbackUnits]) {
         if (keepIndices.size >= allowedLineFocus) break;
-        tryAddUnit(u);
+        for (const u of pool) {
+          if (keepIndices.size >= allowedLineFocus) break;
+          tryAddUnit(u);
+        }
       }
     }
 
@@ -1481,9 +1524,11 @@ export const mergeStagedScript = ({ plan, dialogue, storyboard, catalog, request
       removed++;
     }
     focusPruned = removed;
-    warnings.push({ code: "focusBudget",
-      message: `换机位 ${lineFocus.length + structuralFocus} 处，超过本场 Focus 预算 ${cameraBudget.focusChanges}；` +
-        `已省略 ${removed} 处 line 镜头，保留的剪辑点成对均匀分布` });
+    if (removed > 0) {
+      warnings.push({ code: "focusBudget",
+        message: `换机位 ${lineFocus.length + structuralFocus} 处，超过本场 Focus 预算 ${cameraBudget.focusChanges}；` +
+          `已省略 ${removed} 处 line 镜头，保留的剪辑点成对均匀分布` });
+    }
   }
   // One gaze channel per beat, and the measured look rate for the scene. "stop" resets are preserved whenever an
   // active gaze precedes them, and do not consume the active gaze budget.

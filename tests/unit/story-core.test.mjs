@@ -60,7 +60,7 @@ const TEXT = { 1: { english: "Hello there" }, 2: { english: "Bye" }, 3: { englis
 const SOUNDS = { 7: { _soundCueSheetID: 1, _cueName: "bgm", _category: 0 }, 8: { _soundCueSheetID: 1, _cueName: "se", _category: 1 } };
 const CUES = { bgm: { sampleRate: 48000, samples: 48000 * 60 }, se: { sampleRate: 48000, samples: 24000 } };
 
-const makeStory = (commands, { auto = true, speed = 10, shortCutIndex = -1 } = {}) => {
+const makeStory = (commands, { auto = true, speed = 10, shortCutIndex = -1, titleTextId = 0 } = {}) => {
   const loop = new PlayerLoop(30), lines = [];
   const log = (m) => lines.push(`${loop.frameCount} ${m}`);
   const ui = checkStoryUI(new TimingUI(loop, log));
@@ -72,7 +72,7 @@ const makeStory = (commands, { auto = true, speed = 10, shortCutIndex = -1 } = {
   const stub = { stopAlwaysUpdate() {}, markUpdateOnce() {} };
   const ctx = createStoryContext({
     loop, camera: null, field: null, background: null, fieldRenderer: null, volume: stub, characters: new StoryCharacters(),
-    stages: new Map(), ui, audio, quality: {}, lang: "en", playbackMode: 0, titleTextId: 0, episode, story: {}, assets,
+    stages: new Map(), ui, audio, quality: {}, lang: "en", playbackMode: 0, titleTextId, episode, story: {}, assets,
     settings: { player: SETTINGS, masterIds: { _unknownCharacterNameTextId: "11000", _splitCharacterNameTextId: "11001" } },
     localize: (id) => (TEXT[id] ? TEXT[id].english : ""), renderer: null, gl: null });
   const trace = [];
@@ -600,4 +600,12 @@ test("Overlay episodes go to the simple player (manifest and session)", async ()
   // the simple session loads: without its talk window data it refuses the story
   await assert.rejects(StorySession.create(null, store),
                        (e) => e instanceof StoryCommandError && /story 5: the simple UI product/.test(e.message));
+});
+
+test("opening showTitle waits for initial FadeIn curtain before revealing the title banner", async () => {
+  const s = makeStory([talk(0, 1)], { titleTextId: 1 });
+  await run(s);
+  const fadeFrame = Number(s.lines.find((l) => l.includes("fadeIn 1")).split(" ")[0]);
+  const titleFrame = Number(s.lines.find((l) => l.includes("title Hello there")).split(" ")[0]);
+  assert.ok(titleFrame >= fadeFrame + 29, `title appeared at frame ${titleFrame}, fadeIn started at ${fadeFrame}`);
 });

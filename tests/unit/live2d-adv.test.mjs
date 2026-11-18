@@ -13,6 +13,7 @@ import { Live2DCharacter } from "../../src/live2d/character.js";
 import { LIP_MODE } from "../../src/live2d/lipsync.js";
 import { Live2DParameterLoopController } from "../../src/live2d/paramloop.js";
 import { Live2DParameterStore, Live2DParameters, easeSine, hermite } from "../../src/live2d/math.js";
+import { Live2DFadeMotion, collectDiscreteLayerParams, fadeCharacterMotion } from "../../src/live2d/motion.js";
 
 const F = Math.fround;
 const IDS = ["ParamAngleX", "ParamBodyAngleX", "ParamEyeLOpen", "ParamEyeROpen", "ParamEyeBallX", "ParamEyeBallY",
@@ -414,4 +415,47 @@ test("mouth controller: ParamMouthOpenY only when it carries CubismMouthParamete
     await steps(3);
     assert.equal(P(ch, "ParamMouthOpenY"), want, String(tags));
   }
+});
+
+test("fadeCharacterMotion snaps discrete arm-layer and hand switches without 50/50 double-arm ghosting", () => {
+  const params = new Live2DParameters({ parameters: {
+    ids: ["paramArmL_layer01", "paramArmL_layer02", "hand_l_0", "hand_l_1", "ParamAngleX"],
+    count: 5,
+    minimumValues: [0, 0, 0, 0, -30],
+    maximumValues: [1, 1, 1, 1, 30],
+    defaultValues: [0, 0, 0, 0, 0],
+    values: Float32Array.from([1, 0, 1, 0, 0]),
+  } });
+  const store = new Live2DParameterStore(params, new Float32Array(0));
+  const prevM = new Live2DFadeMotion(
+    fadeData("mtn_prev", 2, ["paramArmL_layer01", "paramArmL_layer02", "hand_l_0", "ParamAngleX"],
+             [curve(2, 1, 1), curve(2, 0, 0), curve(2, 1, 1), curve(2, 0, 0)]),
+    params,
+  );
+  const nextM = new Live2DFadeMotion(
+    fadeData("mtn_next", 2, ["paramArmL_layer01", "paramArmL_layer02", "hand_l_1", "ParamAngleX"],
+             [curve(2, 0, 0), curve(2, 1, 1), curve(2, 1, 1), curve(2, 20, 20)]),
+    params,
+  );
+  const discrete = collectDiscreteLayerParams(params);
+  const fakeCh = {
+    loop: { time: 0.5 },
+    params,
+    store,
+    discreteLayerParams: discrete,
+    layer: { list: [
+      { motion: prevM, fadeInStartTime: 0, fadeInTime: 1, startTime: 0, endTime: 1.5, speed: 1 },
+      { motion: nextM, fadeInStartTime: 0, fadeInTime: 1, startTime: 0, endTime: 2, speed: 1 },
+    ] },
+  };
+  store.save();
+  fadeCharacterMotion(fakeCh, discrete);
+  // Halfway through the 1.0s fade: arm layers & hand toggles snapped discretely (no 0.5/0.5 overlap)
+  assert.equal(params.value[params.idx("paramArmL_layer01")], 0);
+  assert.equal(params.value[params.idx("paramArmL_layer02")], 1);
+  assert.equal(params.value[params.idx("hand_l_0")], 0, "omitted discrete hand resets to default 0");
+  assert.equal(params.value[params.idx("hand_l_1")], 1);
+  // Continuous head rotation still blends smoothly
+  const ax = params.value[params.idx("ParamAngleX")];
+  assert.ok(ax > 5 && ax < 15, `expected smooth midpoint blend for ParamAngleX, got ${ax}`);
 });

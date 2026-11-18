@@ -467,9 +467,10 @@ const judgeEmotions = async ({ llm, lines, labels, signal, logger }) => {
   const list = labels.map((x) => `- ${x}`).join("\n");
   const numbered = lines.map((l, i) => `${i + 1}. ${l.speakerName || l.castId}：${String(l.text).replace(/\n/g, " ")}`).join("\n");
   const system = [
-    "你是配音情绪标注员。为每一句台词挑选最合适的语气标签。",
+    "你是配音情绪标注员。请结合整段对话的上下文与情绪走向，为每一句台词挑选最合适的语气标签。",
     "只能从下面的标签中选：", list,
     "情绪平淡、普通陈述时，选列表里最接近“平静”的标签，不要过度表演。",
+    "注意同一角色相邻台词的情绪连贯性：若语境没有明显转折，同一角色的连续台词应保持相近语气，避免无故单句跳变导致音色断裂。",
     '只输出一个 JSON 对象：{"emotions":["标签1","标签2",...]}，数量必须与台词条数一致。',
   ].join("\n");
   try {
@@ -487,6 +488,37 @@ const judgeEmotions = async ({ llm, lines, labels, signal, logger }) => {
     logger.warn?.(`TTS emotion judge failed, using normal voices: ${e.message}`);
     return empty;
   }
+};
+
+const SHARP_EMOTION_RE = /[!！?？]/;
+
+// Smooth single-beat A-B-A same-speaker emotion flickers while preserving genuine exclamation/question turns
+// and sustained multi-line emotional shifts.
+export const smoothEmotions = (lines, emotions, { voiceBook } = {}) => {
+  const out = Array.isArray(emotions) ? emotions.slice() : [];
+  if (!Array.isArray(lines) || out.length !== lines.length || lines.length < 3) return out;
+  const speakerKey = (l) => String(l?.castId || l?.voiceName || l?.speakerName || "");
+  const supportsLabel = (l, label) => {
+    if (!label || !voiceBook?.labelsFor) return true;
+    return voiceBook.labelsFor(l.voiceName, l.speakerName, l.castId).includes(label);
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const key = speakerKey(lines[i]);
+    if (!key) continue;
+    let prev = -1, next = -1;
+    for (let j = i - 1; j >= 0 && i - j <= 3; j--) {
+      if (speakerKey(lines[j]) === key) { prev = j; break; }
+    }
+    for (let j = i + 1; j < lines.length && j - i <= 3; j++) {
+      if (speakerKey(lines[j]) === key) { next = j; break; }
+    }
+    if (prev < 0 || next < 0) continue;
+    const anchor = out[prev];
+    if (!anchor || anchor !== out[next] || out[i] === anchor) continue;
+    if (out[i] && SHARP_EMOTION_RE.test(String(lines[i]?.text || ""))) continue;
+    if (supportsLabel(lines[i], anchor)) out[i] = anchor;
+  }
+  return out;
 };
 
 // Lines that speak: [{beat, castId, speakerName, text, modelId, voiceName}]
@@ -554,7 +586,11 @@ export const synthesizeStory = async ({ script, catalog, config, client, voiceBo
     }
     if (labels.length) {
       onProgress(0, "判断台词情绪");
-      emotions = await judgeEmotions({ llm, lines, labels, signal, logger });
+      emotions = smoothEmotions(
+        lines,
+        await judgeEmotions({ llm, lines, labels, signal, logger }),
+        { voiceBook },
+      );
       const judged = emotions.filter(Boolean).length;
       logger.info?.(`TTS emotion: ${judged}/${lines.length} line(s) labelled`);
     }

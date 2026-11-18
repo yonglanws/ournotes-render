@@ -61,12 +61,13 @@ const MENU_PARTS = {
 export class StoryUI {
   // gl may be null for layout, geometry and timing. doc is story.ui; data supplies the selected language's font
   // product, and objects resolves the shared prefab, material, texture and animation objects.
-  constructor(gl, loop, doc, { assets, data, objects }) {
+  constructor(gl, loop, doc, { assets, data, objects, hideAutoIcon = false }) {
     const fonts = data.fonts, language = doc.language, lang = data.language;
     if (!fonts?.texts) throw new UIError("StoryUI: font product missing");
     if (typeof language?.mode !== "number") throw new UIError("StoryUI: language missing");
     this.gl = gl; this.loop = loop; this.doc = doc; this.fonts = fonts; this.language = language; this.lang = lang;
     this.assets = assets; this.data = data; this.objects = objects; this.dir = data.fontDir;
+    this.hideAutoIcon = !!hideAutoIcon;
     this.dotween = objects.mono(doc.settings.dotween);
     this._materialInstances = new Map();
     this._spriteAssets = new Map();
@@ -192,7 +193,10 @@ export class StoryUI {
       const find = (rel) => (rel ? node.find(rel) : null);
       const part = { window: node };
       for (const [k, rel] of Object.entries(refs)) part[k] = find(rel);
-      const host = { part, loop, tweens: this.tweens, language, dotween: this.dotween, setActive: (n, v) => this.setActive(n, v),
+      const self = this;
+      const host = { part, loop, tweens: this.tweens, language, dotween: this.dotween,
+                     get hideAutoIcon() { return self.hideAutoIcon; },
+                     setActive: (n, v) => this.setActive(n, v),
                      setTextColor: (n, c) => this._setTextColor(n, c), setTextOutlineColor: (n, c) => this._setOutlineColor(n, c) };
       this.windows.set(node.name, { name: node.name, node, part, talk: new StoryTalkWindow(host) });
     }

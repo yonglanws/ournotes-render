@@ -4,7 +4,10 @@ import path from "node:path";
 import { test } from "node:test";
 import { loadConfig } from "../config.js";
 import { mixAudio } from "../render/audioMix.js";
+import { RecordingAudio } from "../render/recording-audio.js";
 import { BT709_FLAGS, buildEncodeTail, configureFfmpeg, probeWav } from "../render/ffmpeg.js";
+import { PlayerLoop } from "../../src/engine/loop.js";
+import { SOUND_CATEGORY } from "../../src/engine/audio.js";
 import { quietLogger, sineWav, tmpDir } from "./helpers.mjs";
 
 configureFfmpeg();
@@ -217,4 +220,56 @@ test("mixAudio reuses predecoded PCM promises without re-reading missing disk fi
   assert.ok(out && out.mixed === 1);
   const b = fs.readFileSync(out.file);
   assert.ok(b.readInt16LE(44) > 7000);
+});
+
+test("RecordingAudio records stop on isAutoCrossFade BGM swap so mixAudio ends old BGM instead of overlapping", async () => {
+  const dir = tmpDir(), cues = path.join(dir, "cues");
+  fs.mkdirSync(cues);
+  cue(path.join(cues, "1.wav"), { freq: 440, seconds: 1 });
+  cue(path.join(cues, "2.wav"), { freq: 0, seconds: 1 }); // silent second BGM so any bleed from BGM 1 is measurable
+  const loop = new PlayerLoop(30);
+  const defs = {
+    1: { sheet: "bgm", cue: "bgm1", category: SOUND_CATEGORY.Bgm, meta: { file: "1.wav", sampleRate: 48000, samples: 48000, channels: 1, categories: ["Bgm"] } },
+    2: { sheet: "bgm", cue: "bgm2", category: SOUND_CATEGORY.Bgm, meta: { file: "2.wav", sampleRate: 48000, samples: 48000, channels: 1, categories: ["Bgm"] } },
+  };
+  const audio = new RecordingAudio((id) => defs[id], loop, { assets: null, sounds: true });
+  audio.play(1, { isAutoCrossFade: true, crossFade: 0.2, loop: true });
+  for (let i = 0; i < 30; i++) { await loop.step(); audio.update(); }
+  audio.play(2, { isAutoCrossFade: true, crossFade: 0.2, loop: true });
+  for (let i = 0; i < 60; i++) { await loop.step(); audio.update(); }
+
+  assert.ok(audio.events.some((e) => e.type === "stop" && e.soundId === 1 && e.fadeOut), "crossfade stop emitted for old BGM");
+  const report = {
+    frames: 90, fps: 30,
+    events: audio.events,
+    cues: { "1": defs[1].meta, "2": defs[2].meta },
+  };
+  const out = await mixAudio({ report, cuesDir: cues, sampleRate: 48000, logger: quietLogger() });
+  assert.ok(out);
+  const b = fs.readFileSync(out.file);
+  let tailPeak = 0;
+  for (let f = Math.round(1.5 * 48000); f < 3 * 48000; f++) {
+    tailPeak = Math.max(tailPeak, Math.abs(b.readInt16LE(44 + f * 4)));
+  }
+  assert.equal(tailPeak, 0, "old looped BGM must be silent after crossfade completes");
+});
+
+test("mixAudio applies category volume events (SoundVolume)", async () => {
+  const dir = tmpDir(), cues = path.join(dir, "cues");
+  fs.mkdirSync(cues);
+  cue(path.join(cues, "1.wav"), { freq: 440, seconds: 2 });
+  const report = {
+    frames: 60, fps: 30,
+    events: [
+      { type: "play", t: 0, id: 1, soundId: 1, startSec: 0, loop: false, speed: 1, category: 0, cueCategories: ["Bgm"], volume: 1 },
+      { type: "volume", t: 1, category: "Bgm", volume: 0 },
+    ],
+    cues: { "1": { file: "1.wav", sampleRate: 48000, samples: 96000, channels: 1, categories: ["Bgm"] } },
+  };
+  const out = await mixAudio({ report, cuesDir: cues, sampleRate: 48000, logger: quietLogger() });
+  assert.ok(out);
+  const b = fs.readFileSync(out.file);
+  let tailPeak = 0;
+  for (let f = 48000; f < 96000; f++) tailPeak = Math.max(tailPeak, Math.abs(b.readInt16LE(44 + f * 4)));
+  assert.equal(tailPeak, 0, "Bgm muted by volume=0 event after t=1s");
 });

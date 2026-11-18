@@ -1347,3 +1347,30 @@ test("spreadPositions places 4/5-person casts without clipping, recovers out of 
   assert.equal(beats[4].trackDuration, undefined, "colliding trackDuration stripped alongside pan");
   assert.ok(warnings.some((w) => w.code === "closeRecover"));
 });
+
+test("focusBudget preserves distinct paired dramatic close-ups at budget + 1 while still trimming redundant cuts", () => {
+  const budget = directionBudgetFor(20);
+  const targetLineCuts = budget.focusChanges - 1; // 1 structural scene beat
+  const dialogue = { title: "雨", lines: Array.from({ length: 20 }, (_, i) =>
+    ({ id: `l${i + 1}`, say: i % 2 ? "b" : "a", text: `第${i + 1}句台词的内容。` })) };
+  // Build targetLineCuts + 1 distinct non-redundant line focus changes containing a paired dramatic close-up.
+  const lineDirects = new Map([
+    [1, { focus: "a", camera: "near" }],
+    [3, { focus: "b", camera: "near" }],
+    [5, { focus: "a", camera: "close" }],
+    [6, { focus: 5, camera: "middle" }],
+  ]);
+  let idx = 8;
+  while (lineDirects.size < targetLineCuts + 1 && idx < 20) {
+    lineDirects.set(idx, { focus: idx % 2 ? "b" : "a", camera: "near" });
+    idx += 1;
+  }
+  const storyboard = { beats: [
+    { scene: "stage_a", camera: "middle", positions: { a: "far-left", b: "far-right" } },
+    ...dialogue.lines.map((l, i) => ({ line: l.id, ...(lineDirects.get(i) || {}) })),
+  ] };
+  const merged = mergeStagedScript({ plan: PLAN2, dialogue, storyboard, catalog: CATALOG, request: {}, config: STAGED_CONFIG });
+  const closeBeat = merged.doc.beats.find((b) => b.camera === "close");
+  assert.ok(closeBeat, "paired dramatic close-up is not dropped when total is merely budget + 1");
+  assert.ok(!merged.warnings.some((w) => w.code === "focusBudget"));
+});
