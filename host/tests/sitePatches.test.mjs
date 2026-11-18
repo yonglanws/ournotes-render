@@ -262,6 +262,17 @@ test("siteEngine title coordinator cancel resolves pending showTitle without dra
   await p;
   assert.equal(settled, true);
   assert.equal(log.some((e) => e.includes("showTitle")), false);
+
+  // Calling cancel() before showTitle() also suppresses opening title draw.
+  const log2 = [];
+  const ui2 = makeSiteMockUi(loop, log2);
+  const patches2 = applyRenderSessionPatches(
+    { ui: ui2, characters: new StoryCharacters(), disposed: false, ended: false },
+    { siteEngine: true },
+  );
+  patches2.cancel();
+  await ui2.showTitle("Suppressed Title");
+  assert.equal(log2.some((e) => e.includes("showTitle")), false);
 });
 
 test("patchSessionCharacters patches existing and late-added characters and guards missing params", () => {
@@ -324,6 +335,11 @@ test("patchSessionCharacters patches existing and late-added characters and guar
   late.setLipsAnalyzer({ hasPcm: false });
   late.setLipSyncEnabled(true, false);
   assert.deepEqual(late.pseudoStarted, { len: 18, speed: 1.5 });
+
+  // Rejected duplicate characters.add() does not patch the rejected instance.
+  const duplicate = makeChar();
+  assert.equal(characters.add("honami", 0, duplicate), false);
+  assert.equal(duplicate._fade(), "unpatched");
 
   // Character inserted directly into internal map is still picked up on onCommand()
   const bypassed = makeChar();

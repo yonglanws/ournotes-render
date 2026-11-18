@@ -96,8 +96,10 @@ export const patchSessionCharacters = (session, opts = {}) => {
     const origAdd = characters.add.bind(characters);
     characters.add = (...args) => {
       const added = origAdd(...args);
-      const ch = args.length >= 3 ? args[2] : args[args.length - 1];
-      patchCharacter(ch, opts);
+      if (added !== false) {
+        const ch = args.length >= 3 ? args[2] : args[args.length - 1];
+        patchCharacter(ch, opts);
+      }
       return added;
     };
   }
@@ -121,11 +123,17 @@ const disableAutoIconNode = (ui, node) => {
 
 const patchTalkWindow = (ui, talk, part = null) => {
   if (!talk) return;
-  disableAutoIconNode(ui, talk.p?.autoIcon || part?.autoIcon || null);
+  const hideNodes = () => {
+    disableAutoIconNode(ui, talk.p?.autoIcon || null);
+    if (part?.autoIcon && part.autoIcon !== talk.p?.autoIcon) {
+      disableAutoIconNode(ui, part.autoIcon);
+    }
+  };
+  hideNodes();
   if (typeof talk._showAutoIcon === "function" && !talk._autoIconHiddenPatched) {
     talk._autoIconHiddenPatched = true;
     talk._showAutoIcon = () => {
-      disableAutoIconNode(ui, talk.p?.autoIcon || part?.autoIcon || null);
+      hideNodes();
       if (typeof talk._setAutoModeFlag === "function") talk._setAutoModeFlag(true);
     };
   }
@@ -178,6 +186,7 @@ export const installOpeningTitleCoordinator = (ui, { isInactive = () => false } 
   const origShowTitle = ui.showTitle.bind(ui);
   let firstTitle = true;
   let initReleased = false;
+  let cancelled = false;
   let sawInitFade = false;
   let activeInitFade = null;
   let pendingTitle = null;
@@ -231,6 +240,10 @@ export const installOpeningTitleCoordinator = (ui, { isInactive = () => false } 
   ui.showTitle = (...args) => {
     if (!firstTitle) return origShowTitle(...args);
     firstTitle = false;
+    if (cancelled || isInactive()) {
+      initReleased = true;
+      return Promise.resolve(undefined);
+    }
     if (initReleased || (sawInitFade && !activeInitFade)) {
       initReleased = true;
       return origShowTitle(...args);
@@ -263,6 +276,7 @@ export const installOpeningTitleCoordinator = (ui, { isInactive = () => false } 
       }
     },
     cancel() {
+      cancelled = true;
       release(true);
     },
   };
